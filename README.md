@@ -7,13 +7,18 @@ A native macOS app for audio transcription using [Breeze-ASR-25](https://github.
 ## Features
 
 - **Drag-and-drop** audio/video files (MP3, WAV, M4A, MP4, AAC, FLAC, OGG, WMA, AIFF, CAF)
+- **App audio recording** — capture audio from any running app via ScreenCaptureKit (M4A/AAC at 48 kHz)
+- **Zoom meeting detection** — automatically prompts to stop recording when a Zoom meeting ends
+- **Recent apps** — previously recorded apps appear at the top of the app picker
 - **Metal GPU acceleration** via whisper.cpp for fast transcription
+- **Sequential transcription queue** — files wait in queue and transcribe one at a time
 - **Real-time progress** with estimated time remaining
 - **Synced text highlighting** — the current sentence highlights as audio plays
 - **Click-to-seek** — click any segment to jump to that point in the audio
 - **Audio playback** with play/pause, seek bar, and skip ±5s controls
 - **Export** transcriptions as SRT (subtitles) or plain text
 - **Batch processing** — queue multiple files at once
+- **Rename and copy** files from the sidebar context menu
 - **Re-transcribe** and **retry on failure** with copyable error messages
 - **Custom model path** — configure via Settings
 
@@ -61,10 +66,11 @@ Then build and run from Xcode (Cmd+R).
 ## Usage
 
 1. **Add files** — drag audio/video files onto the sidebar, or click the **+** button
-2. **Wait for transcription** — progress and ETA are shown in the detail pane
-3. **Review** — click a completed item to see the transcript with timestamps
-4. **Play audio** — use the player controls at the bottom; text highlights in sync
-5. **Export** — click the export button (top-right) to save as SRT or plain text
+2. **Record app audio** — click the record button, select a running app, and start recording; recently used apps are listed first
+3. **Wait for transcription** — files are queued and transcribed one at a time with progress and ETA
+4. **Review** — click a completed item to see the transcript with timestamps
+5. **Play audio** — use the player controls at the bottom; text highlights in sync
+6. **Export** — click the export button (top-right) to save as SRT or plain text
 
 ## Project Structure
 
@@ -72,12 +78,15 @@ Then build and run from Xcode (Cmd+R).
 Sources/
 ├── WhisperASRApp.swift        # App entry point
 ├── ContentView.swift          # NavigationSplitView layout
-├── SidebarView.swift          # File list with drag-and-drop
+├── SidebarView.swift          # File list with drag-and-drop & context menu
 ├── DetailView.swift           # Transcript display, progress, export
 ├── PlayerView.swift           # Audio playback controls
-├── AppState.swift             # App state management
+├── RecordingView.swift        # App audio recording UI
+├── AudioRecorder.swift        # ScreenCaptureKit audio capture
+├── AppState.swift             # App state management & transcription queue
 ├── Models.swift               # Data models
 ├── TranscriptionService.swift # whisper.cpp C API integration
+├── TranscriptionStore.swift   # JSON file-per-item persistence
 ├── AudioLoader.swift          # AVAssetReader audio loading
 ├── AudioPlayerManager.swift   # AVPlayer wrapper
 └── SettingsView.swift         # Model path configuration

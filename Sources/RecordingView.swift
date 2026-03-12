@@ -100,7 +100,8 @@ struct RecordingView: View {
     // MARK: - Recording
 
     private var recordingContent: some View {
-        VStack(spacing: 20) {
+        @Bindable var recorder = recorder
+        return VStack(spacing: 20) {
             Spacer()
 
             // Pulsing red indicator
@@ -127,14 +128,7 @@ struct RecordingView: View {
                 }
 
                 Button("Stop Recording") {
-                    Task {
-                        let url = await recorder.stopRecording()
-                        if let url {
-                            appState.addFile(url: url)
-                        }
-                        recorder.state = .idle
-                        dismiss()
-                    }
+                    stopAndDismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
@@ -142,6 +136,15 @@ struct RecordingView: View {
             .padding(.bottom, 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .alert("Meeting Ended", isPresented: $recorder.meetingEnded) {
+            Button("Stop Recording") {
+                stopAndDismiss()
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Continue Recording", role: .cancel) { }
+        } message: {
+            Text("The Zoom meeting appears to have ended. Would you like to stop recording?")
+        }
     }
 
     // MARK: - Saving
@@ -211,6 +214,17 @@ struct RecordingView: View {
             }
         }
         .aspectRatio(contentMode: .fit)
+    }
+
+    private func stopAndDismiss() {
+        Task {
+            let url = await recorder.stopRecording()
+            if let url {
+                appState.addFile(url: url)
+            }
+            recorder.state = .idle
+            dismiss()
+        }
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {

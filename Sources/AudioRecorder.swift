@@ -3,6 +3,8 @@ import ScreenCaptureKit
 import AVFoundation
 import Observation
 import os
+import CoreGraphics
+import UserNotifications
 
 enum RecordingState: Equatable {
     case idle
@@ -20,6 +22,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
     var selectedApp: SCRunningApplication?
     var recordingDuration: TimeInterval = 0
     var error: String?
+    var meetingEnded = false
 
     private var stream: SCStream?
     private var assetWriter: AVAssetWriter?
@@ -29,6 +32,11 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private var recordingAppName: String?
     private var outputURL: URL?
     private var _hasReceivedSamples = OSAllocatedUnfairLock(initialState: false)
+    private var meetingMonitorTimer: Timer?
+    private var recordingPID: pid_t?
+    private var hadMeetingWindow = false
+
+    private static let zoomBundleIDs: Set<String> = ["us.zoom.xos", "us.zoom.videomeeting"]
 
     // MARK: - App List
 
@@ -125,6 +133,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
                         guard let self, let start = self.recordingStartTime else { return }
                         self.recordingDuration = Date().timeIntervalSince(start)
                     }
+                    self.startMeetingMonitor(app: app)
                 }
             } catch {
                 await MainActor.run {
@@ -141,6 +150,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
             state = .saving
             timer?.invalidate()
             timer = nil
+            stopMeetingMonitor()
         }
 
         if let stream {
@@ -204,8 +214,81 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 state = .ready
                 timer?.invalidate()
                 timer = nil
+                stopMeetingMonitor()
                 recordingDuration = 0
             }
+        }
+    }
+
+    // MARK: - Zoom Meeting Monitor
+
+    private func startMeetingMonitor(app: SCRunningApplication) {
+        guard Self.zoomBundleIDs.contains(app.bundleIdentifier) else { return }
+        recordingPID = app.processID
+        hadMeetingWindow = false
+        meetingEnded = false
+
+        meetingMonitorTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.checkZoomMeetingWindows()
+        }
+    }
+
+    private func stopMeetingMonitor() {
+        meetingMonitorTimer?.invalidate()
+        meetingMonitorTimer = nil
+        recordingPID = nil
+        hadMeetingWindow = false
+    }
+
+    private func checkZoomMeetingWindows() {
+        guard let pid = recordingPID else { return }
+
+        let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+
+        let hasMeeting = windowList.contains { info in
+            guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
+                  ownerPID == pid,
+                  let layer = info[kCGWindowLayer as String] as? Int,
+                  layer == 0 else { return false }
+
+            // Check for meeting-sized windows (not tiny overlays or toolbars)
+            if let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+               let width = bounds["Width"], let height = bounds["Height"],
+               width >= 300, height >= 200 {
+                // Check window name for meeting indicators
+                let name = info[kCGWindowName as String] as? String ?? ""
+                // Zoom meeting windows: "Zoom Meeting", meeting topic, or large unnamed windows
+                if name.localizedCaseInsensitiveContains("meeting") ||
+                   name.localizedCaseInsensitiveContains("zoom") ||
+                   name.isEmpty {
+                    return true
+                }
+            }
+            return false
+        }
+
+        if hasMeeting {
+            hadMeetingWindow = true
+        } else if hadMeetingWindow {
+            // Meeting window was present but now gone — meeting ended
+            meetingMonitorTimer?.invalidate()
+            meetingMonitorTimer = nil
+            meetingEnded = true
+            sendMeetingEndedNotification()
+        }
+    }
+
+    private func sendMeetingEndedNotification() {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Zoom Meeting Ended"
+            content.body = "The Zoom meeting has ended. Would you like to stop recording?"
+            content.sound = .default
+
+            let request = UNNotificationRequest(identifier: "zoom-meeting-ended", content: content, trigger: nil)
+            center.add(request)
         }
     }
 

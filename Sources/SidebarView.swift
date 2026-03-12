@@ -5,6 +5,8 @@ struct SidebarView: View {
     @Environment(AppState.self) var appState
     @State private var isDropTargeted = false
     @State private var showRecordingSheet = false
+    @State private var renamingItem: TranscriptionItem?
+    @State private var renameText = ""
 
     private let supportedExtensions: Set<String> = [
         "mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "wma", "aiff", "caf"
@@ -50,6 +52,21 @@ struct SidebarView: View {
         .sheet(isPresented: $showRecordingSheet) {
             RecordingView()
         }
+        .alert("Rename", isPresented: Binding(
+            get: { renamingItem != nil },
+            set: { if !$0 { renamingItem = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renamingItem = nil }
+            Button("Rename") {
+                if let item = renamingItem {
+                    appState.renameItem(item, to: renameText)
+                }
+                renamingItem = nil
+            }
+        } message: {
+            Text("Enter a new name for this file.")
+        }
     }
 
     // MARK: - Empty State
@@ -88,6 +105,16 @@ struct SidebarView: View {
                 }
                 .tag(item.id)
                 .contextMenu {
+                    Button("Rename") {
+                        renameText = item.fileURL.deletingPathExtension().lastPathComponent
+                        renamingItem = item
+                    }
+                    Button("Copy File") {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.writeObjects([item.fileURL as NSURL])
+                    }
+                    Divider()
                     if item.status == .completed || item.status != .transcribing {
                         Button("Re-transcribe") {
                             appState.retranscribe(item)

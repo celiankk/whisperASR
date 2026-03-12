@@ -37,6 +37,24 @@ class AppState {
         startTranscription(for: item)
     }
 
+    func renameItem(_ item: TranscriptionItem, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // Preserve the file extension
+        let ext = item.fileURL.pathExtension
+        let nameWithExt = trimmed.hasSuffix(".\(ext)") ? trimmed : "\(trimmed).\(ext)"
+
+        // Rename the actual file on disk
+        let newURL = item.fileURL.deletingLastPathComponent().appendingPathComponent(nameWithExt)
+        if newURL != item.fileURL {
+            try? FileManager.default.moveItem(at: item.fileURL, to: newURL)
+            item.fileURL = newURL
+        }
+        item.fileName = nameWithExt
+        TranscriptionStore.save(item)
+    }
+
     func removeItem(_ item: TranscriptionItem) {
         items.removeAll { $0.id == item.id }
         TranscriptionStore.delete(item)

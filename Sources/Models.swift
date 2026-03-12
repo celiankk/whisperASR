@@ -46,8 +46,8 @@ enum TranscriptionError: LocalizedError {
 @Observable
 class TranscriptionItem: Identifiable {
     let id: UUID
-    let fileName: String
-    let fileURL: URL
+    var fileName: String
+    var fileURL: URL
     var status: TranscriptionStatus = .pending
     var segments: [TranscriptionSegment] = []
     var fullText: String = ""

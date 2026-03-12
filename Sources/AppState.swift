@@ -7,10 +7,15 @@ class AppState {
     var selectedItemID: UUID?
 
     private let service = TranscriptionService()
+    private var isTranscribing = false
 
     init() {
         items = TranscriptionStore.loadAll()
         selectedItemID = items.first?.id
+        // Auto-resume any pending items restored from disk
+        if items.contains(where: { $0.status == .pending }) {
+            startNextTranscription()
+        }
     }
 
     var selectedItem: TranscriptionItem? {
@@ -27,14 +32,14 @@ class AppState {
         items.append(item)
         selectedItemID = item.id
         TranscriptionStore.save(item)
-        startTranscription(for: item)
+        enqueueTranscription(for: item)
     }
 
     func retranscribe(_ item: TranscriptionItem) {
         item.segments = []
         item.fullText = ""
         item.progress = 0
-        startTranscription(for: item)
+        enqueueTranscription(for: item)
     }
 
     func renameItem(_ item: TranscriptionItem, to newName: String) {
@@ -63,7 +68,19 @@ class AppState {
         }
     }
 
-    private func startTranscription(for item: TranscriptionItem) {
+    private func enqueueTranscription(for item: TranscriptionItem) {
+        item.status = .pending
+        if !isTranscribing {
+            startNextTranscription()
+        }
+    }
+
+    private func startNextTranscription() {
+        guard let item = items.first(where: { $0.status == .pending }) else {
+            isTranscribing = false
+            return
+        }
+        isTranscribing = true
         item.status = .transcribing
         item.progress = 0
         item.transcriptionStartTime = Date()
@@ -71,7 +88,6 @@ class AppState {
         Task.detached { [service] in
             do {
                 let result = try await service.transcribe(fileURL: item.fileURL) { progress in
-                    // WhisperDelegate dispatches to main queue already
                     Task { @MainActor in
                         item.progress = progress
                     }
@@ -87,6 +103,9 @@ class AppState {
                     item.status = .failed(error.localizedDescription)
                     TranscriptionStore.save(item)
                 }
+            }
+            await MainActor.run { [weak self] in
+                self?.startNextTranscription()
             }
         }
     }

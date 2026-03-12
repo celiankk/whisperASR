@@ -12,6 +12,8 @@ open Package.swift   # Open in Xcode (Cmd+R to run)
 
 There are no tests in this project.
 
+**After making code changes, always run `swift run &` in the background to launch the app so the user can verify the changes immediately.**
+
 ### First-time setup
 
 The pre-built `Frameworks/CWhisper.xcframework` is included. To rebuild from source:

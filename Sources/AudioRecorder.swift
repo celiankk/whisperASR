@@ -22,10 +22,13 @@ class AudioRecorder: NSObject, SCStreamOutput {
     var error: String?
 
     private var stream: SCStream?
-    private var samplesLock = OSAllocatedUnfairLock(initialState: [Float]())
+    private var assetWriter: AVAssetWriter?
+    private var assetWriterInput: AVAssetWriterInput?
     private var timer: Timer?
     private var recordingStartTime: Date?
     private var recordingAppName: String?
+    private var outputURL: URL?
+    private var _hasReceivedSamples = OSAllocatedUnfairLock(initialState: false)
 
     // MARK: - App List
 
@@ -79,13 +82,33 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 config.capturesAudio = true
                 config.excludesCurrentProcessAudio = true
                 config.channelCount = 1
-                config.sampleRate = 16000
+                config.sampleRate = 48000
                 // Minimal video config (required but we don't need video)
                 config.width = 2
                 config.height = 2
                 config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-                samplesLock.withLock { $0.removeAll() }
+                let fileURL = self.makeOutputURL(appName: app.applicationName)
+                // Remove any existing file at this path
+                try? FileManager.default.removeItem(at: fileURL)
+
+                let writer = try AVAssetWriter(outputURL: fileURL, fileType: .m4a)
+                let audioSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: 48000,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 64000,
+                ]
+                let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                input.expectsMediaDataInRealTime = true
+                writer.add(input)
+                writer.startWriting()
+                writer.startSession(atSourceTime: .zero)
+
+                self.assetWriter = writer
+                self.assetWriterInput = input
+                self.outputURL = fileURL
+                self._hasReceivedSamples.withLock { $0 = false }
 
                 let stream = SCStream(filter: filter, configuration: config, delegate: nil)
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.whisperasr.audio-capture"))
@@ -125,22 +148,37 @@ class AudioRecorder: NSObject, SCStreamOutput {
             self.stream = nil
         }
 
-        let samples = samplesLock.withLock { Array($0) }
-        guard !samples.isEmpty else {
-            await MainActor.run {
-                state = .ready
-                error = "No audio captured"
+        let received = _hasReceivedSamples.withLock { $0 }
+        print("[AudioRecorder] stopRecording: hasReceivedSamples=\(received), writer=\(assetWriter != nil), input=\(assetWriterInput != nil)")
+
+        guard let writer = assetWriter, let input = assetWriterInput else {
+            assetWriter = nil
+            assetWriterInput = nil
+            if let url = outputURL {
+                try? FileManager.default.removeItem(at: url)
             }
+            print("[AudioRecorder] stopRecording: no writer/input, returning nil")
             return nil
         }
 
-        let url = writeWAV(samples: samples, sampleRate: 16000)
+        input.markAsFinished()
+        await writer.finishWriting()
 
-        await MainActor.run {
-            state = .idle
-            selectedApp = nil
+        print("[AudioRecorder] stopRecording: writer.status=\(writer.status.rawValue), error=\(String(describing: writer.error))")
+
+        let url: URL?
+        if writer.status == .completed, received {
+            url = outputURL
+        } else {
+            url = nil
+            if let outputURL {
+                try? FileManager.default.removeItem(at: outputURL)
+            }
         }
+        assetWriter = nil
+        assetWriterInput = nil
 
+        print("[AudioRecorder] stopRecording: returning url=\(String(describing: url))")
         return url
     }
 
@@ -152,7 +190,15 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 try? await stream.stopCapture()
                 self.stream = nil
             }
-            samplesLock.withLock { $0.removeAll() }
+
+            if let writer = assetWriter {
+                writer.cancelWriting()
+                if let url = outputURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                assetWriter = nil
+                assetWriterInput = nil
+            }
 
             await MainActor.run {
                 state = .ready
@@ -168,44 +214,33 @@ class AudioRecorder: NSObject, SCStreamOutput {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
-
-        guard let formatDesc = sampleBuffer.formatDescription,
-              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else { return }
-
-        guard let blockBuffer = sampleBuffer.dataBuffer else { return }
-
-        var length = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &dataPointer)
-        guard status == kCMBlockBufferNoErr, let dataPointer else { return }
-
-        let channelCount = Int(asbd.mChannelsPerFrame)
-        let sampleCount = length / MemoryLayout<Float>.size / channelCount
-
-        let floatPointer = UnsafeRawPointer(dataPointer).bindMemory(to: Float.self, capacity: sampleCount * channelCount)
-
-        var monoSamples: [Float]
-        if channelCount == 1 {
-            monoSamples = Array(UnsafeBufferPointer(start: floatPointer, count: sampleCount))
-        } else {
-            // Mix to mono
-            monoSamples = [Float](repeating: 0, count: sampleCount)
-            for i in 0..<sampleCount {
-                var sum: Float = 0
-                for ch in 0..<channelCount {
-                    sum += floatPointer[i * channelCount + ch]
-                }
-                monoSamples[i] = sum / Float(channelCount)
-            }
+        guard let input = assetWriterInput else {
+            print("[AudioRecorder] stream callback: no assetWriterInput")
+            return
+        }
+        guard input.isReadyForMoreMediaData else {
+            print("[AudioRecorder] stream callback: input not ready")
+            return
         }
 
-        let captured = monoSamples
-        samplesLock.withLock { $0.append(contentsOf: captured) }
+        let success = input.append(sampleBuffer)
+        if success {
+            let wasFirst = _hasReceivedSamples.withLock { val -> Bool in
+                let first = !val
+                val = true
+                return first
+            }
+            if wasFirst {
+                print("[AudioRecorder] first audio sample appended, numSamples=\(sampleBuffer.numSamples)")
+            }
+        } else {
+            print("[AudioRecorder] stream callback: append failed, writer.status=\(assetWriter?.status.rawValue ?? -1), error=\(String(describing: assetWriter?.error))")
+        }
     }
 
-    // MARK: - WAV Writing
+    // MARK: - Output URL
 
-    private func writeWAV(samples: [Float], sampleRate: Int) -> URL? {
+    private func makeOutputURL(appName: String) -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let recordingsDir = appSupport.appendingPathComponent("WhisperASR/Recordings", isDirectory: true)
         try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
@@ -214,66 +249,15 @@ class AudioRecorder: NSObject, SCStreamOutput {
         formatter.formatOptions = [.withFullDate, .withFullTime]
         let timestamp = formatter.string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
-        let appName = (recordingAppName ?? "Unknown")
+        let sanitized = appName
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: " ", with: "_")
-        let fileName = "\(appName)_\(timestamp).wav"
-        let fileURL = recordingsDir.appendingPathComponent(fileName)
-
-        let numChannels: UInt16 = 1
-        let bitsPerSample: UInt16 = 32
-        let byteRate = UInt32(sampleRate) * UInt32(numChannels) * UInt32(bitsPerSample / 8)
-        let blockAlign = numChannels * (bitsPerSample / 8)
-        let dataSize = UInt32(samples.count * MemoryLayout<Float>.size)
-        let fileSize = 36 + dataSize
-
-        var header = Data()
-        header.append(contentsOf: "RIFF".utf8)
-        header.appendLittleEndian(fileSize)
-        header.append(contentsOf: "WAVE".utf8)
-        header.append(contentsOf: "fmt ".utf8)
-        header.appendLittleEndian(UInt32(16))          // chunk size
-        header.appendLittleEndian(UInt16(3))            // IEEE float
-        header.appendLittleEndian(numChannels)
-        header.appendLittleEndian(UInt32(sampleRate))
-        header.appendLittleEndian(byteRate)
-        header.appendLittleEndian(blockAlign)
-        header.appendLittleEndian(bitsPerSample)
-        header.append(contentsOf: "data".utf8)
-        header.appendLittleEndian(dataSize)
-
-        let sampleData = samples.withUnsafeBufferPointer { buffer in
-            Data(buffer: buffer.withMemoryRebound(to: UInt8.self) { $0 })
-        }
-
-        var fileData = header
-        fileData.append(sampleData)
-
-        do {
-            try fileData.write(to: fileURL)
-            return fileURL
-        } catch {
-            return nil
-        }
+        return recordingsDir.appendingPathComponent("\(sanitized)_\(timestamp).m4a")
     }
 
     // MARK: - System Preferences
 
     func openSystemPreferences() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-    }
-}
-
-// MARK: - Data Helpers
-
-private extension Data {
-    mutating func appendLittleEndian(_ value: UInt16) {
-        var v = value.littleEndian
-        Swift.withUnsafeBytes(of: &v) { append(contentsOf: $0) }
-    }
-
-    mutating func appendLittleEndian(_ value: UInt32) {
-        var v = value.littleEndian
-        Swift.withUnsafeBytes(of: &v) { append(contentsOf: $0) }
     }
 }

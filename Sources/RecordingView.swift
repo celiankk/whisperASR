@@ -123,14 +123,17 @@ struct RecordingView: View {
             HStack(spacing: 16) {
                 Button("Cancel") {
                     recorder.cancelRecording()
+                    dismiss()
                 }
 
                 Button("Stop Recording") {
                     Task {
-                        if let url = await recorder.stopRecording() {
+                        let url = await recorder.stopRecording()
+                        if let url {
                             appState.addFile(url: url)
-                            dismiss()
                         }
+                        recorder.state = .idle
+                        dismiss()
                     }
                 }
                 .buttonStyle(.borderedProminent)

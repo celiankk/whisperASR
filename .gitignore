@@ -1,0 +1,22 @@
+# Swift / SPM
+.build/
+.swiftpm/
+
+# Large model files
+Models/
+
+# Cloned repos used for building/conversion
+.whisper.cpp/
+.whisper-openai/
+.hf-model/
+
+# Intermediate build artifacts
+Frameworks/headers/
+
+# macOS
+.DS_Store
+
+# Python
+venv/
+__pycache__/
+*.pyc

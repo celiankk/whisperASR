@@ -245,14 +245,12 @@ class AudioRecorder: NSObject, SCStreamOutput {
         let recordingsDir = appSupport.appendingPathComponent("WhisperASR/Recordings", isDirectory: true)
         try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate, .withFullTime]
-        let timestamp = formatter.string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
+        let df = DateFormatter()
+        df.dateFormat = "yyyyMMdd HH'h'"
+        let timestamp = df.string(from: Date())
         let sanitized = appName
             .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: " ", with: "_")
-        return recordingsDir.appendingPathComponent("\(sanitized)_\(timestamp).m4a")
+        return recordingsDir.appendingPathComponent("\(timestamp) \(sanitized).m4a")
     }
 
     // MARK: - System Preferences

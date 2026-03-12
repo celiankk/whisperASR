@@ -59,7 +59,7 @@ struct RecordingView: View {
                     .padding(.bottom, 4)
             }
 
-            List(recorder.availableApps, id: \.bundleIdentifier, selection: Binding(
+            List(sortedApps, id: \.bundleIdentifier, selection: Binding(
                 get: { recorder.selectedApp?.bundleIdentifier },
                 set: { id in
                     recorder.selectedApp = recorder.availableApps.first { $0.bundleIdentifier == id }
@@ -200,6 +200,20 @@ struct RecordingView: View {
     }
 
     // MARK: - Helpers
+
+    private var sortedApps: [SCRunningApplication] {
+        let recent = recorder.recentAppBundleIDs
+        return recorder.availableApps.sorted { a, b in
+            let aIdx = recent.firstIndex(of: a.bundleIdentifier)
+            let bIdx = recent.firstIndex(of: b.bundleIdentifier)
+            switch (aIdx, bIdx) {
+            case let (.some(ai), .some(bi)): return ai < bi
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return a.applicationName < b.applicationName
+            }
+        }
+    }
 
     private func appIcon(for app: SCRunningApplication) -> some View {
         Group {

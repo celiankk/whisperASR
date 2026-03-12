@@ -71,8 +71,24 @@ class AudioRecorder: NSObject, SCStreamOutput {
 
     // MARK: - Start Recording
 
+    private static let recentAppsKey = "recentRecordingApps"
+
+    /// Bundle IDs of recently recorded apps, most recent first.
+    var recentAppBundleIDs: [String] {
+        UserDefaults.standard.stringArray(forKey: Self.recentAppsKey) ?? []
+    }
+
+    private func saveRecentApp(bundleID: String) {
+        var recent = recentAppBundleIDs
+        recent.removeAll { $0 == bundleID }
+        recent.insert(bundleID, at: 0)
+        if recent.count > 10 { recent = Array(recent.prefix(10)) }
+        UserDefaults.standard.set(recent, forKey: Self.recentAppsKey)
+    }
+
     func startRecording(app: SCRunningApplication) {
         guard state == .ready else { return }
+        saveRecentApp(bundleID: app.bundleIdentifier)
 
         Task {
             do {

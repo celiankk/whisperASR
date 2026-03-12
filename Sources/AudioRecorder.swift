@@ -97,8 +97,6 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
                 let fileURL = self.makeOutputURL(appName: app.applicationName)
-                // Remove any existing file at this path
-                try? FileManager.default.removeItem(at: fileURL)
 
                 let writer = try AVAssetWriter(outputURL: fileURL, fileType: .m4a)
                 let audioSettings: [String: Any] = [
@@ -333,7 +331,14 @@ class AudioRecorder: NSObject, SCStreamOutput {
         let timestamp = df.string(from: Date())
         let sanitized = appName
             .replacingOccurrences(of: "/", with: "-")
-        return recordingsDir.appendingPathComponent("\(timestamp) \(sanitized).m4a")
+        let baseName = "\(timestamp) \(sanitized)"
+        var url = recordingsDir.appendingPathComponent("\(baseName).m4a")
+        var counter = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = recordingsDir.appendingPathComponent("\(baseName) \(counter).m4a")
+            counter += 1
+        }
+        return url
     }
 
     // MARK: - System Preferences

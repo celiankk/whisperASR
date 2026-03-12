@@ -8,6 +8,11 @@ class AppState {
 
     private let service = TranscriptionService()
 
+    init() {
+        items = TranscriptionStore.loadAll()
+        selectedItemID = items.first?.id
+    }
+
     var selectedItem: TranscriptionItem? {
         items.first { $0.id == selectedItemID }
     }
@@ -21,6 +26,7 @@ class AppState {
         let item = TranscriptionItem(fileURL: url)
         items.append(item)
         selectedItemID = item.id
+        TranscriptionStore.save(item)
         startTranscription(for: item)
     }
 
@@ -33,6 +39,7 @@ class AppState {
 
     func removeItem(_ item: TranscriptionItem) {
         items.removeAll { $0.id == item.id }
+        TranscriptionStore.delete(item)
         if selectedItemID == item.id {
             selectedItemID = items.first?.id
         }
@@ -55,10 +62,12 @@ class AppState {
                     item.segments = result.segments
                     item.fullText = result.text
                     item.status = .completed
+                    TranscriptionStore.save(item)
                 }
             } catch {
                 await MainActor.run {
                     item.status = .failed(error.localizedDescription)
+                    TranscriptionStore.save(item)
                 }
             }
         }

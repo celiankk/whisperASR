@@ -45,7 +45,7 @@ enum TranscriptionError: LocalizedError {
 
 @Observable
 class TranscriptionItem: Identifiable {
-    let id = UUID()
+    let id: UUID
     let fileName: String
     let fileURL: URL
     var status: TranscriptionStatus = .pending
@@ -53,10 +53,24 @@ class TranscriptionItem: Identifiable {
     var fullText: String = ""
     var progress: Double = 0
     var transcriptionStartTime: Date?
-    let dateAdded = Date()
+    let dateAdded: Date
 
     init(fileURL: URL) {
+        self.id = UUID()
         self.fileName = fileURL.lastPathComponent
         self.fileURL = fileURL
+        self.dateAdded = Date()
+    }
+
+    /// Restore from persisted data
+    init(id: UUID, fileName: String, fileURL: URL, dateAdded: Date,
+         status: TranscriptionStatus, segments: [TranscriptionSegment], fullText: String) {
+        self.id = id
+        self.fileName = fileName
+        self.fileURL = fileURL
+        self.dateAdded = dateAdded
+        self.status = status
+        self.segments = segments
+        self.fullText = fullText
     }
 }

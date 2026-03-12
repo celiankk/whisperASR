@@ -19,6 +19,7 @@ let package = Package(
                 .linkedFramework("Accelerate"),
                 .linkedFramework("Foundation"),
                 .linkedLibrary("c++"),
+                .linkedFramework("ScreenCaptureKit"),
             ]
         )
     ]

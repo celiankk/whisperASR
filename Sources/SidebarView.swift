@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct SidebarView: View {
     @Environment(AppState.self) var appState
     @State private var isDropTargeted = false
+    @State private var showRecordingSheet = false
 
     private let supportedExtensions: Set<String> = [
         "mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "wma", "aiff", "caf"
@@ -38,6 +39,16 @@ struct SidebarView: View {
                     Label("Add File", systemImage: "plus")
                 }
             }
+            ToolbarItem {
+                Button {
+                    showRecordingSheet = true
+                } label: {
+                    Label("Record", systemImage: "record.circle")
+                }
+            }
+        }
+        .sheet(isPresented: $showRecordingSheet) {
+            RecordingView()
         }
     }
 

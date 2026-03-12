@@ -5,12 +5,14 @@ import AppKit
 struct WhisperASRApp: App {
     @State private var appState = AppState()
     @State private var audioPlayer = AudioPlayerManager()
+    @State private var audioRecorder = AudioRecorder()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(appState)
                 .environment(audioPlayer)
+                .environment(audioRecorder)
                 .frame(minWidth: 800, minHeight: 500)
                 .onAppear {
                     NSApplication.shared.setActivationPolicy(.regular)

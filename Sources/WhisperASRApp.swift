@@ -16,8 +16,6 @@ struct WhisperASRApp: App {
                 .environment(audioRecorder)
                 .frame(minWidth: 800, minHeight: 500)
                 .onAppear {
-                    NSApplication.shared.setActivationPolicy(.regular)
-                    NSApplication.shared.activate(ignoringOtherApps: true)
                     appDelegate.appState = appState
                 }
         }
@@ -31,6 +29,17 @@ struct WhisperASRApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        let icon = AppIconGenerator.generate()
+        NSApplication.shared.applicationIconImage = icon
+        // Force the Dock tile to use our icon (needed for bare executables from swift run)
+        let imageView = NSImageView(image: icon)
+        NSApplication.shared.dockTile.contentView = imageView
+        NSApplication.shared.dockTile.display()
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         appState?.shutdown()

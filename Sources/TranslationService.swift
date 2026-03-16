@@ -85,7 +85,7 @@ enum TranslationService {
         // Build context section from previous translations
         var contextSection = ""
         if !previousTranslations.isEmpty {
-            let pairs = previousTranslations.suffix(6)
+            let pairs = previousTranslations.suffix(2)
                 .map { "\"\($0.original)\" → \"\($0.translated)\"" }
                 .joined(separator: "\n")
             contextSection = "\n\nPreviously translated segments from this conversation (use as reference for consistent terminology and style):\n\(pairs)"

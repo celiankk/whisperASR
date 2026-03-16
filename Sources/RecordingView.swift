@@ -383,7 +383,8 @@ private struct AppleTranslationModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onChange(of: appState.translationTrigger) { _, newTrigger in
-                guard newTrigger != nil else { return }
+                // Only activate Apple Translation when OpenAI is NOT configured
+                guard newTrigger != nil, !TranslationService.isOpenAIConfigured else { return }
                 let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
                 guard !targetLang.isEmpty else { return }
                 if translationConfig != nil {

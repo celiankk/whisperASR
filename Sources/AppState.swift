@@ -60,6 +60,10 @@ class AppState {
         TranscriptionStore.save(item)
     }
 
+    func shutdown() {
+        service.shutdown()
+    }
+
     func removeItem(_ item: TranscriptionItem) {
         items.removeAll { $0.id == item.id }
         TranscriptionStore.delete(item)

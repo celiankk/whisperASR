@@ -9,6 +9,14 @@ final class TranscriptionService: @unchecked Sendable {
         if let ctx { whisper_free(ctx) }
     }
 
+    func shutdown() {
+        if let ctx {
+            whisper_free(ctx)
+            self.ctx = nil
+            self.loadedModelPath = nil
+        }
+    }
+
     func transcribe(fileURL: URL, onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
         try ensureModelLoaded()
         guard let ctx else {

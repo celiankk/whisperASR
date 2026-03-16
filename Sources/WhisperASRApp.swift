@@ -6,6 +6,7 @@ struct WhisperASRApp: App {
     @State private var appState = AppState()
     @State private var audioPlayer = AudioPlayerManager()
     @State private var audioRecorder = AudioRecorder()
+    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
     var body: some Scene {
         WindowGroup {
@@ -17,6 +18,7 @@ struct WhisperASRApp: App {
                 .onAppear {
                     NSApplication.shared.setActivationPolicy(.regular)
                     NSApplication.shared.activate(ignoringOtherApps: true)
+                    appDelegate.appState = appState
                 }
         }
         .defaultSize(width: 1000, height: 650)
@@ -24,5 +26,13 @@ struct WhisperASRApp: App {
         Settings {
             SettingsView()
         }
+    }
+}
+
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var appState: AppState?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appState?.shutdown()
     }
 }

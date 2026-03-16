@@ -5,6 +5,7 @@ struct RecordingView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioRecorder.self) var recorder
     @Environment(\.dismiss) var dismiss
+    @State private var enableLiveTranscription = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +22,7 @@ struct RecordingView: View {
                 permissionDeniedContent
             }
         }
-        .frame(width: 380, height: 400)
+        .frame(width: 420, height: (recorder.state == .recording && !enableLiveTranscription) ? 200 : 500)
         .onAppear {
             if recorder.state == .idle {
                 recorder.loadAvailableApps()
@@ -82,6 +83,12 @@ struct RecordingView: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
 
+            Toggle(isOn: $enableLiveTranscription) {
+                Label("Live Transcription", systemImage: "text.word.spacing")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+
             HStack {
                 Button("Cancel") {
                     recorder.state = .idle
@@ -107,28 +114,42 @@ struct RecordingView: View {
 
     private var recordingContent: some View {
         @Bindable var recorder = recorder
-        return VStack(spacing: 20) {
-            Spacer()
+        return VStack(spacing: 12) {
+            // Header: indicator + duration + app name
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 10, height: 10)
+                    .shadow(color: .red.opacity(0.6), radius: 6)
+                    .modifier(PulsingModifier())
 
-            // Pulsing red indicator
-            Circle()
-                .fill(.red)
-                .frame(width: 16, height: 16)
-                .shadow(color: .red.opacity(0.6), radius: 8)
-                .modifier(PulsingModifier())
-
-            Text(formatDuration(recorder.recordingDuration))
-                .font(.system(size: 48, weight: .light, design: .monospaced))
+                Text(formatDuration(recorder.recordingDuration))
+                    .font(.system(size: 24, weight: .light, design: .monospaced))
+            }
+            .padding(.top, 16)
 
             if let app = recorder.selectedApp {
                 Text("Recording from \(app.applicationName)\(recorder.includeMicrophone ? " + Microphone" : "")")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Spacer()
+            Divider()
+                .padding(.horizontal)
+
+            // Live transcription area (only shown if enabled)
+            if enableLiveTranscription {
+                liveTranscriptView
+            } else {
+                Spacer()
+            }
+
+            Divider()
+                .padding(.horizontal)
 
             HStack(spacing: 16) {
                 Button("Cancel") {
+                    appState.stopLiveTranscription()
                     recorder.cancelRecording()
                     dismiss()
                 }
@@ -139,9 +160,14 @@ struct RecordingView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
             }
-            .padding(.bottom, 20)
+            .padding(.bottom, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            if enableLiveTranscription {
+                appState.startLiveTranscription(recorder: recorder)
+            }
+        }
         .alert("Meeting Ended", isPresented: $recorder.meetingEnded) {
             Button("Stop Recording") {
                 stopAndDismiss()
@@ -151,6 +177,72 @@ struct RecordingView: View {
         } message: {
             Text("The Zoom meeting appears to have ended. Would you like to stop recording?")
         }
+    }
+
+    // MARK: - Live Transcript
+
+    private var liveTranscriptView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "text.word.spacing")
+                    .foregroundStyle(.orange)
+                Text("Live Transcript")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                if appState.isLiveTranscribing && appState.liveText.isEmpty {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Waiting for audio...")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal)
+
+            if !appState.liveSegments.isEmpty {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(appState.liveSegments.enumerated()), id: \.offset) { index, segment in
+                                HStack(alignment: .top, spacing: 6) {
+                                    Text(formatTimestamp(segment.start))
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.orange.opacity(0.7))
+                                        .frame(width: 44, alignment: .trailing)
+
+                                    Text(segment.text.trimmingCharacters(in: .whitespaces))
+                                        .font(.caption)
+                                        .foregroundStyle(.primary.opacity(0.85))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .id(index)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .onChange(of: appState.liveSegments.count) { _, newCount in
+                        if newCount > 0 {
+                            withAnimation {
+                                proxy.scrollTo(newCount - 1, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+            } else if !appState.liveText.isEmpty {
+                ScrollView {
+                    Text(appState.liveText)
+                        .font(.caption)
+                        .foregroundStyle(.primary.opacity(0.85))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Saving
@@ -237,6 +329,7 @@ struct RecordingView: View {
     }
 
     private func stopAndDismiss() {
+        appState.stopLiveTranscription()
         Task {
             let url = await recorder.stopRecording()
             if let url {
@@ -251,6 +344,12 @@ struct RecordingView: View {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private func formatTimestamp(_ seconds: Double) -> String {
+        let m = Int(seconds) / 60
+        let s = Int(seconds) % 60
+        return String(format: "%d:%02d", m, s)
     }
 }
 

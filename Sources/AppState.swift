@@ -6,8 +6,15 @@ class AppState {
     var items: [TranscriptionItem] = []
     var selectedItemID: UUID?
 
+    // Live transcription state
+    var liveSegments: [TranscriptionSegment] = []
+    var liveText: String = ""
+    var isLiveTranscribing = false
+
     private let service = TranscriptionService()
     private var isTranscribing = false
+    private var liveTranscriptionTask: Task<Void, Never>?
+    private var isChunkTranscribing = false
 
     init() {
         items = TranscriptionStore.loadAll()
@@ -112,5 +119,65 @@ class AppState {
                 self?.startNextTranscription()
             }
         }
+    }
+
+    // MARK: - Live Transcription During Recording
+
+    /// Start periodic live transcription from the AudioRecorder's accumulated PCM buffer.
+    func startLiveTranscription(recorder: AudioRecorder) {
+        // Pre-load the model so the first chunk doesn't have loading latency
+        Task.detached { [service] in
+            try? service.preloadModel()
+        }
+
+        liveSegments = []
+        liveText = ""
+        isLiveTranscribing = true
+        isChunkTranscribing = false
+
+        liveTranscriptionTask = Task { [weak self] in
+            // Wait a few seconds before the first transcription to accumulate enough audio
+            try? await Task.sleep(for: .seconds(5))
+
+            while !Task.isCancelled {
+                guard let self else { return }
+
+                // Don't overlap chunk transcriptions; skip if one is still running
+                if !self.isChunkTranscribing {
+                    let samples = recorder.getAccumulatedSamples()
+                    // Only transcribe if we have at least 1 second of audio (16000 samples)
+                    if samples.count >= 16000 {
+                        self.isChunkTranscribing = true
+                        do {
+                            let result = try await self.service.transcribeChunk(samples: samples)
+                            await MainActor.run {
+                                self.liveSegments = result.segments
+                                self.liveText = result.text
+                                self.isChunkTranscribing = false
+                            }
+                        } catch {
+                            print("[AppState] live transcription chunk error: \(error)")
+                            await MainActor.run {
+                                self.isChunkTranscribing = false
+                            }
+                        }
+                    }
+                }
+
+                // Wait before the next chunk
+                try? await Task.sleep(for: .seconds(7))
+            }
+        }
+    }
+
+    /// Stop the live transcription timer. Called when recording ends.
+    func stopLiveTranscription() {
+        liveTranscriptionTask?.cancel()
+        liveTranscriptionTask = nil
+        isLiveTranscribing = false
+        isChunkTranscribing = false
+        // Clear live results (the final file transcription will replace them)
+        liveSegments = []
+        liveText = ""
     }
 }

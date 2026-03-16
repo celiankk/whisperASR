@@ -112,5 +112,6 @@ enum TranscriptionStore {
 
     static func delete(_ item: TranscriptionItem) {
         try? FileManager.default.removeItem(at: fileURL(for: item.id))
+        try? FileManager.default.removeItem(at: item.fileURL)
     }
 }

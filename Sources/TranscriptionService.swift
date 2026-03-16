@@ -4,6 +4,8 @@ import CWhisper
 final class TranscriptionService: @unchecked Sendable {
     private var ctx: OpaquePointer?
     private var loadedModelPath: String?
+    /// Serial queue to ensure only one whisper_full() runs at a time (ctx is not thread-safe).
+    private let whisperQueue = DispatchQueue(label: "com.whisperasr.whisper", qos: .userInitiated)
 
     deinit {
         if let ctx { whisper_free(ctx) }
@@ -26,7 +28,7 @@ final class TranscriptionService: @unchecked Sendable {
         let samples = try await AudioLoader.loadSamples(url: fileURL)
 
         return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            self.whisperQueue.async {
                 // Configure transcription parameters
                 var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
                 params.print_progress = false
@@ -88,6 +90,72 @@ final class TranscriptionService: @unchecked Sendable {
                 ))
             }
         }
+    }
+
+    // MARK: - Chunk Transcription (Live/Streaming)
+
+    /// Transcribe raw 16kHz mono PCM Float32 samples directly (used for live transcription during recording).
+    /// This reuses the already-loaded whisper model and runs on a background queue.
+    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+        try ensureModelLoaded()
+        guard let ctx else {
+            throw TranscriptionError.scriptNotFound("Model not loaded")
+        }
+        guard !samples.isEmpty else {
+            return TranscriptionResult(text: "", segments: [])
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            self.whisperQueue.async {
+                var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+                params.print_progress = false
+                params.print_realtime = false
+                params.print_timestamps = false
+                params.n_threads = max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
+                // No progress callback needed for chunk transcription
+
+                let result = samples.withUnsafeBufferPointer { buf in
+                    whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
+                }
+
+                if result != 0 {
+                    continuation.resume(throwing: TranscriptionError.processFailed("whisper_full returned error \(result)"))
+                    return
+                }
+
+                let nSegments = whisper_full_n_segments(ctx)
+                var segments: [TranscriptionSegment] = []
+                var fullText = ""
+
+                for i in 0..<nSegments {
+                    let t0 = whisper_full_get_segment_t0(ctx, i)
+                    let t1 = whisper_full_get_segment_t1(ctx, i)
+                    let text: String
+                    if let cStr = whisper_full_get_segment_text(ctx, i) {
+                        text = String(cString: cStr)
+                    } else {
+                        text = ""
+                    }
+
+                    segments.append(TranscriptionSegment(
+                        start: Double(t0) / 100.0,
+                        end: Double(t1) / 100.0,
+                        text: text
+                    ))
+                    fullText += text
+                }
+
+                continuation.resume(returning: TranscriptionResult(
+                    text: fullText,
+                    segments: segments
+                ))
+            }
+        }
+    }
+
+    /// Ensure the whisper model is loaded (public access for pre-loading during recording start).
+    func preloadModel() throws {
+        try ensureModelLoaded()
     }
 
     // MARK: - Model Management

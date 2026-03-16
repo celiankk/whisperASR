@@ -43,7 +43,26 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private var isMicActive = false
     private static let maxMicBufferSamples = 48000 * 5 // 5 seconds cap
 
+    // Live transcription: accumulated 16kHz mono PCM samples
+    private var pcmSampleBuffer = OSAllocatedUnfairLock(initialState: [Float]())
+    /// Number of accumulated 16kHz samples available for live transcription.
+    var accumulatedSampleCount: Int {
+        pcmSampleBuffer.withLock { $0.count }
+    }
+
     private static let zoomBundleIDs: Set<String> = ["us.zoom.xos", "us.zoom.videomeeting"]
+
+    // MARK: - Live Transcription PCM Access
+
+    /// Returns a copy of all accumulated 16kHz PCM samples for live transcription.
+    func getAccumulatedSamples() -> [Float] {
+        pcmSampleBuffer.withLock { Array($0) }
+    }
+
+    /// Clears the accumulated PCM sample buffer (called when recording ends).
+    private func clearPCMBuffer() {
+        pcmSampleBuffer.withLock { $0.removeAll() }
+    }
 
     // MARK: - App List
 
@@ -138,6 +157,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 self.assetWriterInput = input
                 self.outputURL = fileURL
                 self._hasReceivedSamples.withLock { $0 = false }
+                self.clearPCMBuffer()
 
                 let stream = SCStream(filter: filter, configuration: config, delegate: nil)
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.whisperasr.audio-capture"))
@@ -191,6 +211,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
         }
 
         stopMicrophoneCapture()
+        clearPCMBuffer()
 
         let received = _hasReceivedSamples.withLock { $0 }
         print("[AudioRecorder] stopRecording: hasReceivedSamples=\(received), writer=\(assetWriter != nil), input=\(assetWriterInput != nil)")
@@ -236,6 +257,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
             }
 
             self.stopMicrophoneCapture()
+            self.clearPCMBuffer()
 
             if let writer = assetWriter {
                 writer.cancelWriting()
@@ -478,6 +500,9 @@ class AudioRecorder: NSObject, SCStreamOutput {
         // Use mixed buffer if mic is active, otherwise use original
         let bufferToWrite = mixedSampleBuffer(from: sampleBuffer) ?? sampleBuffer
 
+        // Accumulate 16kHz PCM samples for live transcription
+        accumulatePCMSamples(from: bufferToWrite)
+
         guard let input = assetWriterInput else {
             print("[AudioRecorder] stream callback: no assetWriterInput")
             return
@@ -499,6 +524,37 @@ class AudioRecorder: NSObject, SCStreamOutput {
             }
         } else {
             print("[AudioRecorder] stream callback: append failed, writer.status=\(assetWriter?.status.rawValue ?? -1), error=\(String(describing: assetWriter?.error))")
+        }
+    }
+
+    /// Extracts Float32 samples from a CMSampleBuffer (48kHz) and downsamples to 16kHz for whisper.cpp.
+    private func accumulatePCMSamples(from sampleBuffer: CMSampleBuffer) {
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        var totalLength = 0
+        var dataPointer: UnsafeMutablePointer<CChar>?
+        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &totalLength, dataPointerOut: &dataPointer)
+        guard status == kCMBlockBufferNoErr, let dataPointer, totalLength > 0 else { return }
+
+        let sampleCount = totalLength / MemoryLayout<Float>.size
+        guard sampleCount > 0 else { return }
+
+        // Read 48kHz Float32 samples
+        let floatPtr = UnsafeRawPointer(dataPointer).bindMemory(to: Float.self, capacity: sampleCount)
+
+        // Downsample 48kHz → 16kHz by taking every 3rd sample (48000/16000 = 3)
+        let downsampledCount = sampleCount / 3
+        guard downsampledCount > 0 else { return }
+
+        let downsampled: [Float] = {
+            var result = [Float](repeating: 0, count: downsampledCount)
+            for i in 0..<downsampledCount {
+                result[i] = floatPtr[i * 3]
+            }
+            return result
+        }()
+
+        pcmSampleBuffer.withLock { buf in
+            buf.append(contentsOf: downsampled)
         }
     }
 

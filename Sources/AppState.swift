@@ -11,6 +11,12 @@ class AppState {
     var liveText: String = ""
     var isLiveTranscribing = false
 
+    // Live translation state (per-segment)
+    var liveTranslatedSegments: [String] = []
+    var pendingTranslationSegments: [String] = []
+    /// Set to a new UUID each time Apple Translation should run.
+    var translationTrigger: UUID?
+
     private let service = TranscriptionService()
     private var isTranscribing = false
     private var liveTranscriptionTask: Task<Void, Never>?
@@ -155,6 +161,11 @@ class AppState {
                                 self.liveText = result.text
                                 self.isChunkTranscribing = false
                             }
+                            // Translate if a target language is configured
+                            let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
+                            if !targetLang.isEmpty && !result.segments.isEmpty {
+                                await self.translateLiveSegments(result.segments, targetLang: targetLang)
+                            }
                         } catch {
                             print("[AppState] live transcription chunk error: \(error)")
                             await MainActor.run {
@@ -179,5 +190,37 @@ class AppState {
         // Clear live results (the final file transcription will replace them)
         liveSegments = []
         liveText = ""
+        liveTranslatedSegments = []
+        pendingTranslationSegments = []
+        translationTrigger = nil
+    }
+
+    // MARK: - Live Translation
+
+    private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String) async {
+        let texts = segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
+
+        if TranslationService.isOpenAIConfigured {
+            // Build context from previous translation run: pair old segments with their translations
+            let prevTranslations = await MainActor.run { self.liveTranslatedSegments }
+            let contextPairs: [(original: String, translated: String)] = zip(texts, prevTranslations)
+                .filter { !$0.0.isEmpty && !$0.1.isEmpty }
+                .map { (original: $0.0, translated: $0.1) }
+
+            do {
+                let translations = try await TranslationService.translateSegmentsWithOpenAI(
+                    segmentTexts: texts, targetLanguage: targetLang,
+                    previousTranslations: contextPairs)
+                await MainActor.run { self.liveTranslatedSegments = translations }
+            } catch {
+                print("[Translation] OpenAI error: \(error)")
+            }
+        } else {
+            // Signal that Apple Translation is needed (handled by RecordingView's .translationTask)
+            await MainActor.run {
+                self.pendingTranslationSegments = texts
+                self.translationTrigger = UUID()
+            }
+        }
     }
 }

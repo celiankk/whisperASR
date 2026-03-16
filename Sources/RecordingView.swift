@@ -1,5 +1,8 @@
 import SwiftUI
 import ScreenCaptureKit
+#if canImport(Translation)
+import Translation
+#endif
 
 struct RecordingView: View {
     @Environment(AppState.self) var appState
@@ -168,6 +171,7 @@ struct RecordingView: View {
                 appState.startLiveTranscription(recorder: recorder)
             }
         }
+        .applyAppleTranslation(appState: appState)
         .alert("Meeting Ended", isPresented: $recorder.meetingEnded) {
             Button("Stop Recording") {
                 stopAndDismiss()
@@ -203,23 +207,46 @@ struct RecordingView: View {
             }
             .padding(.horizontal)
 
-            if !appState.liveSegments.isEmpty {
+            if !appState.liveSegments.isEmpty || !appState.liveText.isEmpty {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(appState.liveSegments.enumerated()), id: \.offset) { index, segment in
-                                HStack(alignment: .top, spacing: 6) {
-                                    Text(formatTimestamp(segment.start))
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .foregroundStyle(.orange.opacity(0.7))
-                                        .frame(width: 44, alignment: .trailing)
+                        VStack(alignment: .leading, spacing: 6) {
+                            if !appState.liveSegments.isEmpty {
+                                ForEach(Array(appState.liveSegments.enumerated()), id: \.offset) { index, segment in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        // Original transcribed line
+                                        HStack(alignment: .top, spacing: 6) {
+                                            Text(formatTimestamp(segment.start))
+                                                .font(.system(.caption2, design: .monospaced))
+                                                .foregroundStyle(.orange.opacity(0.7))
+                                                .frame(width: 44, alignment: .trailing)
 
-                                    Text(segment.text.trimmingCharacters(in: .whitespaces))
-                                        .font(.caption)
-                                        .foregroundStyle(.primary.opacity(0.85))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                            Text(segment.text.trimmingCharacters(in: .whitespaces))
+                                                .font(.caption)
+                                                .foregroundStyle(.primary.opacity(0.85))
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        // Translated line (shown directly below)
+                                        if index < appState.liveTranslatedSegments.count,
+                                           !appState.liveTranslatedSegments[index].isEmpty {
+                                            HStack(alignment: .top, spacing: 6) {
+                                                Color.clear
+                                                    .frame(width: 44, height: 1)
+                                                Text(appState.liveTranslatedSegments[index])
+                                                    .font(.caption)
+                                                    .foregroundStyle(.blue.opacity(0.75))
+                                                    .italic()
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                            }
+                                        }
+                                    }
+                                    .id(index)
                                 }
-                                .id(index)
+                            } else {
+                                Text(appState.liveText)
+                                    .font(.caption)
+                                    .foregroundStyle(.primary.opacity(0.85))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                         .padding(.horizontal)
@@ -231,14 +258,6 @@ struct RecordingView: View {
                             }
                         }
                     }
-                }
-            } else if !appState.liveText.isEmpty {
-                ScrollView {
-                    Text(appState.liveText)
-                        .font(.caption)
-                        .foregroundStyle(.primary.opacity(0.85))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
                 }
             }
         }
@@ -350,6 +369,67 @@ struct RecordingView: View {
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Apple Translation
+
+#if canImport(Translation)
+@available(macOS 15.0, *)
+private struct AppleTranslationModifier: ViewModifier {
+    let appState: AppState
+    @State private var translationConfig: TranslationSession.Configuration?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: appState.translationTrigger) { _, newTrigger in
+                guard newTrigger != nil else { return }
+                let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
+                guard !targetLang.isEmpty else { return }
+                if translationConfig != nil {
+                    translationConfig?.invalidate()
+                } else {
+                    let sourceLang = UserDefaults.standard.string(forKey: "sourceLanguage") ?? ""
+                    let source: Locale.Language? = sourceLang.isEmpty ? nil : Locale.Language(identifier: sourceLang)
+                    translationConfig = .init(source: source, target: Locale.Language(identifier: targetLang))
+                }
+            }
+            .translationTask(translationConfig) { session in
+                let texts = appState.pendingTranslationSegments
+                guard !texts.isEmpty else { return }
+                do {
+                    var translations: [String] = []
+                    for text in texts {
+                        if text.trimmingCharacters(in: .whitespaces).isEmpty {
+                            translations.append("")
+                        } else {
+                            let response = try await session.translate(text)
+                            translations.append(response.targetText)
+                        }
+                    }
+                    await MainActor.run {
+                        appState.liveTranslatedSegments = translations
+                    }
+                } catch {
+                    print("[Translation] Apple Translation error: \(error)")
+                }
+            }
+    }
+}
+#endif
+
+extension View {
+    @ViewBuilder
+    func applyAppleTranslation(appState: AppState) -> some View {
+        #if canImport(Translation)
+        if #available(macOS 15.0, *) {
+            self.modifier(AppleTranslationModifier(appState: appState))
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 

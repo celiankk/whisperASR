@@ -2,9 +2,52 @@ import SwiftUI
 
 struct SettingsView: View {
     @AppStorage("modelPath") private var modelPath = ""
+    @AppStorage("sourceLanguage") private var sourceLanguage = ""
+    @AppStorage("targetLanguage") private var targetLanguage = ""
+    @AppStorage("translationEndpoint") private var translationEndpoint = ""
+    @AppStorage("translationAPIKey") private var translationAPIKey = ""
+    @AppStorage("translationModel") private var translationModel = ""
+
+    private let whisperLanguages = TranscriptionService.availableLanguages()
 
     var body: some View {
         Form {
+            Section("Language") {
+                Picker("Source Language", selection: $sourceLanguage) {
+                    Text("Auto-detect").tag("")
+                    ForEach(whisperLanguages, id: \.code) { lang in
+                        Text(lang.name.capitalized).tag(lang.code)
+                    }
+                }
+            }
+
+            Section("Translation") {
+                Picker("Target Language", selection: $targetLanguage) {
+                    Text("Off").tag("")
+                    ForEach(TargetLanguage.available) { lang in
+                        Text(lang.name).tag(lang.id)
+                    }
+                }
+                Text("Translate live transcription to this language. Uses macOS built-in translation by default, or OpenAI-compatible API if configured below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("OpenAI Translation API (Optional)") {
+                TextField("API Endpoint", text: $translationEndpoint,
+                          prompt: Text("https://api.openai.com/v1"))
+                    .textFieldStyle(.roundedBorder)
+                SecureField("API Key", text: $translationAPIKey,
+                            prompt: Text("sk-..."))
+                    .textFieldStyle(.roundedBorder)
+                TextField("Model", text: $translationModel,
+                          prompt: Text("gpt-4o-mini"))
+                    .textFieldStyle(.roundedBorder)
+                Text("Leave all fields empty to use macOS built-in translation (requires macOS 15+).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Whisper Model") {
                 HStack {
                     TextField("GGML model file", text: $modelPath,

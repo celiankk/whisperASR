@@ -29,12 +29,8 @@ final class TranscriptionService: @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
-                // Configure transcription parameters
-                var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-                params.print_progress = false
-                params.print_realtime = false
-                params.print_timestamps = false
-                params.n_threads = max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
+                var (params, langCStr) = self.makeBaseParams()
+                defer { free(langCStr) }
 
                 // Progress callback
                 let progressPtr = Unmanaged.passRetained(ProgressBox(handler: onProgress)).toOpaque()
@@ -107,12 +103,8 @@ final class TranscriptionService: @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
-                var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
-                params.print_progress = false
-                params.print_realtime = false
-                params.print_timestamps = false
-                params.n_threads = max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
-                // No progress callback needed for chunk transcription
+                let (params, langCStr) = self.makeBaseParams()
+                defer { free(langCStr) }
 
                 let result = samples.withUnsafeBufferPointer { buf in
                     whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
@@ -156,6 +148,37 @@ final class TranscriptionService: @unchecked Sendable {
     /// Ensure the whisper model is loaded (public access for pre-loading during recording start).
     func preloadModel() throws {
         try ensureModelLoaded()
+    }
+
+    // MARK: - Params Configuration
+
+    /// Create base whisper params with language/translation settings from UserDefaults.
+    /// Caller must free the returned C string pointer after whisper_full completes.
+    private func makeBaseParams() -> (whisper_full_params, UnsafeMutablePointer<CChar>?) {
+        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        params.print_progress = false
+        params.print_realtime = false
+        params.print_timestamps = false
+        params.n_threads = max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
+
+        let sourceLanguage = UserDefaults.standard.string(forKey: "sourceLanguage") ?? ""
+        let langCStr = strdup(sourceLanguage.isEmpty ? "auto" : sourceLanguage)
+        params.language = UnsafePointer(langCStr)
+
+        return (params, langCStr)
+    }
+
+    /// Returns all languages supported by the loaded whisper.cpp library.
+    static func availableLanguages() -> [(code: String, name: String)] {
+        var langs: [(code: String, name: String)] = []
+        let maxId = Int(whisper_lang_max_id())
+        for i in 0...maxId {
+            if let codePtr = whisper_lang_str(Int32(i)),
+               let namePtr = whisper_lang_str_full(Int32(i)) {
+                langs.append((code: String(cString: codePtr), name: String(cString: namePtr)))
+            }
+        }
+        return langs
     }
 
     // MARK: - Model Management

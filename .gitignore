@@ -13,6 +13,9 @@ Models/
 # Intermediate build artifacts
 Frameworks/headers/
 
+# App bundle (build artifact)
+*.app/
+
 # macOS
 .DS_Store
 

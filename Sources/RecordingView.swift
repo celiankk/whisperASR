@@ -76,6 +76,12 @@ struct RecordingView: View {
 
             Divider()
 
+            Toggle(isOn: $recorder.includeMicrophone) {
+                Label("Include Microphone", systemImage: "mic")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+
             HStack {
                 Button("Cancel") {
                     recorder.state = .idle
@@ -115,7 +121,7 @@ struct RecordingView: View {
                 .font(.system(size: 48, weight: .light, design: .monospaced))
 
             if let app = recorder.selectedApp {
-                Text("Recording from \(app.applicationName)")
+                Text("Recording from \(app.applicationName)\(recorder.includeMicrophone ? " + Microphone" : "")")
                     .foregroundStyle(.secondary)
             }
 

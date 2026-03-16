@@ -23,6 +23,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
     var recordingDuration: TimeInterval = 0
     var error: String?
     var meetingEnded = false
+    var includeMicrophone = false
 
     private var stream: SCStream?
     private var assetWriter: AVAssetWriter?
@@ -35,6 +36,12 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private var meetingMonitorTimer: Timer?
     private var recordingPID: pid_t?
     private var hadMeetingWindow = false
+
+    // Microphone mixing
+    private var audioEngine: AVAudioEngine?
+    private var micSampleBuffer = OSAllocatedUnfairLock(initialState: [Float]())
+    private var isMicActive = false
+    private static let maxMicBufferSamples = 48000 * 5 // 5 seconds cap
 
     private static let zoomBundleIDs: Set<String> = ["us.zoom.xos", "us.zoom.videomeeting"]
 
@@ -139,6 +146,17 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 self.stream = stream
                 self.recordingAppName = app.applicationName
 
+                if self.includeMicrophone {
+                    do {
+                        try self.startMicrophoneCapture()
+                    } catch {
+                        print("[AudioRecorder] failed to start microphone: \(error)")
+                        await MainActor.run {
+                            self.error = "Microphone unavailable, recording app audio only"
+                        }
+                    }
+                }
+
                 await MainActor.run {
                     self.state = .recording
                     self.recordingDuration = 0
@@ -171,6 +189,8 @@ class AudioRecorder: NSObject, SCStreamOutput {
             try? await stream.stopCapture()
             self.stream = nil
         }
+
+        stopMicrophoneCapture()
 
         let received = _hasReceivedSamples.withLock { $0 }
         print("[AudioRecorder] stopRecording: hasReceivedSamples=\(received), writer=\(assetWriter != nil), input=\(assetWriterInput != nil)")
@@ -215,6 +235,8 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 self.stream = nil
             }
 
+            self.stopMicrophoneCapture()
+
             if let writer = assetWriter {
                 writer.cancelWriting()
                 if let url = outputURL {
@@ -232,6 +254,147 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 recordingDuration = 0
             }
         }
+    }
+
+    // MARK: - Microphone Capture
+
+    private func startMicrophoneCapture() throws {
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let hwFormat = inputNode.outputFormat(forBus: 0)
+
+        // Target format matching SCStream output: 48kHz mono Float32
+        let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
+
+        let needsConversion = hwFormat.sampleRate != 48000 || hwFormat.channelCount != 1
+        var converter: AVAudioConverter?
+        if needsConversion {
+            converter = AVAudioConverter(from: hwFormat, to: targetFormat)
+        }
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
+            guard let self else { return }
+
+            var samples: [Float]
+            if let converter {
+                let ratio = 48000.0 / hwFormat.sampleRate
+                let frameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
+                guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else { return }
+                var error: NSError?
+                var consumed = false
+                converter.convert(to: converted, error: &error) { _, outStatus in
+                    if consumed {
+                        outStatus.pointee = .noDataNow
+                        return nil
+                    }
+                    consumed = true
+                    outStatus.pointee = .haveData
+                    return buffer
+                }
+                guard error == nil, converted.frameLength > 0,
+                      let channelData = converted.floatChannelData?[0] else { return }
+                samples = Array(UnsafeBufferPointer(start: channelData, count: Int(converted.frameLength)))
+            } else {
+                guard let channelData = buffer.floatChannelData?[0] else { return }
+                samples = Array(UnsafeBufferPointer(start: channelData, count: Int(buffer.frameLength)))
+            }
+
+            let capturedSamples = samples
+            self.micSampleBuffer.withLock { buf in
+                buf.append(contentsOf: capturedSamples)
+                // Cap buffer size to prevent unbounded growth
+                if buf.count > Self.maxMicBufferSamples {
+                    buf.removeFirst(buf.count - Self.maxMicBufferSamples)
+                }
+            }
+        }
+
+        engine.prepare()
+        try engine.start()
+        self.audioEngine = engine
+        self.isMicActive = true
+    }
+
+    private func stopMicrophoneCapture() {
+        guard isMicActive else { return }
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine = nil
+        micSampleBuffer.withLock { $0.removeAll() }
+        isMicActive = false
+    }
+
+    /// Creates a new CMSampleBuffer with mic audio mixed into the app audio.
+    /// Returns nil if mixing is not needed or fails — caller should use the original buffer.
+    private func mixedSampleBuffer(from original: CMSampleBuffer) -> CMSampleBuffer? {
+        guard isMicActive else { return nil }
+        guard let formatDesc = CMSampleBufferGetFormatDescription(original),
+              let blockBuffer = CMSampleBufferGetDataBuffer(original) else { return nil }
+
+        var totalLength = 0
+        var dataPointer: UnsafeMutablePointer<CChar>?
+        let status = CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &totalLength, dataPointerOut: &dataPointer)
+        guard status == kCMBlockBufferNoErr, let dataPointer, totalLength > 0 else { return nil }
+
+        // Copy original audio data
+        let sampleCount = totalLength / MemoryLayout<Float>.size
+        var floats = [Float](repeating: 0, count: sampleCount)
+        memcpy(&floats, dataPointer, totalLength)
+
+        // Read matching mic samples and mix
+        let micSamples = micSampleBuffer.withLock { buf -> [Float] in
+            let count = min(sampleCount, buf.count)
+            let result = Array(buf.prefix(count))
+            buf.removeFirst(count)
+            return result
+        }
+        for i in 0..<micSamples.count {
+            let mixed = floats[i] + micSamples[i]
+            floats[i] = max(-1.0, min(1.0, mixed))
+        }
+
+        // Create new block buffer with mixed data
+        var newBlockBuffer: CMBlockBuffer?
+        var res = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: totalLength,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: totalLength,
+            flags: kCMBlockBufferAssureMemoryNowFlag,
+            blockBufferOut: &newBlockBuffer
+        )
+        guard res == kCMBlockBufferNoErr, let newBlockBuffer else { return nil }
+
+        res = floats.withUnsafeBytes { rawBuf in
+            CMBlockBufferReplaceDataBytes(
+                with: rawBuf.baseAddress!,
+                blockBuffer: newBlockBuffer,
+                offsetIntoDestination: 0,
+                dataLength: totalLength
+            )
+        }
+        guard res == kCMBlockBufferNoErr else { return nil }
+
+        // Create new sample buffer
+        let numSamples = CMSampleBufferGetNumSamples(original)
+        let pts = CMSampleBufferGetPresentationTimeStamp(original)
+
+        var newSampleBuffer: CMSampleBuffer?
+        res = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: newBlockBuffer,
+            formatDescription: formatDesc,
+            sampleCount: numSamples,
+            presentationTimeStamp: pts,
+            packetDescriptions: nil,
+            sampleBufferOut: &newSampleBuffer
+        )
+        guard res == noErr else { return nil }
+
+        return newSampleBuffer
     }
 
     // MARK: - Zoom Meeting Monitor
@@ -311,6 +474,10 @@ class AudioRecorder: NSObject, SCStreamOutput {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
+
+        // Use mixed buffer if mic is active, otherwise use original
+        let bufferToWrite = mixedSampleBuffer(from: sampleBuffer) ?? sampleBuffer
+
         guard let input = assetWriterInput else {
             print("[AudioRecorder] stream callback: no assetWriterInput")
             return
@@ -320,7 +487,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
             return
         }
 
-        let success = input.append(sampleBuffer)
+        let success = input.append(bufferToWrite)
         if success {
             let wasFirst = _hasReceivedSamples.withLock { val -> Bool in
                 let first = !val
@@ -328,7 +495,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 return first
             }
             if wasFirst {
-                print("[AudioRecorder] first audio sample appended, numSamples=\(sampleBuffer.numSamples)")
+                print("[AudioRecorder] first audio sample appended, numSamples=\(bufferToWrite.numSamples)")
             }
         } else {
             print("[AudioRecorder] stream callback: append failed, writer.status=\(assetWriter?.status.rawValue ?? -1), error=\(String(describing: assetWriter?.error))")

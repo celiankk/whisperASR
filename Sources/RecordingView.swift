@@ -80,17 +80,16 @@ struct RecordingView: View {
 
             Divider()
 
-            Toggle(isOn: $recorder.includeMicrophone) {
-                Label("Include Microphone", systemImage: "mic")
+            HStack(spacing: 16) {
+                Toggle(isOn: $recorder.includeMicrophone) {
+                    Label("Microphone", systemImage: "mic")
+                }
+                Toggle(isOn: $enableLiveTranscription) {
+                    Label("Live Transcription", systemImage: "text.word.spacing")
+                }
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
-
-            Toggle(isOn: $enableLiveTranscription) {
-                Label("Live Transcription", systemImage: "text.word.spacing")
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
 
             HStack {
                 Button("Cancel") {
@@ -130,12 +129,6 @@ struct RecordingView: View {
                     .font(.system(size: 24, weight: .light, design: .monospaced))
             }
             .padding(.top, 16)
-
-            if let app = recorder.selectedApp {
-                Text("Recording from \(app.applicationName)\(recorder.includeMicrophone ? " + Microphone" : "")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
             Divider()
                 .padding(.horizontal)
@@ -187,25 +180,16 @@ struct RecordingView: View {
 
     private var liveTranscriptView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "text.word.spacing")
-                    .foregroundStyle(.orange)
-                Text("Live Transcript")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-
-                if appState.isLiveTranscribing && appState.liveText.isEmpty {
+            if appState.isLiveTranscribing && appState.liveText.isEmpty {
+                HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
                     Text("Waiting for audio...")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-
-                Spacer()
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
 
             if !appState.liveSegments.isEmpty || !appState.liveText.isEmpty {
                 ScrollViewReader { proxy in

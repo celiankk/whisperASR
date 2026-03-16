@@ -8,6 +8,9 @@ A native macOS app for audio transcription using [Breeze-ASR-25](https://github.
 
 - **Drag-and-drop** audio/video files (MP3, WAV, M4A, MP4, AAC, FLAC, OGG, WMA, AIFF, CAF)
 - **App audio recording** — capture audio from any running app via ScreenCaptureKit (M4A/AAC at 48 kHz)
+- **Live transcription** — see transcribed text in real-time while recording
+- **Live translation** — per-segment translation displayed inline below each transcribed line, via macOS built-in Translation (macOS 15+) or OpenAI-compatible API
+- **Configurable languages** — auto-detect or set source language; choose target language for translation
 - **Zoom meeting detection** — automatically prompts to stop recording when a Zoom meeting ends
 - **Recent apps** — previously recorded apps appear at the top of the app picker
 - **Metal GPU acceleration** via whisper.cpp for fast transcription
@@ -21,6 +24,7 @@ A native macOS app for audio transcription using [Breeze-ASR-25](https://github.
 - **Rename and copy** files from the sidebar context menu
 - **Re-transcribe** and **retry on failure** with copyable error messages
 - **Custom model path** — configure via Settings
+- **Custom app icon** — teal-to-blue gradient with waveform design
 
 ## Requirements
 
@@ -63,14 +67,35 @@ open Package.swift
 
 Then build and run from Xcode (Cmd+R).
 
+### 4. Build release app bundle (optional)
+
+```bash
+bash Scripts/build_release.sh
+```
+
+This builds an optimized release binary, generates a proper `.icns` icon, and packages everything into `WhisperASR.app` with Info.plist. To install:
+
+```bash
+cp -r WhisperASR.app /Applications/
+```
+
 ## Usage
 
 1. **Add files** — drag audio/video files onto the sidebar, or click the **+** button
 2. **Record app audio** — click the record button, select a running app, and start recording; recently used apps are listed first
-3. **Wait for transcription** — files are queued and transcribed one at a time with progress and ETA
-4. **Review** — click a completed item to see the transcript with timestamps
-5. **Play audio** — use the player controls at the bottom; text highlights in sync
-6. **Export** — click the export button (top-right) to save as SRT or plain text
+3. **Live transcription & translation** — enable live transcription in the recording dialog to see text as you record; set a target language in Settings to see inline translations below each segment
+4. **Wait for transcription** — files are queued and transcribed one at a time with progress and ETA
+5. **Review** — click a completed item to see the transcript with timestamps
+6. **Play audio** — use the player controls at the bottom; text highlights in sync
+7. **Export** — click the export button (top-right) to save as SRT or plain text
+
+### Translation Settings
+
+Open **Settings** (Cmd+,) to configure:
+
+- **Source Language** — auto-detect or choose a specific language for transcription
+- **Target Language** — choose a language to translate live transcription into
+- **OpenAI Translation API** (optional) — provide an endpoint, API key, and model to use an OpenAI-compatible API for translation; leave empty to use macOS built-in Translation (requires macOS 15+)
 
 ## Project Structure
 
@@ -86,13 +111,16 @@ Sources/
 ├── AppState.swift             # App state management & transcription queue
 ├── Models.swift               # Data models
 ├── TranscriptionService.swift # whisper.cpp C API integration
+├── TranslationService.swift   # OpenAI-compatible translation API
 ├── TranscriptionStore.swift   # JSON file-per-item persistence
 ├── AudioLoader.swift          # AVAssetReader audio loading
 ├── AudioPlayerManager.swift   # AVPlayer wrapper
-└── SettingsView.swift         # Model path configuration
+├── AppIconGenerator.swift     # Programmatic app icon rendering
+└── SettingsView.swift         # Language, translation & model settings
 Scripts/
 ├── build_whisper_lib.sh       # Build whisper.cpp xcframework
-└── convert_model.sh           # Convert HuggingFace model to GGML
+├── convert_model.sh           # Convert HuggingFace model to GGML
+└── build_release.sh           # Build release .app bundle with icon
 Frameworks/
 └── CWhisper.xcframework/      # Pre-built whisper.cpp static library
 ```

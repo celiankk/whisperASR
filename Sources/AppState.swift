@@ -14,6 +14,7 @@ class AppState {
     // Live translation state (per-segment)
     var liveTranslatedSegments: [String] = []
     var enableLiveTranslation = false
+    private var liveTranslatedSourceTexts: [String] = []  // tracks what text each translation was for
 
     private let service = TranscriptionService()
     private var isTranscribing = false
@@ -217,6 +218,7 @@ class AppState {
         liveSegments = []
         liveText = ""
         liveTranslatedSegments = []
+        liveTranslatedSourceTexts = []
         enableLiveTranslation = false
     }
 
@@ -224,16 +226,28 @@ class AppState {
 
     private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String) async {
         let texts = segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
-        let existing = await MainActor.run { self.liveTranslatedSegments }
-        let existingCount = existing.count
+        let (existing, existingSourceTexts) = await MainActor.run {
+            (self.liveTranslatedSegments, self.liveTranslatedSourceTexts)
+        }
 
-        // Only translate segments that don't have translations yet
-        let newTexts = Array(texts.dropFirst(existingCount))
-        guard !newTexts.isEmpty else { return }
+        // Find the first index where the segment text changed or has no translation.
+        // Segments in the overlap zone may be re-transcribed with different text,
+        // so we need to re-translate from the first divergent segment onward.
+        var firstDirtyIndex = min(existing.count, texts.count)
+        for i in 0..<min(existing.count, existingSourceTexts.count, texts.count) {
+            if texts[i] != existingSourceTexts[i] || existing[i].isEmpty {
+                firstDirtyIndex = i
+                break
+            }
+        }
 
-        // Use last 2 existing translations as context for consistency
-        let contextStart = max(0, existingCount - 2)
-        let contextPairs: [(original: String, translated: String)] = (contextStart..<existingCount).compactMap { i in
+        let dirtyIndex = firstDirtyIndex  // capture for Sendable closure
+        let textsToTranslate = Array(texts.dropFirst(dirtyIndex))
+        guard !textsToTranslate.isEmpty else { return }
+
+        // Use up to 2 clean translations before the dirty range as context
+        let contextStart = max(0, dirtyIndex - 2)
+        let contextPairs: [(original: String, translated: String)] = (contextStart..<dirtyIndex).compactMap { i in
             guard i < texts.count, i < existing.count,
                   !texts[i].isEmpty, !existing[i].isEmpty else { return nil }
             return (original: texts[i], translated: existing[i])
@@ -241,15 +255,19 @@ class AppState {
 
         do {
             let newTranslations = try await TranslationService.translateSegmentsWithOpenAI(
-                segmentTexts: newTexts, targetLanguage: targetLang,
+                segmentTexts: textsToTranslate, targetLanguage: targetLang,
                 previousTranslations: contextPairs)
-            await MainActor.run { self.liveTranslatedSegments = existing + newTranslations }
+            await MainActor.run {
+                self.liveTranslatedSegments = Array(existing.prefix(dirtyIndex)) + newTranslations
+                self.liveTranslatedSourceTexts = Array(texts.prefix(dirtyIndex)) + textsToTranslate
+            }
         } catch {
             print("[Translation] OpenAI error: \(error)")
-            // On error, pad so next cycle can try the failed segments again
+            // On error, pad so next cycle can retry the failed segments
             await MainActor.run {
                 if self.liveTranslatedSegments.count < texts.count {
                     self.liveTranslatedSegments += Array(repeating: "", count: texts.count - self.liveTranslatedSegments.count)
+                    self.liveTranslatedSourceTexts += texts.suffix(texts.count - self.liveTranslatedSourceTexts.count)
                 }
             }
         }

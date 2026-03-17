@@ -253,19 +253,11 @@ struct RecordingView: View {
                                 .allowsHitTesting(false)
                         )
                     }
-                    .onChange(of: appState.liveSegments.count) { _, newCount in
-                        if newCount > 0 && shouldAutoScroll {
-                            withAnimation {
-                                proxy.scrollTo("bottomAnchor", anchor: .bottom)
-                            }
-                        }
+                    .onChange(of: appState.liveSegments.count) { _, _ in
+                        scrollToBottomIfNeeded(proxy: proxy)
                     }
                     .onChange(of: appState.liveTranslatedSegments) { _, _ in
-                        if shouldAutoScroll {
-                            withAnimation {
-                                proxy.scrollTo("bottomAnchor", anchor: .bottom)
-                            }
-                        }
+                        scrollToBottomIfNeeded(proxy: proxy)
                     }
                 }
             }
@@ -354,6 +346,13 @@ struct RecordingView: View {
             }
         }
         .aspectRatio(contentMode: .fit)
+    }
+
+    private func scrollToBottomIfNeeded(proxy: ScrollViewProxy) {
+        guard shouldAutoScroll, !appState.liveSegments.isEmpty else { return }
+        withAnimation {
+            proxy.scrollTo("bottomAnchor", anchor: .bottom)
+        }
     }
 
     private func stopAndDismiss() {

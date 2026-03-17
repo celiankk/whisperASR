@@ -13,6 +13,8 @@ enum TranscriptionStore {
         let dateAdded: Date
         let statusTag: String          // "completed", "failed", "pending"
         let errorMessage: String?
+        let translatedSegments: [String]?
+        let translationLanguage: String?
     }
 
     // MARK: - Directory
@@ -63,7 +65,9 @@ enum TranscriptionStore {
             fullText: item.fullText,
             dateAdded: item.dateAdded,
             statusTag: statusTag,
-            errorMessage: errorMessage
+            errorMessage: errorMessage,
+            translatedSegments: item.translatedSegments.isEmpty ? nil : item.translatedSegments,
+            translationLanguage: item.translationLanguage
         )
 
         let encoder = JSONEncoder()
@@ -102,7 +106,9 @@ enum TranscriptionStore {
                     dateAdded: stored.dateAdded,
                     status: status,
                     segments: stored.segments,
-                    fullText: stored.fullText
+                    fullText: stored.fullText,
+                    translatedSegments: stored.translatedSegments ?? [],
+                    translationLanguage: stored.translationLanguage
                 )
             }
             .sorted { $0.dateAdded < $1.dateAdded }

@@ -356,11 +356,26 @@ struct RecordingView: View {
     }
 
     private func stopAndDismiss() {
+        // Capture live results before clearing
+        let capturedSegments = appState.liveSegments
+        let capturedText = appState.liveText
+        let capturedTranslations = appState.liveTranslatedSegments
+        let capturedLang: String? = !capturedTranslations.isEmpty
+            ? UserDefaults.standard.string(forKey: "targetLanguage") : nil
+        let hadLiveResults = appState.isLiveTranscribing && !capturedSegments.isEmpty
+
         appState.stopLiveTranscription()
         Task {
             let url = await recorder.stopRecording()
             if let url {
-                appState.addFile(url: url)
+                if hadLiveResults {
+                    appState.addFileWithLiveResults(
+                        url: url, segments: capturedSegments, fullText: capturedText,
+                        translatedSegments: capturedTranslations, translationLanguage: capturedLang
+                    )
+                } else {
+                    appState.addFile(url: url)
+                }
             }
             recorder.state = .idle
             dismiss()

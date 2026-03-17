@@ -48,6 +48,36 @@ struct DetailView: View {
             TranscriptContentView(item: item)
                 .toolbar {
                     ToolbarItemGroup {
+                        if item.isTranslating {
+                            ProgressView()
+                                .controlSize(.small)
+                                .help("Translating...")
+                        } else {
+                            Menu {
+                                ForEach(TargetLanguage.available) { lang in
+                                    Button {
+                                        appState.translateItem(item, targetLanguage: lang.id)
+                                    } label: {
+                                        HStack {
+                                            Text(lang.name)
+                                            if item.translationLanguage == lang.id && !item.translatedSegments.isEmpty {
+                                                Spacer()
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                                if !item.translatedSegments.isEmpty {
+                                    Divider()
+                                    Button("Clear Translation") {
+                                        appState.clearTranslation(item)
+                                    }
+                                }
+                            } label: {
+                                Label("Translate", systemImage: "character.bubble")
+                            }
+                        }
+
                         Menu {
                             Button("Export as SRT...") { exportSRT(item) }
                             Button("Export as Text...") { exportText(item) }
@@ -208,7 +238,8 @@ struct TranscriptContentView: View {
                     ForEach(Array(item.segments.enumerated()), id: \.offset) { index, segment in
                         SegmentRow(
                             segment: segment,
-                            isCurrent: index == currentIndex
+                            isCurrent: index == currentIndex,
+                            translation: index < item.translatedSegments.count ? item.translatedSegments[index] : nil
                         )
                         .id(index)
                         .onTapGesture {
@@ -252,6 +283,7 @@ struct TranscriptContentView: View {
 struct SegmentRow: View {
     let segment: TranscriptionSegment
     let isCurrent: Bool
+    var translation: String? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -260,18 +292,28 @@ struct SegmentRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 55, alignment: .trailing)
 
-            Text(segment.text.trimmingCharacters(in: .whitespaces))
-                .font(.body)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    isCurrent
-                        ? Color.accentColor.opacity(0.18)
-                        : Color.clear
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .opacity(isCurrent ? 1.0 : 0.85)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(segment.text.trimmingCharacters(in: .whitespaces))
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(isCurrent ? 1.0 : 0.85)
+
+                if let translation, !translation.isEmpty {
+                    Text(translation)
+                        .font(.callout)
+                        .foregroundStyle(.blue.opacity(0.75))
+                        .italic()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                isCurrent
+                    ? Color.accentColor.opacity(0.18)
+                    : Color.clear
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 4))
         }
         .contentShape(Rectangle())
     }

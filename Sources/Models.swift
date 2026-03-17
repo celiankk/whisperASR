@@ -53,6 +53,9 @@ class TranscriptionItem: Identifiable {
     var fullText: String = ""
     var progress: Double = 0
     var transcriptionStartTime: Date?
+    var translatedSegments: [String] = []
+    var translationLanguage: String?
+    var isTranslating: Bool = false
     let dateAdded: Date
 
     init(fileURL: URL) {
@@ -64,7 +67,8 @@ class TranscriptionItem: Identifiable {
 
     /// Restore from persisted data
     init(id: UUID, fileName: String, fileURL: URL, dateAdded: Date,
-         status: TranscriptionStatus, segments: [TranscriptionSegment], fullText: String) {
+         status: TranscriptionStatus, segments: [TranscriptionSegment], fullText: String,
+         translatedSegments: [String] = [], translationLanguage: String? = nil) {
         self.id = id
         self.fileName = fileName
         self.fileURL = fileURL
@@ -72,5 +76,7 @@ class TranscriptionItem: Identifiable {
         self.status = status
         self.segments = segments
         self.fullText = fullText
+        self.translatedSegments = translatedSegments
+        self.translationLanguage = translationLanguage
     }
 }

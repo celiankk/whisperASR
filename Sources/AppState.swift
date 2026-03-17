@@ -51,6 +51,8 @@ class AppState {
         item.segments = []
         item.fullText = ""
         item.progress = 0
+        item.translatedSegments = []
+        item.translationLanguage = nil
         enqueueTranscription(for: item)
     }
 
@@ -69,6 +71,67 @@ class AppState {
             item.fileURL = newURL
         }
         item.fileName = nameWithExt
+        TranscriptionStore.save(item)
+    }
+
+    /// Add a file with pre-existing live transcription results (skip re-transcription).
+    func addFileWithLiveResults(url: URL, segments: [TranscriptionSegment], fullText: String,
+                                translatedSegments: [String] = [], translationLanguage: String? = nil) {
+        let item = TranscriptionItem(fileURL: url)
+        item.segments = segments
+        item.fullText = fullText
+        item.translatedSegments = translatedSegments
+        item.translationLanguage = translationLanguage
+        item.status = .completed
+        items.append(item)
+        selectedItemID = item.id
+        TranscriptionStore.save(item)
+    }
+
+    // MARK: - Translate Completed Transcription
+
+    func translateItem(_ item: TranscriptionItem, targetLanguage: String) {
+        guard !item.segments.isEmpty, !item.isTranslating else { return }
+        item.isTranslating = true
+        item.translatedSegments = Array(repeating: "", count: item.segments.count)
+        item.translationLanguage = targetLanguage
+
+        Task {
+            let texts = item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
+            let batchSize = 20
+
+            for batchStart in stride(from: 0, to: texts.count, by: batchSize) {
+                let batchEnd = min(batchStart + batchSize, texts.count)
+                let batch = Array(texts[batchStart..<batchEnd])
+
+                let contextStart = max(0, batchStart - 2)
+                let contextPairs: [(original: String, translated: String)] = (contextStart..<batchStart).compactMap { i in
+                    guard !texts[i].isEmpty, !item.translatedSegments[i].isEmpty else { return nil }
+                    return (original: texts[i], translated: item.translatedSegments[i])
+                }
+
+                do {
+                    let translations = try await TranslationService.translateSegmentsWithOpenAI(
+                        segmentTexts: batch,
+                        targetLanguage: targetLanguage,
+                        previousTranslations: contextPairs
+                    )
+                    for (offset, translation) in translations.enumerated() {
+                        item.translatedSegments[batchStart + offset] = translation
+                    }
+                } catch {
+                    print("[Translation] batch error: \(error)")
+                }
+            }
+
+            item.isTranslating = false
+            TranscriptionStore.save(item)
+        }
+    }
+
+    func clearTranslation(_ item: TranscriptionItem) {
+        item.translatedSegments = []
+        item.translationLanguage = nil
         TranscriptionStore.save(item)
     }
 

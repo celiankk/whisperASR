@@ -2,25 +2,13 @@ import SwiftUI
 
 struct SettingsView: View {
     @AppStorage("modelPath") private var modelPath = ""
-    @AppStorage("sourceLanguage") private var sourceLanguage = ""
     @AppStorage("targetLanguage") private var targetLanguage = ""
     @AppStorage("translationEndpoint") private var translationEndpoint = ""
     @AppStorage("translationAPIKey") private var translationAPIKey = ""
     @AppStorage("translationModel") private var translationModel = ""
 
-    private let whisperLanguages = TranscriptionService.availableLanguages()
-
     var body: some View {
         Form {
-            Section("Language") {
-                Picker("Source Language", selection: $sourceLanguage) {
-                    Text("Auto-detect").tag("")
-                    ForEach(whisperLanguages, id: \.code) { lang in
-                        Text(lang.name.capitalized).tag(lang.code)
-                    }
-                }
-            }
-
             Section("Translation") {
                 Picker("Target Language", selection: $targetLanguage) {
                     Text("Off").tag("")
@@ -28,12 +16,12 @@ struct SettingsView: View {
                         Text(lang.name).tag(lang.id)
                     }
                 }
-                Text("Translate live transcription to this language. Uses macOS built-in translation by default, or OpenAI-compatible API if configured below.")
+                Text("Translate live transcription to this language using an OpenAI-compatible API configured below.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("OpenAI Translation API (Optional)") {
+            Section("OpenAI Translation API") {
                 TextField("API Endpoint", text: $translationEndpoint,
                           prompt: Text("https://api.openai.com/v1"))
                     .textFieldStyle(.roundedBorder)
@@ -43,7 +31,7 @@ struct SettingsView: View {
                 TextField("Model", text: $translationModel,
                           prompt: Text("gpt-4o-mini"))
                     .textFieldStyle(.roundedBorder)
-                Text("Leave all fields empty to use macOS built-in translation (requires macOS 15+).")
+                Text("Only API Key is required. Endpoint defaults to OpenAI, model defaults to gpt-4o-mini.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

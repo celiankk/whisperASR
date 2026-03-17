@@ -39,22 +39,12 @@ enum TranslationError: LocalizedError {
         case .invalidEndpoint: return "Invalid API endpoint URL"
         case .apiFailed(let msg): return "Translation API error: \(msg)"
         case .parseError: return "Failed to parse translation response"
-        case .unavailable: return "Translation requires macOS 15+ or OpenAI API configuration"
+        case .unavailable: return "Translation requires OpenAI API configuration"
         }
     }
 }
 
 enum TranslationService {
-    static var isOpenAIConfigured: Bool {
-        let endpoint = UserDefaults.standard.string(forKey: "translationEndpoint") ?? ""
-        let apiKey = UserDefaults.standard.string(forKey: "translationAPIKey") ?? ""
-        let model = UserDefaults.standard.string(forKey: "translationModel") ?? ""
-        return !endpoint.isEmpty && !apiKey.isEmpty && !model.isEmpty
-    }
-
-    /// Translate an array of segment texts via OpenAI-compatible API in a single call.
-    /// `previousTranslations` provides (original, translated) pairs from the prior run for context.
-    /// Returns one translated string per input segment.
     static func translateSegmentsWithOpenAI(
         segmentTexts: [String],
         targetLanguage: String,
@@ -62,15 +52,16 @@ enum TranslationService {
     ) async throws -> [String] {
         guard !segmentTexts.isEmpty else { return [] }
 
-        let endpoint = UserDefaults.standard.string(forKey: "translationEndpoint") ?? ""
+        let endpoint = (UserDefaults.standard.string(forKey: "translationEndpoint") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = UserDefaults.standard.string(forKey: "translationAPIKey") ?? ""
-        let model = UserDefaults.standard.string(forKey: "translationModel") ?? ""
+        let model = (UserDefaults.standard.string(forKey: "translationModel") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
-        var baseURL = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        var baseURL = endpoint.isEmpty ? "https://api.openai.com/v1" : endpoint
         if !baseURL.hasSuffix("/chat/completions") {
             if !baseURL.hasSuffix("/") { baseURL += "/" }
             baseURL += "chat/completions"
         }
+        let effectiveModel = model.isEmpty ? "gpt-4o-mini" : model
 
         guard let url = URL(string: baseURL) else {
             throw TranslationError.invalidEndpoint
@@ -98,9 +89,9 @@ enum TranslationService {
         request.timeoutInterval = 30
 
         let body: [String: Any] = [
-            "model": model,
+            "model": effectiveModel,
             "messages": [
-                ["role": "system", "content": "You are a translator for a live transcription. Translate each numbered line to \(languageName). Output ONLY the translations in the same numbered format (e.g. \"1. ...\"). Keep exactly \(segmentTexts.count) lines.\(contextSection)"],
+                ["role": "system", "content": "You are a translator for a live transcription. Translate each numbered line to \(languageName). If a line is already in \(languageName), output it unchanged. Output ONLY the translations in the same numbered format (e.g. \"1. ...\"). Keep exactly \(segmentTexts.count) lines.\(contextSection)"],
                 ["role": "user", "content": numberedInput]
             ],
             "temperature": 0.3

@@ -1,8 +1,5 @@
 import SwiftUI
 import ScreenCaptureKit
-#if canImport(Translation)
-import Translation
-#endif
 
 struct RecordingView: View {
     @Environment(AppState.self) var appState
@@ -26,6 +23,9 @@ struct RecordingView: View {
             }
         }
         .frame(width: 420, height: (recorder.state == .recording && !enableLiveTranscription) ? 200 : 500)
+        .onChange(of: enableLiveTranscription) { _, newValue in
+            if !newValue { appState.enableLiveTranslation = false }
+        }
         .onAppear {
             if recorder.state == .idle {
                 recorder.loadAvailableApps()
@@ -80,14 +80,22 @@ struct RecordingView: View {
 
             Divider()
 
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Toggle(isOn: $recorder.includeMicrophone) {
-                    Label("Microphone", systemImage: "mic")
+                    Image(systemName: "mic")
                 }
                 Toggle(isOn: $enableLiveTranscription) {
-                    Label("Live Transcription", systemImage: "text.word.spacing")
+                    Label("Live", systemImage: "text.word.spacing")
                 }
+                Toggle(isOn: Binding(
+                    get: { appState.enableLiveTranslation },
+                    set: { appState.enableLiveTranslation = $0 }
+                )) {
+                    Image(systemName: "character.bubble")
+                }
+                .disabled(!enableLiveTranscription)
             }
+            .toggleStyle(.checkbox)
             .padding(.horizontal, 12)
             .padding(.top, 8)
 
@@ -164,7 +172,6 @@ struct RecordingView: View {
                 appState.startLiveTranscription(recorder: recorder)
             }
         }
-        .applyAppleTranslation(appState: appState)
         .alert("Meeting Ended", isPresented: $recorder.meetingEnded) {
             Button("Stop Recording") {
                 stopAndDismiss()
@@ -353,68 +360,6 @@ struct RecordingView: View {
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
         return String(format: "%d:%02d", m, s)
-    }
-}
-
-// MARK: - Apple Translation
-
-#if canImport(Translation)
-@available(macOS 15.0, *)
-private struct AppleTranslationModifier: ViewModifier {
-    let appState: AppState
-    @State private var translationConfig: TranslationSession.Configuration?
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: appState.translationTrigger) { _, newTrigger in
-                // Only activate Apple Translation when OpenAI is NOT configured
-                guard newTrigger != nil, !TranslationService.isOpenAIConfigured else { return }
-                let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
-                guard !targetLang.isEmpty else { return }
-                if translationConfig != nil {
-                    translationConfig?.invalidate()
-                } else {
-                    let sourceLang = UserDefaults.standard.string(forKey: "sourceLanguage") ?? ""
-                    let source: Locale.Language? = sourceLang.isEmpty ? nil : Locale.Language(identifier: sourceLang)
-                    translationConfig = .init(source: source, target: Locale.Language(identifier: targetLang))
-                }
-            }
-            .translationTask(translationConfig) { session in
-                let texts = appState.pendingTranslationSegments
-                guard !texts.isEmpty else { return }
-                do {
-                    var translations: [String] = []
-                    for text in texts {
-                        if text.trimmingCharacters(in: .whitespaces).isEmpty {
-                            translations.append("")
-                        } else {
-                            let response = try await session.translate(text)
-                            translations.append(response.targetText)
-                        }
-                    }
-                    await MainActor.run {
-                        appState.liveTranslatedSegments = translations
-                    }
-                } catch {
-                    print("[Translation] Apple Translation error: \(error)")
-                }
-            }
-    }
-}
-#endif
-
-extension View {
-    @ViewBuilder
-    func applyAppleTranslation(appState: AppState) -> some View {
-        #if canImport(Translation)
-        if #available(macOS 15.0, *) {
-            self.modifier(AppleTranslationModifier(appState: appState))
-        } else {
-            self
-        }
-        #else
-        self
-        #endif
     }
 }
 

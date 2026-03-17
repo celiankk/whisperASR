@@ -161,8 +161,7 @@ final class TranscriptionService: @unchecked Sendable {
         params.print_timestamps = false
         params.n_threads = max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
 
-        let sourceLanguage = UserDefaults.standard.string(forKey: "sourceLanguage") ?? ""
-        let langCStr = strdup(sourceLanguage.isEmpty ? "auto" : sourceLanguage)
+        let langCStr = strdup("auto")
         params.language = UnsafePointer(langCStr)
 
         return (params, langCStr)

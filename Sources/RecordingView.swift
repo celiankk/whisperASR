@@ -6,6 +6,7 @@ struct RecordingView: View {
     @Environment(AudioRecorder.self) var recorder
     @Environment(\.dismiss) var dismiss
     @State private var enableLiveTranscription = true
+    @State private var shouldAutoScroll = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -239,13 +240,30 @@ struct RecordingView: View {
                                     .foregroundStyle(.primary.opacity(0.85))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
+
+                            // Bottom anchor for auto-scroll targeting
+                            Color.clear
+                                .frame(height: 1)
+                                .id("bottomAnchor")
                         }
                         .padding(.horizontal)
+                        .background(
+                            ScrollPositionObserver(isAtBottom: $shouldAutoScroll)
+                                .frame(width: 0, height: 0)
+                                .allowsHitTesting(false)
+                        )
                     }
                     .onChange(of: appState.liveSegments.count) { _, newCount in
-                        if newCount > 0 {
+                        if newCount > 0 && shouldAutoScroll {
                             withAnimation {
-                                proxy.scrollTo(newCount - 1, anchor: .bottom)
+                                proxy.scrollTo("bottomAnchor", anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onChange(of: appState.liveTranslatedSegments) { _, _ in
+                        if shouldAutoScroll {
+                            withAnimation {
+                                proxy.scrollTo("bottomAnchor", anchor: .bottom)
                             }
                         }
                     }
@@ -360,6 +378,92 @@ struct RecordingView: View {
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Scroll Position Observer
+
+/// Observes the enclosing NSScrollView's scroll position via native bounds-change
+/// notifications. Updates `isAtBottom` only on actual scroll events (user or
+/// programmatic), NOT on content size changes — avoiding race conditions.
+private struct ScrollPositionObserver: NSViewRepresentable {
+    @Binding var isAtBottom: Bool
+
+    class PassthroughView: NSView {
+        var onMoveToWindow: (() -> Void)?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil {
+                onMoveToWindow?()
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PassthroughView()
+        view.onMoveToWindow = {
+            context.coordinator.setupIfNeeded(view: view)
+        }
+        // Fallback: try setup after the current run loop cycle
+        DispatchQueue.main.async {
+            context.coordinator.setupIfNeeded(view: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.setupIfNeeded(view: nsView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isAtBottom: $isAtBottom)
+    }
+
+    class Coordinator: NSObject {
+        @Binding var isAtBottom: Bool
+        private var isSetUp = false
+
+        init(isAtBottom: Binding<Bool>) {
+            _isAtBottom = isAtBottom
+        }
+
+        func setupIfNeeded(view: NSView) {
+            guard !isSetUp, let scrollView = view.enclosingScrollView else { return }
+            isSetUp = true
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(scrollViewDidScroll(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+        }
+
+        @objc func scrollViewDidScroll(_ notification: Notification) {
+            guard let clipView = notification.object as? NSClipView,
+                  let scrollView = clipView.enclosingScrollView,
+                  let documentView = scrollView.documentView else { return }
+            let contentHeight = documentView.frame.height
+            let visibleHeight = clipView.bounds.height
+            let scrollOffset = clipView.bounds.origin.y
+            // Handle both flipped (SwiftUI default) and non-flipped coordinate systems
+            let distanceFromBottom: CGFloat
+            if documentView.isFlipped {
+                distanceFromBottom = contentHeight - scrollOffset - visibleHeight
+            } else {
+                distanceFromBottom = scrollOffset
+            }
+            DispatchQueue.main.async {
+                self.isAtBottom = distanceFromBottom <= 50
+            }
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
     }
 }
 

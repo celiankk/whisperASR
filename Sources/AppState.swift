@@ -129,41 +129,67 @@ class AppState {
 
     /// Start periodic live transcription from the AudioRecorder's accumulated PCM buffer.
     func startLiveTranscription(recorder: AudioRecorder) {
-        // Pre-load the model so the first chunk doesn't have loading latency
-        Task.detached { [service] in
-            try? service.preloadModel()
-        }
-
         liveSegments = []
         liveText = ""
         isLiveTranscribing = true
         isChunkTranscribing = false
 
         liveTranscriptionTask = Task { [weak self] in
-            // Wait a few seconds before the first transcription to accumulate enough audio
-            try? await Task.sleep(for: .seconds(5))
+            guard let self else { return }
+
+            // Pre-load the model and wait for it — avoids model loading latency on first chunk
+            try? self.service.preloadModel()
+            guard !Task.isCancelled else { return }
+
+            var committedSegments: [TranscriptionSegment] = []
+            var committedSampleCount = 0
 
             while !Task.isCancelled {
-                guard let self else { return }
-
                 // Don't overlap chunk transcriptions; skip if one is still running
                 if !self.isChunkTranscribing {
-                    let samples = recorder.getAccumulatedSamples()
-                    // Only transcribe if we have at least 1 second of audio (16000 samples)
-                    if samples.count >= 16000 {
+                    let allSamples = recorder.getAccumulatedSamples()
+                    let newSampleCount = allSamples.count - committedSampleCount
+
+                    // Only transcribe if we have at least 1 second of NEW audio (16000 samples)
+                    if newSampleCount >= 16000 {
                         self.isChunkTranscribing = true
+
+                        // Include 2 seconds of overlap from previous chunk for context
+                        let contextSamples = min(committedSampleCount, 16000 * 2)
+                        let chunkStart = committedSampleCount - contextSamples
+                        let chunk = Array(allSamples[chunkStart...])
+                        let timeOffset = Double(chunkStart) / 16000.0
+
                         do {
-                            let result = try await self.service.transcribeChunk(samples: samples)
+                            let result = try await self.service.transcribeChunk(samples: chunk)
+
+                            // Offset timestamps to match position in the full stream
+                            let newSegments = result.segments.map { seg in
+                                TranscriptionSegment(
+                                    start: seg.start + timeOffset,
+                                    end: seg.end.map { $0 + timeOffset },
+                                    text: seg.text
+                                )
+                            }
+
+                            // Keep committed segments before the context overlap window
+                            let contextTime = Double(chunkStart) / 16000.0
+                            let kept = committedSegments.filter { $0.start < contextTime }
+                            let allSegments = kept + newSegments
+
+                            committedSegments = allSegments
+                            committedSampleCount = allSamples.count
+
                             await MainActor.run {
-                                self.liveSegments = result.segments
-                                self.liveText = result.text
+                                self.liveSegments = allSegments
+                                self.liveText = allSegments.map { $0.text }.joined()
                                 self.isChunkTranscribing = false
                             }
                             // Translate if live translation is enabled
-                            if self.enableLiveTranslation && !result.segments.isEmpty {
+                            if self.enableLiveTranslation && !allSegments.isEmpty {
                                 let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
                                 if !targetLang.isEmpty {
-                                    await self.translateLiveSegments(result.segments, targetLang: targetLang)
+                                    await self.translateLiveSegments(allSegments, targetLang: targetLang)
                                 }
                             }
                         } catch {
@@ -176,7 +202,7 @@ class AppState {
                 }
 
                 // Wait before the next chunk
-                try? await Task.sleep(for: .seconds(7))
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }

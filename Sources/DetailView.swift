@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct DetailView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioPlayerManager.self) var audioPlayer
+    @State private var showTimestamps = true
 
     var body: some View {
         Group {
@@ -45,7 +46,7 @@ struct DetailView: View {
             TranscribingView(item: item)
 
         case .completed:
-            TranscriptContentView(item: item)
+            TranscriptContentView(item: item, showTimestamps: showTimestamps)
                 .toolbar {
                     ToolbarItem {
                         HStack(spacing: 4) {
@@ -79,6 +80,13 @@ struct DetailView: View {
                                 }
                                 .menuIndicator(.hidden)
                             }
+
+                            Button {
+                                showTimestamps.toggle()
+                            } label: {
+                                Image(systemName: showTimestamps ? "clock.fill" : "clock")
+                            }
+                            .help(showTimestamps ? "Hide timestamps" : "Show timestamps")
 
                             Menu {
                                 Button("Export as SRT...") { exportSRT(item) }
@@ -241,6 +249,7 @@ struct TranscriptContentView: View {
     @State private var cachedMatches: [(segmentIndex: Int, matchIndex: Int)] = []
     @State private var matchingSegmentIndices: Set<Int> = []  // segments that contain matches
     @State private var searchDebounceTask: Task<Void, Never>?
+    var showTimestamps: Bool = true
     @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
@@ -354,7 +363,8 @@ struct TranscriptContentView: View {
             isCurrent: index == currentIndex,
             translation: translation,
             searchQuery: query,
-            highlightedMatchIndices: activeIndices
+            highlightedMatchIndices: activeIndices,
+            showTimestamp: showTimestamps
         )
         .id(index)
         .onTapGesture {
@@ -439,13 +449,17 @@ struct SegmentRow: View {
     var translation: String? = nil
     var searchQuery: String = ""
     var highlightedMatchIndices: Set<Int> = []
+    var showTimestamp: Bool = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Text(formatTimestamp(segment.start))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 55, alignment: .trailing)
+            if showTimestamp {
+                Text(formatTimestamp(segment.start))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 55, alignment: .trailing)
+                    .padding(.top, 7)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 highlightedText(segment.text.trimmingCharacters(in: .whitespaces))

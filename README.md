@@ -9,11 +9,15 @@ A native macOS app for audio transcription using [Breeze-ASR-25](https://github.
 - **Drag-and-drop** audio/video files (MP3, WAV, M4A, MP4, AAC, FLAC, OGG, WMA, AIFF, CAF)
 - **App audio recording** — capture audio from any running app via ScreenCaptureKit (M4A/AAC at 48 kHz)
 - **Live transcription** — see transcribed text in real-time while recording
-- **Live translation** — per-segment translation displayed inline below each transcribed line, via macOS built-in Translation (macOS 15+) or OpenAI-compatible API
+- **Live translation** — per-segment translation displayed inline below each transcribed line, via OpenAI-compatible API
+- **Post-transcription translation** — translate completed transcriptions into any configured language with a single click
 - **Configurable languages** — auto-detect or set source language; choose target language for translation
 - **Zoom meeting detection** — automatically prompts to stop recording when a Zoom meeting ends
 - **Recent apps** — previously recorded apps appear at the top of the app picker
 - **Metal GPU acceleration** via whisper.cpp for fast transcription
+- **Smart auto-scroll** — live transcription view automatically follows new segments
+- **Live results reuse** — when recording stops, live transcription results are kept (no re-transcription)
+- **Search** — global sidebar filter across all transcriptions, plus in-file find (Cmd+F) with match highlighting and navigation
 - **Sequential transcription queue** — files wait in queue and transcribe one at a time
 - **Real-time progress** with estimated time remaining
 - **Synced text highlighting** — the current sentence highlights as audio plays
@@ -86,8 +90,10 @@ cp -r WhisperASR.app /Applications/
 3. **Live transcription & translation** — enable live transcription in the recording dialog to see text as you record; set a target language in Settings to see inline translations below each segment
 4. **Wait for transcription** — files are queued and transcribed one at a time with progress and ETA
 5. **Review** — click a completed item to see the transcript with timestamps
-6. **Play audio** — use the player controls at the bottom; text highlights in sync
-7. **Export** — click the export button (top-right) to save as SRT or plain text
+6. **Translate** — click the translate button to translate a completed transcription into any configured language
+7. **Search** — use the sidebar search bar to filter across all files, or press Cmd+F to find within a transcript
+8. **Play audio** — use the player controls at the bottom; text highlights in sync
+9. **Export** — click the export button (top-right) to save as SRT or plain text
 
 ### Translation Settings
 
@@ -95,7 +101,7 @@ Open **Settings** (Cmd+,) to configure:
 
 - **Source Language** — auto-detect or choose a specific language for transcription
 - **Target Language** — choose a language to translate live transcription into
-- **OpenAI Translation API** (optional) — provide an endpoint, API key, and model to use an OpenAI-compatible API for translation; leave empty to use macOS built-in Translation (requires macOS 15+)
+- **OpenAI Translation API** — provide an endpoint, API key, and model to use an OpenAI-compatible API for translation
 
 ## Project Structure
 

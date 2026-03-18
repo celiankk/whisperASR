@@ -41,7 +41,7 @@ class AppState {
         }
 
         let item = TranscriptionItem(fileURL: url)
-        items.append(item)
+        items.insert(item, at: 0)
         selectedItemID = item.id
         TranscriptionStore.save(item)
         enqueueTranscription(for: item)
@@ -83,7 +83,7 @@ class AppState {
         item.translatedSegments = translatedSegments
         item.translationLanguage = translationLanguage
         item.status = .completed
-        items.append(item)
+        items.insert(item, at: 0)
         selectedItemID = item.id
         TranscriptionStore.save(item)
     }

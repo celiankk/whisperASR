@@ -111,7 +111,7 @@ enum TranscriptionStore {
                     translationLanguage: stored.translationLanguage
                 )
             }
-            .sorted { $0.dateAdded < $1.dateAdded }
+            .sorted { $0.dateAdded > $1.dateAdded }
     }
 
     // MARK: - Delete

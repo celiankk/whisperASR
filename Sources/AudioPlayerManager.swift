@@ -8,6 +8,7 @@ class AudioPlayerManager {
     var currentTime: TimeInterval = 0
     var duration: TimeInterval = 0
     var isLoaded = false
+    var playbackRate: Float = 1.0
 
     private var player: AVPlayer?
     private var timeObserver: Any?
@@ -60,15 +61,22 @@ class AudioPlayerManager {
         if isPlaying {
             player.pause()
         } else {
-            player.play()
+            player.rate = playbackRate
         }
         isPlaying.toggle()
     }
 
     func play() {
         guard let player, !isPlaying else { return }
-        player.play()
+        player.rate = playbackRate
         isPlaying = true
+    }
+
+    func setRate(_ rate: Float) {
+        playbackRate = rate
+        if isPlaying {
+            player?.rate = rate
+        }
     }
 
     func pause() {

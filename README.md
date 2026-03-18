@@ -22,7 +22,9 @@ A native macOS app for audio transcription using [Breeze-ASR-25](https://github.
 - **Real-time progress** with estimated time remaining
 - **Synced text highlighting** — the current sentence highlights as audio plays
 - **Click-to-seek** — click any segment to jump to that point in the audio
+- **Playback speed control** — adjustable 0.25x–3.0x with slider, ±buttons, and preset shortcuts
 - **Audio playback** with play/pause, seek bar, and skip ±5s controls
+- **Toggle timestamps** — show or hide segment timestamps in the transcript view
 - **Export** transcriptions as SRT (subtitles) or plain text
 - **Batch processing** — queue multiple files at once
 - **Rename and copy** files from the sidebar context menu

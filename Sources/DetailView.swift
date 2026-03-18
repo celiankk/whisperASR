@@ -47,42 +47,46 @@ struct DetailView: View {
         case .completed:
             TranscriptContentView(item: item)
                 .toolbar {
-                    ToolbarItemGroup {
-                        if item.isTranslating {
-                            ProgressView()
-                                .controlSize(.small)
-                                .help("Translating...")
-                        } else {
-                            Menu {
-                                ForEach(TargetLanguage.available) { lang in
-                                    Button {
-                                        appState.translateItem(item, targetLanguage: lang.id)
-                                    } label: {
-                                        HStack {
-                                            Text(lang.name)
-                                            if item.translationLanguage == lang.id && !item.translatedSegments.isEmpty {
-                                                Spacer()
-                                                Image(systemName: "checkmark")
+                    ToolbarItem {
+                        HStack(spacing: 4) {
+                            if item.isTranslating {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .help("Translating...")
+                            } else {
+                                Menu {
+                                    ForEach(TargetLanguage.available) { lang in
+                                        Button {
+                                            appState.translateItem(item, targetLanguage: lang.id)
+                                        } label: {
+                                            HStack {
+                                                Text(lang.name)
+                                                if item.translationLanguage == lang.id && !item.translatedSegments.isEmpty {
+                                                    Spacer()
+                                                    Image(systemName: "checkmark")
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                if !item.translatedSegments.isEmpty {
-                                    Divider()
-                                    Button("Clear Translation") {
-                                        appState.clearTranslation(item)
+                                    if !item.translatedSegments.isEmpty {
+                                        Divider()
+                                        Button("Clear Translation") {
+                                            appState.clearTranslation(item)
+                                        }
                                     }
+                                } label: {
+                                    Label("Translate", systemImage: "character.bubble")
                                 }
-                            } label: {
-                                Label("Translate", systemImage: "character.bubble")
+                                .menuIndicator(.hidden)
                             }
-                        }
 
-                        Menu {
-                            Button("Export as SRT...") { exportSRT(item) }
-                            Button("Export as Text...") { exportText(item) }
-                        } label: {
-                            Label("Export", systemImage: "square.and.arrow.up")
+                            Menu {
+                                Button("Export as SRT...") { exportSRT(item) }
+                                Button("Export as Text...") { exportText(item) }
+                            } label: {
+                                Label("Export", systemImage: "square.and.arrow.up")
+                            }
+                            .menuIndicator(.hidden)
                         }
                     }
                 }

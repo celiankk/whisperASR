@@ -7,16 +7,41 @@ struct SidebarView: View {
     @State private var showRecordingSheet = false
     @State private var renamingItem: TranscriptionItem?
     @State private var renameText = ""
+    @State private var searchText = ""
 
     private let supportedExtensions: Set<String> = [
         "mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "wma", "aiff", "caf"
     ]
 
+    private var filteredItems: [TranscriptionItem] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return appState.items }
+        let lowered = query.lowercased()
+        return appState.items.filter { item in
+            item.fileName.lowercased().contains(lowered) ||
+            item.fullText.lowercased().contains(lowered)
+        }
+    }
+
+    private func matchCount(for item: TranscriptionItem) -> Int {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return 0 }
+        let lowered = query.lowercased()
+        let text = item.fullText.lowercased()
+        var count = 0
+        var searchRange = text.startIndex..<text.endIndex
+        while let range = text.range(of: lowered, range: searchRange) {
+            count += 1
+            searchRange = range.upperBound..<text.endIndex
+        }
+        return count
+    }
+
     var body: some View {
         @Bindable var appState = appState
 
         Group {
-            if appState.items.isEmpty {
+            if appState.items.isEmpty && searchText.isEmpty {
                 emptyDropZone
             } else {
                 itemList
@@ -90,38 +115,80 @@ struct SidebarView: View {
 
     private var itemList: some View {
         @Bindable var state = appState
-        return List(selection: $state.selectedItemID) {
-            ForEach(appState.items) { item in
-                HStack(spacing: 8) {
-                    statusIcon(item)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.fileName)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(statusLabel(item))
-                            .font(.caption)
+        return VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                TextField("Search transcriptions...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
+                            .font(.caption)
                     }
+                    .buttonStyle(.plain)
                 }
-                .tag(item.id)
-                .contextMenu {
-                    Button("Rename") {
-                        renameText = item.fileURL.deletingPathExtension().lastPathComponent
-                        renamingItem = item
-                    }
-                    Button("Copy File") {
-                        let pasteboard = NSPasteboard.general
-                        pasteboard.clearContents()
-                        pasteboard.writeObjects([item.fileURL as NSURL])
-                    }
-                    Divider()
-                    if item.status == .completed || item.status != .transcribing {
-                        Button("Re-transcribe") {
-                            appState.retranscribe(item)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+
+            List(selection: $state.selectedItemID) {
+                ForEach(filteredItems) { item in
+                    HStack(spacing: 8) {
+                        statusIcon(item)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.fileName)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            HStack(spacing: 4) {
+                                Text(statusLabel(item))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if !searchText.isEmpty {
+                                    let count = matchCount(for: item)
+                                    if count > 0 {
+                                        Text("\(count) match\(count == 1 ? "" : "es")")
+                                            .font(.caption2)
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1)
+                                            .background(Color.accentColor.opacity(0.8))
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                            }
                         }
                     }
-                    Button("Remove", role: .destructive) {
-                        appState.removeItem(item)
+                    .tag(item.id)
+                    .contextMenu {
+                        Button("Rename") {
+                            renameText = item.fileURL.deletingPathExtension().lastPathComponent
+                            renamingItem = item
+                        }
+                        Button("Copy File") {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.writeObjects([item.fileURL as NSURL])
+                        }
+                        Divider()
+                        if item.status == .completed || item.status != .transcribing {
+                            Button("Re-transcribe") {
+                                appState.retranscribe(item)
+                            }
+                        }
+                        Button("Remove", role: .destructive) {
+                            appState.removeItem(item)
+                        }
                     }
                 }
             }

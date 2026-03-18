@@ -13,7 +13,7 @@ struct SettingsView: View {
                 Picker("Target Language", selection: $targetLanguage) {
                     Text("Off").tag("")
                     ForEach(TargetLanguage.available) { lang in
-                        Text(lang.name).tag(lang.id)
+                        Text(lang.nativeName).tag(lang.id)
                     }
                 }
                 Text("Translate live transcription to this language using an OpenAI-compatible API configured below.")

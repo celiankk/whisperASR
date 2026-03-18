@@ -60,7 +60,7 @@ struct DetailView: View {
                                             appState.translateItem(item, targetLanguage: lang.id)
                                         } label: {
                                             HStack {
-                                                Text(lang.name)
+                                                Text(lang.nativeName)
                                                 if item.translationLanguage == lang.id && !item.translatedSegments.isEmpty {
                                                     Spacer()
                                                     Image(systemName: "checkmark")

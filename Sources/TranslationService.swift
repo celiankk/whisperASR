@@ -1,30 +1,31 @@
 import Foundation
 
 struct TargetLanguage: Identifiable, Hashable {
-    let id: String   // locale identifier (e.g. "en", "zh-Hans")
-    let name: String
+    let id: String        // locale identifier (e.g. "en", "zh-Hans")
+    let name: String      // English name (used in API prompts)
+    let nativeName: String // native name (displayed in UI)
 
     static let available: [TargetLanguage] = [
-        .init(id: "en", name: "English"),
-        .init(id: "zh-Hans", name: "Chinese (Simplified)"),
-        .init(id: "zh-Hant", name: "Chinese (Traditional)"),
-        .init(id: "ja", name: "Japanese"),
-        .init(id: "ko", name: "Korean"),
-        .init(id: "es", name: "Spanish"),
-        .init(id: "fr", name: "French"),
-        .init(id: "de", name: "German"),
-        .init(id: "pt", name: "Portuguese"),
-        .init(id: "ru", name: "Russian"),
-        .init(id: "ar", name: "Arabic"),
-        .init(id: "hi", name: "Hindi"),
-        .init(id: "th", name: "Thai"),
-        .init(id: "vi", name: "Vietnamese"),
-        .init(id: "it", name: "Italian"),
-        .init(id: "nl", name: "Dutch"),
-        .init(id: "pl", name: "Polish"),
-        .init(id: "uk", name: "Ukrainian"),
-        .init(id: "tr", name: "Turkish"),
-        .init(id: "id", name: "Indonesian"),
+        .init(id: "en", name: "English", nativeName: "English"),
+        .init(id: "zh-Hans", name: "Chinese (Simplified)", nativeName: "简体中文"),
+        .init(id: "zh-Hant", name: "Chinese (Traditional)", nativeName: "繁體中文"),
+        .init(id: "ja", name: "Japanese", nativeName: "日本語"),
+        .init(id: "ko", name: "Korean", nativeName: "한국어"),
+        .init(id: "es", name: "Spanish", nativeName: "Español"),
+        .init(id: "fr", name: "French", nativeName: "Français"),
+        .init(id: "de", name: "German", nativeName: "Deutsch"),
+        .init(id: "pt", name: "Portuguese", nativeName: "Português"),
+        .init(id: "ru", name: "Russian", nativeName: "Русский"),
+        .init(id: "ar", name: "Arabic", nativeName: "العربية"),
+        .init(id: "hi", name: "Hindi", nativeName: "हिन्दी"),
+        .init(id: "th", name: "Thai", nativeName: "ภาษาไทย"),
+        .init(id: "vi", name: "Vietnamese", nativeName: "Tiếng Việt"),
+        .init(id: "it", name: "Italian", nativeName: "Italiano"),
+        .init(id: "nl", name: "Dutch", nativeName: "Nederlands"),
+        .init(id: "pl", name: "Polish", nativeName: "Polski"),
+        .init(id: "uk", name: "Ukrainian", nativeName: "Українська"),
+        .init(id: "tr", name: "Turkish", nativeName: "Türkçe"),
+        .init(id: "id", name: "Indonesian", nativeName: "Bahasa Indonesia"),
     ]
 }
 

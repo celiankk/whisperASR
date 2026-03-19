@@ -35,7 +35,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private var _hasReceivedSamples = OSAllocatedUnfairLock(initialState: false)
     private var meetingMonitorTimer: Timer?
     private var recordingPID: pid_t?
-    private var hadMeetingWindow = false
+    private var meetingStarted = false
 
     // Microphone mixing
     private var audioEngine: AVAudioEngine?
@@ -424,7 +424,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private func startMeetingMonitor(app: SCRunningApplication) {
         guard Self.zoomBundleIDs.contains(app.bundleIdentifier) else { return }
         recordingPID = app.processID
-        hadMeetingWindow = false
+        meetingStarted = false
         meetingEnded = false
 
         meetingMonitorTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
@@ -436,7 +436,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
         meetingMonitorTimer?.invalidate()
         meetingMonitorTimer = nil
         recordingPID = nil
-        hadMeetingWindow = false
+        meetingStarted = false
     }
 
     private func checkZoomMeetingWindows() {
@@ -463,8 +463,10 @@ class AudioRecorder: NSObject, SCStreamOutput {
         }
 
         if hasMeeting {
-            hadMeetingWindow = true
-        } else if hadMeetingWindow {
+            // Phase 1: wait until we see a meeting window before monitoring for end
+            meetingStarted = true
+        } else if meetingStarted {
+            // Phase 2: meeting window was present but now gone — meeting ended
             meetingMonitorTimer?.invalidate()
             meetingMonitorTimer = nil
             meetingEnded = true

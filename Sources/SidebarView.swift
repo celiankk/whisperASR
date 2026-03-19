@@ -147,7 +147,7 @@ struct SidebarView: View {
                     HStack(spacing: 8) {
                         statusIcon(item)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.fileName)
+                            Text(item.fileURL.deletingPathExtension().lastPathComponent)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             HStack(spacing: 4) {

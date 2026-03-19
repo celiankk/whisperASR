@@ -172,15 +172,12 @@ struct RecordingView: View {
             if enableLiveTranscription {
                 appState.startLiveTranscription(recorder: recorder)
             }
-        }
-        .alert("Meeting Ended", isPresented: $recorder.meetingEnded) {
-            Button("Stop Recording") {
-                stopAndDismiss()
+            recorder.onMeetingEnded = { [self] in
+                showMeetingEndedDialog()
             }
-            .keyboardShortcut(.defaultAction)
-            Button("Continue Recording", role: .cancel) { }
-        } message: {
-            Text("The Zoom meeting appears to have ended. Would you like to stop recording?")
+        }
+        .onDisappear {
+            recorder.onMeetingEnded = nil
         }
     }
 
@@ -352,6 +349,23 @@ struct RecordingView: View {
         guard shouldAutoScroll, !appState.liveSegments.isEmpty else { return }
         withAnimation {
             proxy.scrollTo("bottomAnchor", anchor: .bottom)
+        }
+    }
+
+    private func showMeetingEndedDialog() {
+        // Bounce dock icon to get attention
+        NSApp.requestUserAttention(.criticalRequest)
+
+        let alert = NSAlert()
+        alert.messageText = "Meeting Ended"
+        alert.informativeText = "The Zoom meeting appears to have ended. Would you like to stop recording?"
+        alert.addButton(withTitle: "Stop Recording")
+        alert.addButton(withTitle: "Continue Recording")
+        alert.alertStyle = .informational
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            stopAndDismiss()
         }
     }
 

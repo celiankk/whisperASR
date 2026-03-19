@@ -5,7 +5,7 @@ struct SidebarView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioRecorder.self) var recorder
     @State private var isDropTargeted = false
-    @State private var showRecordingSheet = false
+    @Environment(\.openWindow) private var openWindow
     @State private var renamingItem: TranscriptionItem?
     @State private var renameText = ""
     @State private var searchText = ""
@@ -70,22 +70,19 @@ struct SidebarView: View {
             ToolbarItem {
                 if recorder.state == .recording || recorder.state == .saving {
                     Button {
-                        showRecordingSheet = true
+                        openWindow(id: "recording")
                     } label: {
                         Label("Recording", systemImage: "record.circle.fill")
                             .foregroundStyle(.red)
                     }
                 } else {
                     Button {
-                        showRecordingSheet = true
+                        openWindow(id: "recording")
                     } label: {
                         Label("Record", systemImage: "record.circle")
                     }
                 }
             }
-        }
-        .sheet(isPresented: $showRecordingSheet) {
-            RecordingView()
         }
         .onChange(of: recorder.state) { old, new in
             if new == .recording {
@@ -284,7 +281,10 @@ struct SidebarView: View {
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            showRecordingSheet = false
+            // Close the recording window
+            NSApplication.shared.windows
+                .first { $0.identifier?.rawValue == "recording" }?
+                .close()
             let capturedSegments = appState.liveSegments
             let capturedText = appState.liveText
             let capturedTranslations = appState.liveTranslatedSegments

@@ -23,7 +23,12 @@ struct RecordingView: View {
                 permissionDeniedContent
             }
         }
-        .frame(width: 420, height: (recorder.state == .recording && !enableLiveTranscription) ? 200 : 500)
+        .frame(
+            minWidth: 360, idealWidth: 420, maxWidth: .infinity,
+            minHeight: (recorder.state == .recording && !enableLiveTranscription) ? 180 : 400,
+            idealHeight: (recorder.state == .recording && !enableLiveTranscription) ? 200 : 500,
+            maxHeight: .infinity
+        )
         .onChange(of: enableLiveTranscription) { _, newValue in
             if !newValue { appState.enableLiveTranslation = false }
         }

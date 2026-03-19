@@ -8,6 +8,8 @@ struct WhisperASRApp: App {
     @State private var audioRecorder = AudioRecorder()
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
+    @Environment(\.openWindow) private var openWindow
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -17,9 +19,19 @@ struct WhisperASRApp: App {
                 .frame(minWidth: 800, minHeight: 500)
                 .onAppear {
                     appDelegate.appState = appState
+                    appDelegate.openWindow = openWindow
                 }
         }
         .defaultSize(width: 1000, height: 650)
+
+        Window("Recording", id: "recording") {
+            RecordingView()
+                .environment(appState)
+                .environment(audioPlayer)
+                .environment(audioRecorder)
+        }
+        .defaultSize(width: 420, height: 500)
+        .windowResizability(.contentSize)
 
         Settings {
             SettingsView()
@@ -29,6 +41,7 @@ struct WhisperASRApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
+    var openWindow: OpenWindowAction?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let icon = AppIconGenerator.generate()

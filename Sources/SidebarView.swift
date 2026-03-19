@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @Environment(AppState.self) var appState
+    @Environment(AudioRecorder.self) var recorder
     @State private var isDropTargeted = false
     @State private var showRecordingSheet = false
     @State private var renamingItem: TranscriptionItem?
@@ -67,15 +68,35 @@ struct SidebarView: View {
                 }
             }
             ToolbarItem {
-                Button {
-                    showRecordingSheet = true
-                } label: {
-                    Label("Record", systemImage: "record.circle")
+                if recorder.state == .recording || recorder.state == .saving {
+                    Button {
+                        showRecordingSheet = true
+                    } label: {
+                        Label("Recording", systemImage: "record.circle.fill")
+                            .foregroundStyle(.red)
+                    }
+                } else {
+                    Button {
+                        showRecordingSheet = true
+                    } label: {
+                        Label("Record", systemImage: "record.circle")
+                    }
                 }
             }
         }
         .sheet(isPresented: $showRecordingSheet) {
             RecordingView()
+        }
+        .onChange(of: recorder.state) { old, new in
+            if new == .recording {
+                let appState = appState
+                let recorder = recorder
+                recorder.onMeetingEnded = {
+                    handleMeetingEnded(appState: appState, recorder: recorder)
+                }
+            } else if old == .recording {
+                recorder.onMeetingEnded = nil
+            }
         }
         .alert("Rename", isPresented: Binding(
             get: { renamingItem != nil },
@@ -250,6 +271,44 @@ struct SidebarView: View {
     }
 
     // MARK: - File Picker
+
+    private func handleMeetingEnded(appState: AppState, recorder: AudioRecorder) {
+        NSApp.requestUserAttention(.criticalRequest)
+
+        let alert = NSAlert()
+        alert.messageText = "Meeting Ended"
+        alert.informativeText = "The Zoom meeting appears to have ended. Would you like to stop recording?"
+        alert.addButton(withTitle: "Stop Recording")
+        alert.addButton(withTitle: "Continue Recording")
+        alert.alertStyle = .informational
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            showRecordingSheet = false
+            let capturedSegments = appState.liveSegments
+            let capturedText = appState.liveText
+            let capturedTranslations = appState.liveTranslatedSegments
+            let capturedLang: String? = !capturedTranslations.isEmpty
+                ? UserDefaults.standard.string(forKey: "targetLanguage") : nil
+            let hadLiveResults = appState.isLiveTranscribing && !capturedSegments.isEmpty
+
+            appState.stopLiveTranscription()
+            Task {
+                let url = await recorder.stopRecording()
+                if let url {
+                    if hadLiveResults {
+                        appState.addFileWithLiveResults(
+                            url: url, segments: capturedSegments, fullText: capturedText,
+                            translatedSegments: capturedTranslations, translationLanguage: capturedLang
+                        )
+                    } else {
+                        appState.addFile(url: url)
+                    }
+                }
+                recorder.state = .idle
+            }
+        }
+    }
 
     private func openFilePicker() {
         let panel = NSOpenPanel()

@@ -126,18 +126,32 @@ struct RecordingView: View {
     private var recordingContent: some View {
         @Bindable var recorder = recorder
         return VStack(spacing: 12) {
-            // Header: indicator + duration + app name
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 10, height: 10)
-                    .shadow(color: .red.opacity(0.6), radius: 6)
-                    .modifier(PulsingModifier())
+            // Header: indicator + duration + minimize button
+            ZStack {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 10, height: 10)
+                        .shadow(color: .red.opacity(0.6), radius: 6)
+                        .modifier(PulsingModifier())
 
-                Text(formatDuration(recorder.recordingDuration))
-                    .font(.system(size: 24, weight: .light, design: .monospaced))
+                    Text(formatDuration(recorder.recordingDuration))
+                        .font(.system(size: 24, weight: .light, design: .monospaced))
+                }
+
+                HStack {
+                    Spacer()
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.top, 16)
+            .padding(.horizontal, 12)
 
             Divider()
                 .padding(.horizontal)
@@ -152,12 +166,14 @@ struct RecordingView: View {
             Divider()
                 .padding(.horizontal)
 
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Button("Cancel") {
                     appState.stopLiveTranscription()
                     recorder.cancelRecording()
                     dismiss()
                 }
+
+                Spacer()
 
                 Button("Stop Recording") {
                     stopAndDismiss()
@@ -165,19 +181,14 @@ struct RecordingView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
             }
+            .padding(.horizontal, 12)
             .padding(.bottom, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            if enableLiveTranscription {
+            if enableLiveTranscription, !appState.isLiveTranscribing {
                 appState.startLiveTranscription(recorder: recorder)
             }
-            recorder.onMeetingEnded = { [self] in
-                showMeetingEndedDialog()
-            }
-        }
-        .onDisappear {
-            recorder.onMeetingEnded = nil
         }
     }
 
@@ -349,23 +360,6 @@ struct RecordingView: View {
         guard shouldAutoScroll, !appState.liveSegments.isEmpty else { return }
         withAnimation {
             proxy.scrollTo("bottomAnchor", anchor: .bottom)
-        }
-    }
-
-    private func showMeetingEndedDialog() {
-        // Bounce dock icon to get attention
-        NSApp.requestUserAttention(.criticalRequest)
-
-        let alert = NSAlert()
-        alert.messageText = "Meeting Ended"
-        alert.informativeText = "The Zoom meeting appears to have ended. Would you like to stop recording?"
-        alert.addButton(withTitle: "Stop Recording")
-        alert.addButton(withTitle: "Continue Recording")
-        alert.alertStyle = .informational
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            stopAndDismiss()
         }
     }
 

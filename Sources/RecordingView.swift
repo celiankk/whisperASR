@@ -260,7 +260,11 @@ struct RecordingView: View {
                                                     .frame(width: 44, height: 1)
                                                 Text(appState.liveTranslatedSegments[index])
                                                     .font(.caption)
-                                                    .foregroundStyle(.blue.opacity(0.75))
+                                                    .foregroundStyle(Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+                                                    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                                                        ? NSColor.systemTeal.withAlphaComponent(0.85)
+                                                        : NSColor.systemBlue.withAlphaComponent(0.75)
+                                                })))
                                                     .italic()
                                                     .frame(maxWidth: .infinity, alignment: .leading)
                                             }

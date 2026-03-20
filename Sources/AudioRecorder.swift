@@ -78,9 +78,9 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 let apps = content.applications
                     .filter {
                         $0.bundleIdentifier != myBundleID
+                            && !$0.applicationName.isEmpty
                             && appsWithWindows.contains($0.bundleIdentifier)
-                            && !$0.applicationName.hasPrefix("AutoFill")
-                            && !$0.applicationName.hasPrefix("Open and Save Panel Service")
+                            && NSRunningApplication(processIdentifier: $0.processID)?.activationPolicy == .regular
                     }
                     .sorted { ($0.applicationName) < ($1.applicationName) }
 

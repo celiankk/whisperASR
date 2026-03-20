@@ -163,7 +163,10 @@ struct DetailView: View {
 
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            try? item.fullText.write(to: url, atomically: true, encoding: .utf8)
+            let text = item.segments.isEmpty
+                ? item.fullText
+                : item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
+            try? text.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 

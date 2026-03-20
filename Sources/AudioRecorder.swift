@@ -74,8 +74,14 @@ class AudioRecorder: NSObject, SCStreamOutput {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
                 let myBundleID = Bundle.main.bundleIdentifier ?? "com.whisperasr"
+                let appsWithWindows = Set(content.windows.map { $0.owningApplication?.bundleIdentifier })
                 let apps = content.applications
-                    .filter { $0.bundleIdentifier != myBundleID }
+                    .filter {
+                        $0.bundleIdentifier != myBundleID
+                            && appsWithWindows.contains($0.bundleIdentifier)
+                            && !$0.applicationName.hasPrefix("AutoFill")
+                            && !$0.applicationName.hasPrefix("Open and Save Panel Service")
+                    }
                     .sorted { ($0.applicationName) < ($1.applicationName) }
 
                 await MainActor.run {

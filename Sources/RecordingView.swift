@@ -7,6 +7,7 @@ struct RecordingView: View {
     @Environment(\.dismiss) var dismiss
     @State private var enableLiveTranscription = true
     @State private var shouldAutoScroll = true
+    @State private var searchText = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,7 +70,27 @@ struct RecordingView: View {
                     .padding(.bottom, 4)
             }
 
-            List(sortedApps, id: \.bundleIdentifier, selection: Binding(
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search apps...", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(6)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 4)
+
+            List(filteredApps, id: \.bundleIdentifier, selection: Binding(
                 get: { recorder.selectedApp?.bundleIdentifier },
                 set: { id in
                     recorder.selectedApp = recorder.availableApps.first { $0.bundleIdentifier == id }
@@ -331,6 +352,13 @@ struct RecordingView: View {
     }
 
     // MARK: - Helpers
+
+    private var filteredApps: [SCRunningApplication] {
+        guard !searchText.isEmpty else { return sortedApps }
+        return sortedApps.filter {
+            $0.applicationName.localizedCaseInsensitiveContains(searchText)
+        }
+    }
 
     private var sortedApps: [SCRunningApplication] {
         let recent = recorder.recentAppBundleIDs

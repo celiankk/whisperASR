@@ -448,36 +448,49 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private func checkZoomMeetingWindows() {
         guard let pid = recordingPID else { return }
 
-        let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-
-        let hasMeeting = windowList.contains { info in
-            guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
-                  ownerPID == pid,
-                  let layer = info[kCGWindowLayer as String] as? Int,
-                  layer == 0 else { return false }
-
-            if let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
-               let width = bounds["Width"], let height = bounds["Height"],
-               width >= 300, height >= 200 {
-                let name = info[kCGWindowName as String] as? String ?? ""
-                if name.localizedCaseInsensitiveContains("meeting") ||
-                   name.localizedCaseInsensitiveContains("participant") {
-                    return true
-                }
-            }
-            return false
-        }
+        // Check if Zoom's CptHost subprocess is running — it only exists during an active call.
+        // This is more reliable than window title matching, which breaks during screen sharing.
+        let hasMeeting = zoomHasActiveCall(parentPID: pid)
 
         if hasMeeting {
-            // Phase 1: wait until we see a meeting window before monitoring for end
             meetingStarted = true
         } else if meetingStarted {
-            // Phase 2: meeting window was present but now gone — meeting ended
             meetingMonitorTimer?.invalidate()
             meetingMonitorTimer = nil
             meetingEnded = true
             onMeetingEnded?()
         }
+    }
+
+    /// Returns true if Zoom's CptHost (call/meeting host) subprocess is running under the given parent PID.
+    private func zoomHasActiveCall(parentPID: pid_t) -> Bool {
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-eo", "ppid,comm"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return true // Assume meeting is still active if we can't check
+        }
+        guard let data = try? pipe.fileHandleForReading.readDataToEndOfFile(),
+              let output = String(data: data, encoding: .utf8) else {
+            return true
+        }
+        // Look for CptHost with the Zoom parent PID
+        for line in output.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let parts = trimmed.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2,
+                  let ppid = Int32(parts[0]) else { continue }
+            if ppid == parentPID && parts[1].contains("CptHost") {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - SCStreamOutput

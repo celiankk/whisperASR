@@ -5,147 +5,27 @@ struct RecordingView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioRecorder.self) var recorder
     @Environment(\.dismiss) var dismiss
-    @State private var enableLiveTranscription = true
     @State private var shouldAutoScroll = true
-    @State private var searchText = ""
     @State private var isAlwaysOnTop = false
 
     var body: some View {
         VStack(spacing: 0) {
             switch recorder.state {
-            case .idle, .loading:
-                loadingContent
-            case .ready:
-                appPickerContent
             case .recording:
                 recordingContent
             case .saving:
                 savingContent
-            case .permissionDenied:
-                permissionDeniedContent
+            default:
+                Color.clear
             }
         }
         .frame(
             minWidth: 360, idealWidth: 420, maxWidth: .infinity,
-            minHeight: (recorder.state == .recording && !enableLiveTranscription) ? 90 : 200,
-            idealHeight: (recorder.state == .recording && !enableLiveTranscription) ? 200 : 500,
+            minHeight: appState.enableLiveTranscription ? 200 : 90,
+            idealHeight: appState.enableLiveTranscription ? 300 : 200,
             maxHeight: .infinity
         )
-        .onChange(of: enableLiveTranscription) { _, newValue in
-            if !newValue { appState.enableLiveTranslation = false }
-        }
-        .onAppear {
-            if recorder.state == .idle {
-                recorder.loadAvailableApps()
-            }
-        }
-    }
-
-    // MARK: - Loading
-
-    private var loadingContent: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .scaleEffect(1.2)
-            Text("Loading applications...")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - App Picker
-
-    private var appPickerContent: some View {
-        @Bindable var recorder = recorder
-        return VStack(spacing: 0) {
-            Text("Select App to Record")
-                .font(.headline)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
-
-            if let error = recorder.error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
-                    .padding(.bottom, 4)
-            }
-
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search apps...", text: $searchText)
-                    .textFieldStyle(.plain)
-                if !searchText.isEmpty {
-                    Button {
-                        searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(6)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 4)
-
-            List(filteredApps, id: \.bundleIdentifier, selection: Binding(
-                get: { recorder.selectedApp?.bundleIdentifier },
-                set: { id in
-                    recorder.selectedApp = recorder.availableApps.first { $0.bundleIdentifier == id }
-                }
-            )) { app in
-                HStack(spacing: 10) {
-                    appIcon(for: app)
-                        .frame(width: 24, height: 24)
-                    Text(app.applicationName)
-                        .lineLimit(1)
-                }
-                .tag(app.bundleIdentifier)
-            }
-
-            Divider()
-
-            HStack(spacing: 12) {
-                Toggle(isOn: $recorder.includeMicrophone) {
-                    Image(systemName: "mic")
-                }
-                Toggle(isOn: $enableLiveTranscription) {
-                    Label("Live", systemImage: "text.word.spacing")
-                }
-                Toggle(isOn: Binding(
-                    get: { appState.enableLiveTranslation },
-                    set: { appState.enableLiveTranslation = $0 }
-                )) {
-                    Image(systemName: "character.bubble")
-                }
-                .disabled(!enableLiveTranscription)
-            }
-            .toggleStyle(.checkbox)
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-
-            HStack {
-                Button("Cancel") {
-                    recorder.state = .idle
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Spacer()
-
-                Button("Start Recording") {
-                    if let app = recorder.selectedApp {
-                        recorder.startRecording(app: app)
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(recorder.selectedApp == nil)
-            }
-            .padding(12)
-        }
+        .background(WindowConfigurator())
     }
 
     // MARK: - Recording
@@ -154,7 +34,7 @@ struct RecordingView: View {
         @Bindable var recorder = recorder
         return VStack(spacing: 0) {
             // Live transcription area (only shown if enabled)
-            if enableLiveTranscription {
+            if appState.enableLiveTranscription {
                 liveTranscriptView
             } else {
                 Spacer()
@@ -214,7 +94,7 @@ struct RecordingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            if enableLiveTranscription, !appState.isLiveTranscribing {
+            if appState.enableLiveTranscription, !appState.isLiveTranscribing {
                 appState.startLiveTranscription(recorder: recorder)
             }
         }
@@ -242,7 +122,6 @@ struct RecordingView: View {
                             if !appState.liveSegments.isEmpty {
                                 ForEach(Array(appState.liveSegments.enumerated()), id: \.offset) { index, segment in
                                     VStack(alignment: .leading, spacing: 2) {
-                                        // Original transcribed line
                                         HStack(alignment: .top, spacing: 6) {
                                             Text(formatTimestamp(segment.start))
                                                 .font(.system(.caption2, design: .monospaced))
@@ -254,7 +133,6 @@ struct RecordingView: View {
                                                 .foregroundStyle(.primary.opacity(0.85))
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                         }
-                                        // Translated line (shown directly below)
                                         if index < appState.liveTranslatedSegments.count,
                                            !appState.liveTranslatedSegments[index].isEmpty {
                                             HStack(alignment: .top, spacing: 6) {
@@ -281,7 +159,6 @@ struct RecordingView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
-                            // Bottom anchor for auto-scroll targeting
                             Color.clear
                                 .frame(height: 1)
                                 .id("bottomAnchor")
@@ -317,83 +194,7 @@ struct RecordingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Permission Denied
-
-    private var permissionDeniedContent: some View {
-        VStack(spacing: 16) {
-            Spacer()
-
-            Image(systemName: "lock.shield")
-                .font(.system(size: 44))
-                .foregroundStyle(.secondary)
-
-            Text("Screen Recording Permission Required")
-                .font(.headline)
-
-            Text("WhisperASR needs Screen Recording permission to capture audio from other applications.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 24)
-
-            HStack(spacing: 12) {
-                Button("Open System Settings") {
-                    recorder.openSystemPreferences()
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("Try Again") {
-                    recorder.loadAvailableApps()
-                }
-            }
-
-            Spacer()
-
-            Button("Cancel") {
-                recorder.state = .idle
-                dismiss()
-            }
-            .padding(.bottom, 16)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
     // MARK: - Helpers
-
-    private var filteredApps: [SCRunningApplication] {
-        guard !searchText.isEmpty else { return sortedApps }
-        return sortedApps.filter {
-            $0.applicationName.localizedCaseInsensitiveContains(searchText)
-        }
-    }
-
-    private var sortedApps: [SCRunningApplication] {
-        let recent = recorder.recentAppBundleIDs
-        return recorder.availableApps.sorted { a, b in
-            let aIdx = recent.firstIndex(of: a.bundleIdentifier)
-            let bIdx = recent.firstIndex(of: b.bundleIdentifier)
-            switch (aIdx, bIdx) {
-            case let (.some(ai), .some(bi)): return ai < bi
-            case (.some, .none): return true
-            case (.none, .some): return false
-            case (.none, .none): return a.applicationName < b.applicationName
-            }
-        }
-    }
-
-    private func appIcon(for app: SCRunningApplication) -> some View {
-        Group {
-            if let nsApp = NSRunningApplication(processIdentifier: app.processID),
-               let icon = nsApp.icon {
-                Image(nsImage: icon)
-                    .resizable()
-            } else {
-                Image(systemName: "app.dashed")
-                    .resizable()
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .aspectRatio(contentMode: .fit)
-    }
 
     private func scrollToBottomIfNeeded(proxy: ScrollViewProxy) {
         guard shouldAutoScroll, !appState.liveSegments.isEmpty else { return }
@@ -403,7 +204,6 @@ struct RecordingView: View {
     }
 
     private func stopAndDismiss() {
-        // Capture live results before clearing
         let capturedSegments = appState.liveSegments
         let capturedText = appState.liveText
         let capturedTranslations = appState.liveTranslatedSegments
@@ -474,7 +274,6 @@ private struct ScrollPositionObserver: NSViewRepresentable {
         view.onMoveToWindow = {
             context.coordinator.setupIfNeeded(view: view)
         }
-        // Fallback: try setup after the current run loop cycle
         DispatchQueue.main.async {
             context.coordinator.setupIfNeeded(view: view)
         }
@@ -516,7 +315,6 @@ private struct ScrollPositionObserver: NSViewRepresentable {
             let contentHeight = documentView.frame.height
             let visibleHeight = clipView.bounds.height
             let scrollOffset = clipView.bounds.origin.y
-            // Handle both flipped (SwiftUI default) and non-flipped coordinate systems
             let distanceFromBottom: CGFloat
             if documentView.isFlipped {
                 distanceFromBottom = contentHeight - scrollOffset - visibleHeight
@@ -532,6 +330,25 @@ private struct ScrollPositionObserver: NSViewRepresentable {
             NotificationCenter.default.removeObserver(self)
         }
     }
+}
+
+// MARK: - Window Configurator
+
+/// Hides traffic lights and enables drag-to-move on the Recording window.
+private struct WindowConfigurator: NSViewRepresentable {
+    class ConfigView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            window.isMovableByWindowBackground = true
+            window.standardWindowButton(.closeButton)?.isHidden = true
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
+        }
+    }
+
+    func makeNSView(context: Context) -> NSView { ConfigView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // MARK: - Pulsing Animation

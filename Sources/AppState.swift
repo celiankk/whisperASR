@@ -10,6 +10,7 @@ class AppState {
     var liveSegments: [TranscriptionSegment] = []
     var liveText: String = ""
     var isLiveTranscribing = false
+    var enableLiveTranscription = true
 
     // Live translation state (per-segment)
     var liveTranslatedSegments: [String] = []

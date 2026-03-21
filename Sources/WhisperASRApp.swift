@@ -24,6 +24,15 @@ struct WhisperASRApp: App {
         }
         .defaultSize(width: 1000, height: 650)
 
+        Window("Select App to Record", id: "app-picker") {
+            AppPickerView()
+                .environment(appState)
+                .environment(audioPlayer)
+                .environment(audioRecorder)
+        }
+        .defaultSize(width: 420, height: 400)
+        .windowResizability(.contentSize)
+
         Window("Recording", id: "recording") {
             RecordingView()
                 .environment(appState)
@@ -32,6 +41,7 @@ struct WhisperASRApp: App {
         }
         .defaultSize(width: 420, height: 250)
         .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
 
         Settings {
             SettingsView()

@@ -77,7 +77,7 @@ struct SidebarView: View {
                     }
                 } else {
                     Button {
-                        openWindow(id: "recording")
+                        openWindow(id: "app-picker")
                     } label: {
                         Label("Record", systemImage: "record.circle")
                     }

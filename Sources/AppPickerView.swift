@@ -7,6 +7,7 @@ struct AppPickerView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.openWindow) var openWindow
     @State private var searchText = ""
+    @AppStorage("liveTranslationPref") private var liveTranslationPref = false
 
     var body: some View {
         @Bindable var appState = appState
@@ -35,6 +36,7 @@ struct AppPickerView: View {
             if recorder.state == .idle {
                 recorder.loadAvailableApps()
             }
+            appState.enableLiveTranslation = liveTranslationPref
         }
     }
 
@@ -113,7 +115,10 @@ struct AppPickerView: View {
                 Toggle(isOn: $appState.enableLiveTranscription) {
                     Label("Live", systemImage: "text.word.spacing")
                 }
-                Toggle(isOn: $appState.enableLiveTranslation) {
+                Toggle(isOn: Binding(
+                    get: { appState.enableLiveTranslation },
+                    set: { appState.enableLiveTranslation = $0; liveTranslationPref = $0 }
+                )) {
                     Image(systemName: "character.bubble")
                 }
                 .disabled(!appState.enableLiveTranscription)

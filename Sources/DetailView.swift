@@ -454,11 +454,14 @@ struct SegmentRow: View {
     var highlightedMatchIndices: Set<Int> = []
     var showTimestamp: Bool = true
 
+    @AppStorage("transcriptFontSize") private var transcriptFontSizeRaw = TranscriptFontSize.normal.rawValue
+    private var fontSize: TranscriptFontSize { TranscriptFontSize(rawValue: transcriptFontSizeRaw) ?? .normal }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             if showTimestamp {
                 Text(formatTimestamp(segment.start))
-                    .font(.system(.caption, design: .monospaced))
+                    .font(fontSize.timestampFont)
                     .foregroundStyle(.secondary)
                     .frame(width: 55, alignment: .trailing)
                     .padding(.top, 7)
@@ -466,13 +469,13 @@ struct SegmentRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 highlightedText(segment.text.trimmingCharacters(in: .whitespaces))
-                    .font(.body)
+                    .font(fontSize.bodyFont)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .opacity(isCurrent ? 1.0 : 0.85)
 
                 if let translation, !translation.isEmpty {
                     Text(translation)
-                        .font(.callout)
+                        .font(fontSize.translationFont)
                         .foregroundStyle(Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
                             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                                 ? NSColor.systemTeal.withAlphaComponent(0.85)

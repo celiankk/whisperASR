@@ -1,5 +1,44 @@
 import Foundation
 import Observation
+import SwiftUI
+
+// MARK: - Transcript Font Size
+
+enum TranscriptFontSize: String, CaseIterable {
+    case small, normal, large
+
+    var label: String {
+        switch self {
+        case .small: return "Small"
+        case .normal: return "Normal"
+        case .large: return "Large"
+        }
+    }
+
+    var bodyFont: Font {
+        switch self {
+        case .small: return .caption
+        case .normal: return .body
+        case .large: return .title3
+        }
+    }
+
+    var translationFont: Font {
+        switch self {
+        case .small: return .caption2
+        case .normal: return .callout
+        case .large: return .body
+        }
+    }
+
+    var timestampFont: Font {
+        switch self {
+        case .small: return .system(.caption2, design: .monospaced)
+        case .normal: return .system(.caption, design: .monospaced)
+        case .large: return .system(.footnote, design: .monospaced)
+        }
+    }
+}
 
 // MARK: - Transcription Segment
 

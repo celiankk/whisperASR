@@ -7,6 +7,8 @@ struct RecordingView: View {
     @Environment(\.dismiss) var dismiss
     @State private var shouldAutoScroll = true
     @State private var isAlwaysOnTop = false
+    @AppStorage("transcriptFontSize") private var transcriptFontSizeRaw = TranscriptFontSize.normal.rawValue
+    private var fontSize: TranscriptFontSize { TranscriptFontSize(rawValue: transcriptFontSizeRaw) ?? .normal }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -124,12 +126,12 @@ struct RecordingView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(alignment: .top, spacing: 6) {
                                             Text(formatTimestamp(segment.start))
-                                                .font(.system(.caption2, design: .monospaced))
+                                                .font(fontSize.timestampFont)
                                                 .foregroundStyle(.orange.opacity(0.7))
                                                 .frame(width: 44, alignment: .trailing)
 
                                             Text(segment.text.trimmingCharacters(in: .whitespaces))
-                                                .font(.caption)
+                                                .font(fontSize.bodyFont)
                                                 .foregroundStyle(.primary.opacity(0.85))
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                         }
@@ -139,7 +141,7 @@ struct RecordingView: View {
                                                 Color.clear
                                                     .frame(width: 44, height: 1)
                                                 Text(appState.liveTranslatedSegments[index])
-                                                    .font(.caption)
+                                                    .font(fontSize.translationFont)
                                                     .foregroundStyle(Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
                                                     appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                                                         ? NSColor.systemTeal.withAlphaComponent(0.85)
@@ -154,7 +156,7 @@ struct RecordingView: View {
                                 }
                             } else {
                                 Text(appState.liveText)
-                                    .font(.caption)
+                                    .font(fontSize.bodyFont)
                                     .foregroundStyle(.primary.opacity(0.85))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }

@@ -30,7 +30,7 @@ struct WhisperASRApp: App {
                 .environment(audioPlayer)
                 .environment(audioRecorder)
         }
-        .defaultSize(width: 420, height: 500)
+        .defaultSize(width: 420, height: 250)
         .windowResizability(.contentSize)
 
         Settings {

@@ -8,6 +8,7 @@ struct RecordingView: View {
     @State private var enableLiveTranscription = true
     @State private var shouldAutoScroll = true
     @State private var searchText = ""
+    @State private var isAlwaysOnTop = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +27,7 @@ struct RecordingView: View {
         }
         .frame(
             minWidth: 360, idealWidth: 420, maxWidth: .infinity,
-            minHeight: (recorder.state == .recording && !enableLiveTranscription) ? 180 : 400,
+            minHeight: (recorder.state == .recording && !enableLiveTranscription) ? 90 : 200,
             idealHeight: (recorder.state == .recording && !enableLiveTranscription) ? 200 : 500,
             maxHeight: .infinity
         )
@@ -151,37 +152,7 @@ struct RecordingView: View {
 
     private var recordingContent: some View {
         @Bindable var recorder = recorder
-        return VStack(spacing: 12) {
-            // Header: indicator + duration + minimize button
-            ZStack {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 10, height: 10)
-                        .shadow(color: .red.opacity(0.6), radius: 6)
-                        .modifier(PulsingModifier())
-
-                    Text(formatDuration(recorder.recordingDuration))
-                        .font(.system(size: 24, weight: .light, design: .monospaced))
-                }
-
-                HStack {
-                    Spacer()
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "arrow.down.right.and.arrow.up.left")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.top, 16)
-            .padding(.horizontal, 12)
-
-            Divider()
-                .padding(.horizontal)
-
+        return VStack(spacing: 0) {
             // Live transcription area (only shown if enabled)
             if enableLiveTranscription {
                 liveTranscriptView
@@ -190,25 +161,56 @@ struct RecordingView: View {
             }
 
             Divider()
-                .padding(.horizontal)
 
-            HStack(spacing: 12) {
+            // Bottom bar: indicator + action buttons + window controls
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 8, height: 8)
+                        .shadow(color: .red.opacity(0.6), radius: 4)
+                        .modifier(PulsingModifier())
+                    Text(formatDuration(recorder.recordingDuration))
+                        .font(.system(size: 13, weight: .light, design: .monospaced))
+                }
+
+                Spacer()
+
                 Button("Cancel") {
                     appState.stopLiveTranscription()
                     recorder.cancelRecording()
                     dismiss()
                 }
 
-                Spacer()
-
-                Button("Stop Recording") {
+                Button("Finish Recording") {
                     stopAndDismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
+
+                Divider()
+                    .frame(height: 16)
+
+                Button {
+                    isAlwaysOnTop.toggle()
+                    setWindowAlwaysOnTop(isAlwaysOnTop)
+                } label: {
+                    Image(systemName: isAlwaysOnTop ? "pin.fill" : "pin")
+                        .foregroundStyle(isAlwaysOnTop ? .orange : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(isAlwaysOnTop ? "Unpin window" : "Keep on top of all windows")
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 12)
+            .padding(.vertical, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -425,6 +427,12 @@ struct RecordingView: View {
             recorder.state = .idle
             dismiss()
         }
+    }
+
+    private func setWindowAlwaysOnTop(_ alwaysOnTop: Bool) {
+        NSApplication.shared.windows
+            .first { $0.title == "Recording" }?
+            .level = alwaysOnTop ? .floating : .normal
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {

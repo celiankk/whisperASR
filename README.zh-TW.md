@@ -111,6 +111,12 @@ bash Scripts/build_release.sh
 cp -r WhisperASR.app /Applications/
 ```
 
+若 macOS 顯示「無法開啟」警告（因為 app 未經簽署），請將以下指令中的路徑替換為 `WhisperASR.app` 的實際位置後執行：
+
+```bash
+xattr -cr /path/to/WhisperASR.app
+```
+
 ## 使用方式
 
 1. **新增檔案** — 將音訊／影片檔案拖至側邊欄，或點擊 **+** 按鈕

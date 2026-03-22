@@ -113,6 +113,12 @@ This builds an optimized release binary, generates a proper `.icns` icon, and pa
 cp -r WhisperASR.app /Applications/
 ```
 
+If macOS blocks the app with a "cannot be opened" warning (because it is not signed), run the following command with the path to wherever `WhisperASR.app` is located:
+
+```bash
+xattr -cr /path/to/WhisperASR.app
+```
+
 ## Usage
 
 1. **Add files** — drag audio/video files onto the sidebar, or click the **+** button

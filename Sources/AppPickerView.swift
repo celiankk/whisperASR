@@ -28,7 +28,7 @@ struct AppPickerView: View {
             minWidth: 360, idealWidth: 420, maxWidth: .infinity,
             minHeight: 400, idealHeight: 400, maxHeight: .infinity
         )
-        .background(WindowCenterer())
+        .background(WindowPositioner())
         .onChange(of: appState.enableLiveTranscription) { _, newValue in
             if !newValue { appState.enableLiveTranslation = false }
         }
@@ -58,11 +58,6 @@ struct AppPickerView: View {
         @Bindable var appState = appState
         @Bindable var recorder = recorder
         return VStack(spacing: 0) {
-            Text("Select App to Record")
-                .font(.headline)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
-
             if let error = recorder.error {
                 Text(error)
                     .font(.caption)
@@ -89,6 +84,7 @@ struct AppPickerView: View {
             .padding(6)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
             .padding(.horizontal, 12)
+            .padding(.top, 12)
             .padding(.bottom, 4)
 
             List(filteredApps, id: \.bundleIdentifier, selection: Binding(
@@ -229,23 +225,53 @@ struct AppPickerView: View {
     }
 }
 
-// MARK: - Window Centerer
+// MARK: - Window Positioner
 
-/// Centers this window on the main WhisperASR window when it first appears.
-private struct WindowCenterer: NSViewRepresentable {
-    class CenterView: NSView {
+/// Centers this window on the main WhisperASR window each time it becomes key,
+/// synchronously (before any drawing) so there is no visible jump.
+private struct WindowPositioner: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView { PositionView(coordinator: context.coordinator) }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    class PositionView: NSView {
+        let coordinator: Coordinator
+        init(coordinator: Coordinator) {
+            self.coordinator = coordinator
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard let window else { return }
-            guard let mainWindow = NSApplication.shared.windows.first(where: {
-                $0 !== window && $0.isVisible && $0.title != "Recording"
-            }) else { return }
+            if let window, coordinator.window == nil {
+                coordinator.observe(window)
+            }
+        }
+    }
+
+    class Coordinator: NSObject {
+        weak var window: NSWindow?
+
+        func observe(_ window: NSWindow) {
+            self.window = window
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowDidBecomeKey(_:)),
+                name: NSWindow.didBecomeKeyNotification,
+                object: window
+            )
+        }
+
+        @objc func windowDidBecomeKey(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow,
+                  let mainWindow = NSApplication.shared.windows.first(where: {
+                      $0 !== window && $0.isVisible && $0.title != "Recording"
+                  }) else { return }
             let mf = mainWindow.frame
             let wf = window.frame
             window.setFrameOrigin(NSPoint(x: mf.midX - wf.width / 2, y: mf.midY - wf.height / 2))
         }
-    }
 
-    func makeNSView(context: Context) -> NSView { CenterView() }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+        deinit { NotificationCenter.default.removeObserver(self) }
+    }
 }

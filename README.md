@@ -2,41 +2,59 @@
 
 A native macOS app for audio transcription using [Breeze-ASR-25](https://github.com/mtkresearch/Breeze-ASR-25) (Whisper large-v2 fine-tuned for Taiwanese Mandarin and code-switching) via [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with Metal GPU acceleration.
 
-![WhisperASR Screenshot](Assets/screenshot.png)
+![Live transcription with bilingual output](docs/screenshots/live_recording.png)
+
+## Screenshots
+
+| Transcription Progress | Bilingual Transcript |
+|---|---|
+| ![Progress](docs/screenshots/progress.png) | ![Transcript](docs/screenshots/transcript.png) |
+
+| App Picker | Settings |
+|---|---|
+| ![App picker](docs/screenshots/recording.png) | ![Settings](docs/screenshots/settings.png) |
 
 ## Features
 
-- **Drag-and-drop** audio/video files (MP3, WAV, M4A, MP4, AAC, FLAC, OGG, WMA, AIFF, CAF)
+### Live transcription + translation
+
 - **App audio recording** — capture audio from any running app via ScreenCaptureKit (M4A/AAC at 48 kHz)
 - **Live transcription** — see transcribed text in real-time while recording
 - **Live translation** — per-segment translation displayed inline below each transcribed line, via OpenAI-compatible API
-- **Post-transcription translation** — translate completed transcriptions into any configured language with a single click
-- **Configurable languages** — auto-detect or set source language; choose target language for translation
-- **Zoom meeting detection** — automatically prompts to stop recording when a Zoom meeting ends
-- **Recent apps** — previously recorded apps appear at the top of the app picker
-- **Metal GPU acceleration** via whisper.cpp for fast transcription
 - **Smart auto-scroll** — live transcription view automatically follows new segments
 - **Live results reuse** — when recording stops, live transcription results are kept (no re-transcription)
-- **Search** — global sidebar filter across all transcriptions, plus in-file find (Cmd+F) with match highlighting and navigation
+- **Zoom meeting detection** — automatically prompts to stop recording when a Zoom meeting ends
+
+### File transcription
+
+- **Drag-and-drop** audio/video files (MP3, WAV, M4A, MP4, AAC, FLAC, OGG, WMA, AIFF, CAF)
+- **Batch processing** — queue multiple files at once
 - **Sequential transcription queue** — files wait in queue and transcribe one at a time
-- **Real-time progress** with estimated time remaining
+
+### Bilingual output
+
+- **Post-transcription translation** — translate completed transcriptions into any configured language with a single click
+- **Configurable languages** — auto-detect or set source language; choose target language for translation
+- **Search** — global sidebar filter across all transcriptions, plus in-file find (Cmd+F) with match highlighting and navigation
+
+### Playback
+
+- **Audio playback** with play/pause, seek bar, and skip ±5s controls
 - **Synced text highlighting** — the current sentence highlights as audio plays
 - **Click-to-seek** — click any segment to jump to that point in the audio
-- **Playback speed control** — adjustable 0.25x–3.0x with slider, ±buttons, and preset shortcuts
-- **Audio playback** with play/pause, seek bar, and skip ±5s controls
-- **Toggle timestamps** — show or hide segment timestamps in the transcript view
-- **Export** transcriptions as SRT (subtitles) or plain text
-- **Batch processing** — queue multiple files at once
-- **Rename and copy** files from the sidebar context menu
+
+### Privacy & performance
+
+- **Metal GPU acceleration** via whisper.cpp — fully on-device, no audio ever leaves your Mac
+- **Bring your own API** — translation uses any OpenAI-compatible endpoint, including local models
 - **Re-transcribe** and **retry on failure** with copyable error messages
 - **Custom model path** — configure via Settings
-- **Custom app icon** — teal-to-blue gradient with waveform design
 
 ## Requirements
 
 - macOS 14.0+
 - Apple Silicon Mac (arm64) — the included xcframework is built for arm64
-- Python 3 with `torch`, `transformers`, `numpy`, `huggingface_hub` (for model conversion only)
+- Python 3 with `torch`, `transformers`, `numpy`, `huggingface_hub` (only if converting the model yourself; not needed if downloading the pre-converted GGML file)
 
 ## Setup
 
@@ -50,13 +68,21 @@ bash Scripts/build_whisper_lib.sh
 
 This clones whisper.cpp, builds it with Metal + Accelerate, and packages the static libraries into an xcframework.
 
-### 2. Convert the Breeze-ASR-25 model
+### 2. Get the Breeze-ASR-25 GGML model
+
+**Option A (recommended):** Download the pre-converted GGML file directly from HuggingFace (~3 GB) and place it at `Models/ggml-model.bin`:
+
+```
+https://huggingface.co/danielkao0421/Breeze-ASR-25-ggml/blob/main/ggml-model.bin
+```
+
+**Option B:** Convert from the original model (requires Python 3 + `torch`, `transformers`, `numpy`, `huggingface_hub`):
 
 ```bash
 bash Scripts/convert_model.sh
 ```
 
-This downloads the Breeze-ASR-25 model from HuggingFace (~3 GB), clones the necessary repos, and converts it to GGML format at `Models/ggml-model.bin`. Only needed once.
+This downloads the Breeze-ASR-25 model from HuggingFace, clones the necessary repos, and converts it to GGML format at `Models/ggml-model.bin`.
 
 ### 3. Build and run
 
@@ -97,13 +123,13 @@ cp -r WhisperASR.app /Applications/
 8. **Play audio** — use the player controls at the bottom; text highlights in sync
 9. **Export** — click the export button (top-right) to save as SRT or plain text
 
-### Translation Settings
+### Settings
 
 Open **Settings** (Cmd+,) to configure:
 
-- **Source Language** — auto-detect or choose a specific language for transcription
-- **Target Language** — choose a language to translate live transcription into
-- **OpenAI Translation API** — provide an endpoint, API key, and model to use an OpenAI-compatible API for translation
+- **Target Language** — choose a language to translate transcriptions into
+- **OpenAI Translation API** — only the API key is required; endpoint defaults to OpenAI, model defaults to `gpt-4o-mini`. Any OpenAI-compatible endpoint (including local models) works.
+- **Whisper Model** — path to a custom `ggml-*.bin` model file; defaults to `Models/ggml-model.bin` in the project directory
 
 ## Project Structure
 

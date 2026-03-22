@@ -1,5 +1,7 @@
 # WhisperASR
 
+[繁體中文](README.zh-TW.md)
+
 A native macOS app for audio transcription using [Breeze-ASR-25](https://github.com/mtkresearch/Breeze-ASR-25) (Whisper large-v2 fine-tuned for Taiwanese Mandarin and code-switching) via [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with Metal GPU acceleration.
 
 ![Live transcription with bilingual output](docs/screenshots/live_recording.png)

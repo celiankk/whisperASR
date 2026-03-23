@@ -141,7 +141,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1</string>
+    <string>0.1.1</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -157,8 +157,24 @@ PLIST
 # Create PkgInfo
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
+if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+    echo "==> Signing app bundle..."
+    codesign --deep --force --options runtime \
+        --sign "$CODESIGN_IDENTITY" \
+        "$APP_BUNDLE"
+    echo "==> Verifying signature..."
+    codesign --verify --deep --strict "$APP_BUNDLE"
+    spctl --assess --type execute "$APP_BUNDLE" && echo "    Gatekeeper: OK" || echo "    Gatekeeper: not yet notarized (run notarytool to fix)"
+else
+    echo "==> Skipping code signing (set CODESIGN_IDENTITY to sign)"
+fi
+
 echo "==> Done! App bundle created at:"
 echo "    $APP_BUNDLE"
 echo ""
 echo "    To run:  open $APP_BUNDLE"
 echo "    To move: cp -r $APP_BUNDLE /Applications/"
+if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+    echo ""
+    echo "    Signed with: $CODESIGN_IDENTITY"
+fi

@@ -182,6 +182,28 @@ final class TranscriptionService: @unchecked Sendable {
 
     // MARK: - Model Management
 
+    static var appSupportModelPath: String {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport.appendingPathComponent("WhisperASR/Models/ggml-model.bin").path
+    }
+
+    /// Check whether a usable model file exists at any known location.
+    static func modelExists() -> Bool {
+        if let custom = UserDefaults.standard.string(forKey: "modelPath"),
+           !custom.isEmpty,
+           FileManager.default.fileExists(atPath: custom) {
+            return true
+        }
+        if FileManager.default.fileExists(atPath: appSupportModelPath) {
+            return true
+        }
+        let thisFile = #filePath
+        let sourcesDir = (thisFile as NSString).deletingLastPathComponent
+        let projectRoot = (sourcesDir as NSString).deletingLastPathComponent
+        let projectPath = (projectRoot as NSString).appendingPathComponent("Models/ggml-model.bin")
+        return FileManager.default.fileExists(atPath: projectPath)
+    }
+
     private func ensureModelLoaded() throws {
         let path = resolveModelPath()
         guard FileManager.default.fileExists(atPath: path) else {
@@ -213,6 +235,13 @@ final class TranscriptionService: @unchecked Sendable {
             return custom
         }
 
+        // Check App Support path (where auto-download saves the model)
+        let appSupportPath = Self.appSupportModelPath
+        if FileManager.default.fileExists(atPath: appSupportPath) {
+            return appSupportPath
+        }
+
+        // Fallback to project-relative path (development)
         let projectRoot = resolveProjectRoot()
         return (projectRoot as NSString).appendingPathComponent("Models/ggml-model.bin")
     }

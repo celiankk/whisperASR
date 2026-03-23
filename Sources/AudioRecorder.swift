@@ -448,17 +448,22 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private func checkZoomMeetingWindows() {
         guard let pid = recordingPID else { return }
 
-        // Check if Zoom's CptHost subprocess is running — it only exists during an active call.
-        // This is more reliable than window title matching, which breaks during screen sharing.
-        let hasMeeting = zoomHasActiveCall(parentPID: pid)
+        // Run the blocking ps check on a background thread to avoid stalling the main thread.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            // Check if Zoom's CptHost subprocess is running — it only exists during an active call.
+            let hasMeeting = self.zoomHasActiveCall(parentPID: pid)
 
-        if hasMeeting {
-            meetingStarted = true
-        } else if meetingStarted {
-            meetingMonitorTimer?.invalidate()
-            meetingMonitorTimer = nil
-            meetingEnded = true
-            onMeetingEnded?()
+            DispatchQueue.main.async {
+                if hasMeeting {
+                    self.meetingStarted = true
+                } else if self.meetingStarted {
+                    self.meetingMonitorTimer?.invalidate()
+                    self.meetingMonitorTimer = nil
+                    self.meetingEnded = true
+                    self.onMeetingEnded?()
+                }
+            }
         }
     }
 
@@ -472,10 +477,12 @@ class AudioRecorder: NSObject, SCStreamOutput {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return true // Assume meeting is still active if we can't check
         }
+        // Read all output first — blocks until the process closes stdout (i.e. exits).
+        // Do NOT use waitUntilExit() here: it polls the current run loop, which doesn't
+        // exist on background GCD threads, causing an infinite hang.
         guard let data = try? pipe.fileHandleForReading.readDataToEndOfFile(),
               let output = String(data: data, encoding: .utf8) else {
             return true

@@ -305,7 +305,7 @@ struct SidebarView: View {
                         appState.addFile(url: url)
                     }
                 }
-                recorder.state = .idle
+                await MainActor.run { recorder.state = .idle }
             }
         }
     }

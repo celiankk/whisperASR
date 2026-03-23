@@ -278,7 +278,11 @@ struct SidebarView: View {
         alert.addButton(withTitle: "Stop Recording")
         alert.addButton(withTitle: "Continue Recording")
         alert.alertStyle = .informational
+        alert.icon = AppIconGenerator.generate()
 
+        // Show the alert window above all other windows (including Zoom)
+        let panel = alert.window
+        panel.level = .screenSaver
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
             // Close the recording window

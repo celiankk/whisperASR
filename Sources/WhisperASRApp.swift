@@ -11,7 +11,7 @@ struct WhisperASRApp: App {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup {
+        Window("WhisperASR", id: "main") {
             ContentView()
                 .environment(appState)
                 .environment(audioPlayer)
@@ -19,7 +19,12 @@ struct WhisperASRApp: App {
                 .frame(minWidth: 800, minHeight: 500)
                 .onAppear {
                     appDelegate.appState = appState
+                    appDelegate.audioRecorder = audioRecorder
                     appDelegate.openWindow = openWindow
+                    appDelegate.processPendingURL()
+                }
+                .onOpenURL { url in
+                    appDelegate.handleURL(url)
                 }
         }
         .defaultSize(width: 1000, height: 650)
@@ -51,17 +56,64 @@ struct WhisperASRApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
+    var audioRecorder: AudioRecorder?
     var openWindow: OpenWindowAction?
+    var launchedViaURL = false
+    private var pendingURL: URL?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let icon = AppIconGenerator.generate()
         NSApplication.shared.applicationIconImage = icon
-        // Force the Dock tile to use our icon (needed for bare executables from swift run)
         let imageView = NSImageView(image: icon)
         NSApplication.shared.dockTile.contentView = imageView
         NSApplication.shared.dockTile.display()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first, url.scheme == "whisperasr" else { return }
+        launchedViaURL = true
+        // If openWindow is ready, handle immediately; otherwise queue it
+        if openWindow != nil {
+            handleURL(url)
+        } else {
+            pendingURL = url
+        }
+    }
+
+    func handleURL(_ url: URL) {
+        guard url.scheme == "whisperasr", url.host == "record",
+              let openWindow else { return }
+
+        let isRecording = audioRecorder?.state == .recording
+        let targetWindowID = isRecording ? "recording" : "app-picker"
+        let targetTitle = isRecording ? "Recording" : "Select App to Record"
+
+        openWindow(id: targetWindowID)
+
+        // Wait for SwiftUI to finish creating the window, then reorder
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            // Hide the main window if this was a cold launch via URL
+            if self.launchedViaURL {
+                for window in NSApplication.shared.windows where window.title == "WhisperASR" {
+                    window.orderOut(nil)
+                }
+            }
+            // Bring target window to front
+            for window in NSApplication.shared.windows where window.title == targetTitle {
+                window.makeKeyAndOrderFront(nil)
+                break
+            }
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func processPendingURL() {
+        if let url = pendingURL {
+            pendingURL = nil
+            handleURL(url)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

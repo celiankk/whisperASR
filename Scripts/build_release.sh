@@ -150,6 +150,17 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>WhisperASR needs microphone access to record audio for transcription.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>WhisperASR needs to control other applications for screen recording.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>$BUNDLE_ID</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>whisperasr</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

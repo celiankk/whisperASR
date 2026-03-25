@@ -105,8 +105,8 @@ struct RecordingView: View {
     // MARK: - Live Transcript
 
     private var liveTranscriptView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if appState.isLiveTranscribing && appState.liveText.isEmpty {
+        VStack(alignment: .leading, spacing: 0) {
+            if appState.isLiveTranscribing && appState.liveSegments.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
@@ -115,44 +115,43 @@ struct RecordingView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal)
+                .frame(maxHeight: .infinity)
             }
 
-            if !appState.liveSegments.isEmpty || !appState.liveText.isEmpty {
+            if !appState.liveSegments.isEmpty {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 6) {
-                            if !appState.liveSegments.isEmpty {
-                                ForEach(Array(appState.liveSegments.enumerated()), id: \.offset) { index, segment in
-                                    LiveSegmentRow(
-                                        segment: segment,
-                                        translation: index < appState.liveTranslatedSegments.count
-                                            ? appState.liveTranslatedSegments[index] : "",
-                                        fontSize: fontSize
-                                    )
-                                    .id(index)
-                                }
-                            } else {
-                                Text(appState.liveText)
-                                    .font(fontSize.bodyFont)
-                                    .foregroundStyle(.primary.opacity(0.85))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            Color.clear
-                                .frame(height: 1)
-                                .id("bottomAnchor")
+                    List {
+                        ForEach(Array(appState.liveSegments.enumerated()), id: \.offset) { index, segment in
+                            LiveSegmentRow(
+                                segment: segment,
+                                translation: index < appState.liveTranslatedSegments.count
+                                    ? appState.liveTranslatedSegments[index] : "",
+                                fontSize: fontSize
+                            )
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
+                            .listRowBackground(Color.clear)
                         }
-                        .padding(.horizontal)
-                        .background(
-                            ScrollPositionObserver(isAtBottom: $shouldAutoScroll)
-                                .frame(width: 0, height: 0)
-                                .allowsHitTesting(false)
-                        )
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id("bottomAnchor")
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
                     }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .environment(\.defaultMinListRowHeight, 1)
+                    .background(
+                        ScrollPositionObserver(isAtBottom: $shouldAutoScroll)
+                            .frame(width: 0, height: 0)
+                            .allowsHitTesting(false)
+                    )
                     .onChange(of: appState.liveSegments.count) { _, _ in
                         deferredScrollToBottom(proxy: proxy)
                     }
-                    .onChange(of: appState.liveTranslatedSegments) { _, _ in
+                    .onChange(of: appState.liveTranslatedSegments.count) { _, _ in
                         deferredScrollToBottom(proxy: proxy)
                     }
                 }
@@ -187,7 +186,7 @@ struct RecordingView: View {
 
     private func stopAndDismiss() {
         let capturedSegments = appState.liveSegments
-        let capturedText = appState.liveText
+        let capturedText = capturedSegments.map { $0.text }.joined()
         let capturedTranslations = appState.liveTranslatedSegments
         let capturedLang: String? = !capturedTranslations.isEmpty
             ? UserDefaults.standard.string(forKey: "targetLanguage") : nil
@@ -242,7 +241,7 @@ private struct LiveSegmentRow: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .top, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(Self.formatTimestamp(segment.start))
                     .font(fontSize.timestampFont)
                     .foregroundStyle(.orange.opacity(0.7))

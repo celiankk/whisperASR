@@ -22,6 +22,10 @@ struct WhisperASRApp: App {
                     appDelegate.audioRecorder = audioRecorder
                     appDelegate.openWindow = openWindow
                     appDelegate.processPendingURL()
+                    // Recover live transcription from a previous crash/hang
+                    if appState.hasLiveRecoveryData {
+                        appState.importRecoveredTranscription()
+                    }
                 }
                 .onOpenURL { url in
                     appDelegate.handleURL(url)

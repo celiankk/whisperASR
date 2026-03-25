@@ -21,6 +21,11 @@ class AppState {
     private var isTranscribing = false
     private var liveTranscriptionTask: Task<Void, Never>?
     private var isChunkTranscribing = false
+    private var lastAutoSaveTime: Date = .distantPast
+
+    /// Maximum chunk duration sent to whisper (30 seconds at 16kHz).
+    /// Caps processing time so the loop never snowballs.
+    private static let maxChunkSamples = 16000 * 30
 
     init() {
         items = TranscriptionStore.loadAll()
@@ -212,8 +217,9 @@ class AppState {
             while !Task.isCancelled {
                 // Don't overlap chunk transcriptions; skip if one is still running
                 if !self.isChunkTranscribing {
-                    let allSamples = recorder.getAccumulatedSamples()
-                    let newSampleCount = allSamples.count - committedSampleCount
+                    // Only read the sample count (no copy) to check for new audio
+                    let totalSamples = recorder.accumulatedSampleCount
+                    let newSampleCount = totalSamples - committedSampleCount
 
                     // Only transcribe if we have at least 1 second of NEW audio (16000 samples)
                     if newSampleCount >= 16000 {
@@ -221,8 +227,20 @@ class AppState {
 
                         // Include 2 seconds of overlap from previous chunk for context
                         let contextSamples = min(committedSampleCount, 16000 * 2)
-                        let chunkStart = committedSampleCount - contextSamples
-                        let chunk = Array(allSamples[chunkStart...])
+
+                        // Cap chunk size to prevent snowball: if we've fallen behind,
+                        // skip ahead so we only transcribe the most recent audio.
+                        let maxNew = Self.maxChunkSamples - contextSamples
+                        let effectiveCommitted: Int
+                        if newSampleCount > maxNew {
+                            // Skip ahead — we can't keep up, prioritize recent audio
+                            effectiveCommitted = totalSamples - maxNew
+                        } else {
+                            effectiveCommitted = committedSampleCount
+                        }
+                        let chunkStart = effectiveCommitted - min(effectiveCommitted, 16000 * 2)
+                        // Only copy the chunk we need, not the entire buffer
+                        let chunk = recorder.getSamples(from: chunkStart)
                         let timeOffset = Double(chunkStart) / 16000.0
 
                         do {
@@ -243,12 +261,17 @@ class AppState {
                             let allSegments = kept + newSegments
 
                             committedSegments = allSegments
-                            committedSampleCount = allSamples.count
+                            committedSampleCount = totalSamples
+
+                            // Trim old PCM samples we'll never need again
+                            // (keep 2s of overlap for next chunk's context)
+                            let safeToTrim = max(0, committedSampleCount - 16000 * 2)
+                            recorder.trimSamples(upTo: safeToTrim)
 
                             await MainActor.run {
                                 self.liveSegments = allSegments
-                                self.liveText = allSegments.map { $0.text }.joined()
                                 self.isChunkTranscribing = false
+                                self.throttledAutoSave()
                             }
                             // Translate if live translation is enabled
                             if self.enableLiveTranslation && !allSegments.isEmpty {
@@ -284,6 +307,88 @@ class AppState {
         liveTranslatedSegments = []
         liveTranslatedSourceTexts = []
         enableLiveTranslation = false
+        removeLiveRecoveryFile()
+    }
+
+    // MARK: - Live Transcription Auto-Save (crash recovery)
+
+    private static var liveRecoveryURL: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport
+            .appendingPathComponent("WhisperASR", isDirectory: true)
+            .appendingPathComponent("live_recovery.json")
+    }
+
+    private struct LiveRecoveryData: Codable {
+        let segments: [TranscriptionSegment]
+        let fullText: String
+        let translatedSegments: [String]
+        let translationLanguage: String?
+        let savedAt: Date
+    }
+
+    /// Only auto-save at most every 15 seconds to avoid JSON serialization overhead.
+    @MainActor
+    private func throttledAutoSave() {
+        let now = Date()
+        guard now.timeIntervalSince(lastAutoSaveTime) >= 15 else { return }
+        lastAutoSaveTime = now
+        autoSaveLiveTranscription()
+    }
+
+    /// Persist current live transcription to a recovery file so data survives a hang or crash.
+    @MainActor
+    private func autoSaveLiveTranscription() {
+        let segments = liveSegments
+        let text = segments.map { $0.text }.joined()
+        let translations = liveTranslatedSegments
+        let lang: String? = !translations.isEmpty
+            ? UserDefaults.standard.string(forKey: "targetLanguage") : nil
+
+        // Write on a background queue to avoid blocking the main thread
+        Task.detached(priority: .utility) {
+            let data = LiveRecoveryData(
+                segments: segments, fullText: text,
+                translatedSegments: translations, translationLanguage: lang,
+                savedAt: Date()
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .sortedKeys
+            guard let json = try? encoder.encode(data) else { return }
+            let url = AppState.liveRecoveryURL
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? json.write(to: url, options: .atomic)
+        }
+    }
+
+    private func removeLiveRecoveryFile() {
+        try? FileManager.default.removeItem(at: Self.liveRecoveryURL)
+    }
+
+    /// Check if there is a recoverable live transcription from a previous crash/hang.
+    var hasLiveRecoveryData: Bool {
+        FileManager.default.fileExists(atPath: Self.liveRecoveryURL.path)
+    }
+
+    /// Import recovered live transcription as a completed transcription item.
+    func importRecoveredTranscription() {
+        let url = Self.liveRecoveryURL
+        guard let data = try? Data(contentsOf: url),
+              let recovery = try? JSONDecoder().decode(LiveRecoveryData.self, from: data)
+        else { return }
+        let item = TranscriptionItem(
+            fileURL: URL(fileURLWithPath: "/recovered-\(ISO8601DateFormatter().string(from: recovery.savedAt))"))
+        item.segments = recovery.segments
+        item.fullText = recovery.fullText
+        item.translatedSegments = recovery.translatedSegments
+        item.translationLanguage = recovery.translationLanguage
+        item.status = .completed
+        item.fileName = "Recovered \(DateFormatter.localizedString(from: recovery.savedAt, dateStyle: .short, timeStyle: .short))"
+        items.insert(item, at: 0)
+        selectedItemID = item.id
+        TranscriptionStore.save(item)
+        removeLiveRecoveryFile()
     }
 
     // MARK: - Live Translation

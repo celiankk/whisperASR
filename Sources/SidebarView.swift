@@ -290,7 +290,7 @@ struct SidebarView: View {
                 .first { $0.identifier?.rawValue == "recording" }?
                 .close()
             let capturedSegments = appState.liveSegments
-            let capturedText = appState.liveText
+            let capturedText = capturedSegments.map { $0.text }.joined()
             let capturedTranslations = appState.liveTranslatedSegments
             let capturedLang: String? = !capturedTranslations.isEmpty
                 ? UserDefaults.standard.string(forKey: "targetLanguage") : nil

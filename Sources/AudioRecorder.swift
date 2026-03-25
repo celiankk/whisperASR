@@ -43,11 +43,16 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private var isMicActive = false
     private static let maxMicBufferSamples = 48000 * 5 // 5 seconds cap
 
-    // Live transcription: accumulated 16kHz mono PCM samples
-    private var pcmSampleBuffer = OSAllocatedUnfairLock(initialState: [Float]())
-    /// Number of accumulated 16kHz samples available for live transcription.
+    // Live transcription: accumulated 16kHz mono PCM samples.
+    // Buffer + trimOffset are in a single lock so reads/writes are always atomic.
+    private struct PCMState {
+        var buffer: [Float] = []
+        var trimOffset: Int = 0
+    }
+    private var pcmState = OSAllocatedUnfairLock(initialState: PCMState())
+    /// Total number of 16kHz samples accumulated since recording started (absolute count).
     var accumulatedSampleCount: Int {
-        pcmSampleBuffer.withLock { $0.count }
+        pcmState.withLock { $0.trimOffset + $0.buffer.count }
     }
 
     private static let zoomBundleIDs: Set<String> = ["us.zoom.xos", "us.zoom.videomeeting"]
@@ -56,12 +61,37 @@ class AudioRecorder: NSObject, SCStreamOutput {
 
     /// Returns a copy of all accumulated 16kHz PCM samples for live transcription.
     func getAccumulatedSamples() -> [Float] {
-        pcmSampleBuffer.withLock { Array($0) }
+        pcmState.withLock { Array($0.buffer) }
+    }
+
+    /// Returns only the samples from absolute `startIndex` onward — avoids copying the entire
+    /// buffer during long recordings (which can be hundreds of MB after 30+ minutes).
+    func getSamples(from startIndex: Int) -> [Float] {
+        pcmState.withLock { state in
+            let bufIndex = startIndex - state.trimOffset
+            guard bufIndex >= 0, bufIndex < state.buffer.count else { return [] }
+            return Array(state.buffer[bufIndex...])
+        }
+    }
+
+    /// Trim committed samples from the front of the PCM buffer to cap memory usage.
+    /// `upTo` is an absolute sample index — samples before this index are freed.
+    func trimSamples(upTo absoluteIndex: Int) {
+        pcmState.withLock { state in
+            let bufIndex = absoluteIndex - state.trimOffset
+            guard bufIndex > 0 else { return }
+            let trimCount = min(bufIndex, state.buffer.count)
+            state.buffer.removeFirst(trimCount)
+            state.trimOffset += trimCount
+        }
     }
 
     /// Clears the accumulated PCM sample buffer (called when recording ends).
     private func clearPCMBuffer() {
-        pcmSampleBuffer.withLock { $0.removeAll() }
+        pcmState.withLock { state in
+            state.buffer.removeAll()
+            state.trimOffset = 0
+        }
     }
 
     // MARK: - App List
@@ -562,8 +592,8 @@ class AudioRecorder: NSObject, SCStreamOutput {
             return result
         }()
 
-        pcmSampleBuffer.withLock { buf in
-            buf.append(contentsOf: downsampled)
+        pcmState.withLock { state in
+            state.buffer.append(contentsOf: downsampled)
         }
     }
 

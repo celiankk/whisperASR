@@ -120,38 +120,15 @@ struct RecordingView: View {
             if !appState.liveSegments.isEmpty || !appState.liveText.isEmpty {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 6) {
+                        LazyVStack(alignment: .leading, spacing: 6) {
                             if !appState.liveSegments.isEmpty {
                                 ForEach(Array(appState.liveSegments.enumerated()), id: \.offset) { index, segment in
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(alignment: .top, spacing: 6) {
-                                            Text(formatTimestamp(segment.start))
-                                                .font(fontSize.timestampFont)
-                                                .foregroundStyle(.orange.opacity(0.7))
-                                                .frame(width: 44, alignment: .trailing)
-
-                                            Text(segment.text.trimmingCharacters(in: .whitespaces))
-                                                .font(fontSize.bodyFont)
-                                                .foregroundStyle(.primary.opacity(0.85))
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                        }
-                                        if index < appState.liveTranslatedSegments.count,
-                                           !appState.liveTranslatedSegments[index].isEmpty {
-                                            HStack(alignment: .top, spacing: 6) {
-                                                Color.clear
-                                                    .frame(width: 44, height: 1)
-                                                Text(appState.liveTranslatedSegments[index])
-                                                    .font(fontSize.translationFont)
-                                                    .foregroundStyle(Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
-                                                    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                                                        ? NSColor.systemTeal.withAlphaComponent(0.85)
-                                                        : NSColor.systemBlue.withAlphaComponent(0.75)
-                                                })))
-                                                    .italic()
-                                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                            }
-                                        }
-                                    }
+                                    LiveSegmentRow(
+                                        segment: segment,
+                                        translation: index < appState.liveTranslatedSegments.count
+                                            ? appState.liveTranslatedSegments[index] : "",
+                                        fontSize: fontSize
+                                    )
                                     .id(index)
                                 }
                             } else {
@@ -173,10 +150,10 @@ struct RecordingView: View {
                         )
                     }
                     .onChange(of: appState.liveSegments.count) { _, _ in
-                        scrollToBottomIfNeeded(proxy: proxy)
+                        deferredScrollToBottom(proxy: proxy)
                     }
                     .onChange(of: appState.liveTranslatedSegments) { _, _ in
-                        scrollToBottomIfNeeded(proxy: proxy)
+                        deferredScrollToBottom(proxy: proxy)
                     }
                 }
             }
@@ -198,9 +175,12 @@ struct RecordingView: View {
 
     // MARK: - Helpers
 
-    private func scrollToBottomIfNeeded(proxy: ScrollViewProxy) {
-        guard shouldAutoScroll, !appState.liveSegments.isEmpty else { return }
-        withAnimation {
+    /// Capture scroll intent before layout changes can race with the observer,
+    /// then defer the actual scroll until LazyVStack finishes layout.
+    private func deferredScrollToBottom(proxy: ScrollViewProxy) {
+        let wasAtBottom = shouldAutoScroll
+        guard wasAtBottom, !appState.liveSegments.isEmpty else { return }
+        DispatchQueue.main.async {
             proxy.scrollTo("bottomAnchor", anchor: .bottom)
         }
     }
@@ -243,7 +223,51 @@ struct RecordingView: View {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    private func formatTimestamp(_ seconds: Double) -> String {
+}
+
+// MARK: - Live Segment Row
+
+/// Extracted row view with Equatable conformance so SwiftUI can skip
+/// re-rendering rows whose segment + translation haven't changed.
+private struct LiveSegmentRow: View, Equatable {
+    let segment: TranscriptionSegment
+    let translation: String
+    let fontSize: TranscriptFontSize
+
+    private static let translationColor = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor.systemTeal.withAlphaComponent(0.85)
+            : NSColor.systemBlue.withAlphaComponent(0.75)
+    }))
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .top, spacing: 6) {
+                Text(Self.formatTimestamp(segment.start))
+                    .font(fontSize.timestampFont)
+                    .foregroundStyle(.orange.opacity(0.7))
+                    .frame(width: 44, alignment: .trailing)
+
+                Text(segment.text.trimmingCharacters(in: .whitespaces))
+                    .font(fontSize.bodyFont)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !translation.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Color.clear
+                        .frame(width: 44, height: 1)
+                    Text(translation)
+                        .font(fontSize.translationFont)
+                        .foregroundStyle(Self.translationColor)
+                        .italic()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private static func formatTimestamp(_ seconds: Double) -> String {
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
         return String(format: "%d:%02d", m, s)
@@ -253,8 +277,8 @@ struct RecordingView: View {
 // MARK: - Scroll Position Observer
 
 /// Observes the enclosing NSScrollView's scroll position via native bounds-change
-/// notifications. Updates `isAtBottom` only on actual scroll events (user or
-/// programmatic), NOT on content size changes — avoiding race conditions.
+/// notifications. Uses a 150px threshold to tolerate content growth (e.g. translations
+/// appended) without prematurely disabling auto-scroll.
 private struct ScrollPositionObserver: NSViewRepresentable {
     @Binding var isAtBottom: Bool
 
@@ -324,7 +348,7 @@ private struct ScrollPositionObserver: NSViewRepresentable {
                 distanceFromBottom = scrollOffset
             }
             DispatchQueue.main.async {
-                self.isAtBottom = distanceFromBottom <= 50
+                self.isAtBottom = distanceFromBottom <= 150
             }
         }
 

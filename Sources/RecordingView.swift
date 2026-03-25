@@ -322,7 +322,11 @@ private struct ScrollPositionObserver: NSViewRepresentable {
         }
 
         func setupIfNeeded(view: NSView) {
-            guard !isSetUp, let scrollView = view.enclosingScrollView else { return }
+            guard !isSetUp else { return }
+            // Try enclosingScrollView first (works when inside the scroll view).
+            // Fall back to searching the view hierarchy (needed when placed as
+            // .background on a List, where the observer is a sibling of the NSScrollView).
+            guard let scrollView = view.enclosingScrollView ?? Self.findScrollView(from: view) else { return }
             isSetUp = true
             scrollView.contentView.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(
@@ -331,6 +335,25 @@ private struct ScrollPositionObserver: NSViewRepresentable {
                 name: NSView.boundsDidChangeNotification,
                 object: scrollView.contentView
             )
+        }
+
+        /// Walk up the view hierarchy and search sibling subtrees for an NSScrollView
+        /// whose document view is an NSTableView (i.e., the List's backing scroll view).
+        private static func findScrollView(from view: NSView) -> NSScrollView? {
+            var current: NSView? = view.superview
+            while let parent = current {
+                if let found = findTableScrollView(in: parent) { return found }
+                current = parent.superview
+            }
+            return nil
+        }
+
+        private static func findTableScrollView(in view: NSView) -> NSScrollView? {
+            if let sv = view as? NSScrollView, sv.documentView is NSTableView { return sv }
+            for subview in view.subviews {
+                if let found = findTableScrollView(in: subview) { return found }
+            }
+            return nil
         }
 
         @objc func scrollViewDidScroll(_ notification: Notification) {

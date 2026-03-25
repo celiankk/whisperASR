@@ -15,7 +15,7 @@ enum RecordingState: Equatable {
 }
 
 @Observable
-class AudioRecorder: NSObject, SCStreamOutput {
+class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var state: RecordingState = .idle
     var availableApps: [SCRunningApplication] = []
     var selectedApp: SCRunningApplication?
@@ -36,6 +36,14 @@ class AudioRecorder: NSObject, SCStreamOutput {
     private var meetingMonitorTimer: Timer?
     private var recordingPID: pid_t?
     private var meetingStarted = false
+
+    // Stream watchdog: detect stalled audio delivery and restart
+    private var lastAudioBufferTime = OSAllocatedUnfairLock(initialState: Date())
+    private var audioWatchdogTimer: Timer?
+    private var recordingApp: SCRunningApplication?
+    private var isRestartingStream = false
+    /// How long without audio before we consider the stream stalled (seconds).
+    private static let audioStallThreshold: TimeInterval = 15
 
     // Microphone mixing
     private var audioEngine: AVAudioEngine?
@@ -195,7 +203,9 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 self._hasReceivedSamples.withLock { $0 = false }
                 self.clearPCMBuffer()
 
-                let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+                self.recordingApp = app
+
+                let stream = SCStream(filter: filter, configuration: config, delegate: self)
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.whisperasr.audio-capture"))
                 try await stream.startCapture()
 
@@ -222,6 +232,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
                         self.recordingDuration = Date().timeIntervalSince(start)
                     }
                     self.startMeetingMonitor(app: app)
+                    self.startAudioWatchdog()
                 }
             } catch {
                 await MainActor.run {
@@ -239,6 +250,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
             timer?.invalidate()
             timer = nil
             stopMeetingMonitor()
+            stopAudioWatchdog()
         }
 
         if let stream {
@@ -248,6 +260,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
 
         stopMicrophoneCapture()
         clearPCMBuffer()
+        recordingApp = nil
 
         let received = _hasReceivedSamples.withLock { $0 }
         print("[AudioRecorder] stopRecording: hasReceivedSamples=\(received), writer=\(assetWriter != nil), input=\(assetWriterInput != nil)")
@@ -294,6 +307,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
 
             self.stopMicrophoneCapture()
             self.clearPCMBuffer()
+            self.recordingApp = nil
 
             if let writer = assetWriter {
                 writer.cancelWriting()
@@ -309,6 +323,7 @@ class AudioRecorder: NSObject, SCStreamOutput {
                 timer?.invalidate()
                 timer = nil
                 stopMeetingMonitor()
+                stopAudioWatchdog()
                 recordingDuration = 0
             }
         }
@@ -455,6 +470,88 @@ class AudioRecorder: NSObject, SCStreamOutput {
         return newSampleBuffer
     }
 
+    // MARK: - SCStreamDelegate
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        print("[AudioRecorder] SCStream stopped with error: \(error)")
+        // Attempt to restart the stream automatically
+        restartStream()
+    }
+
+    // MARK: - Audio Watchdog
+
+    private func startAudioWatchdog() {
+        lastAudioBufferTime.withLock { $0 = Date() }
+        audioWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.checkAudioStall()
+        }
+    }
+
+    private func stopAudioWatchdog() {
+        audioWatchdogTimer?.invalidate()
+        audioWatchdogTimer = nil
+    }
+
+    private func checkAudioStall() {
+        guard state == .recording, !isRestartingStream else { return }
+        let lastTime = lastAudioBufferTime.withLock { $0 }
+        let elapsed = Date().timeIntervalSince(lastTime)
+        if elapsed > Self.audioStallThreshold {
+            print("[AudioRecorder] audio stall detected: no buffers for \(String(format: "%.1f", elapsed))s, restarting stream")
+            restartStream()
+        }
+    }
+
+    private func restartStream() {
+        guard state == .recording, !isRestartingStream else { return }
+        isRestartingStream = true
+
+        Task {
+            // Stop the old stream
+            if let oldStream = self.stream {
+                try? await oldStream.stopCapture()
+                self.stream = nil
+            }
+
+            // Rebuild a fresh SCStream with the same app
+            guard let app = self.recordingApp else {
+                isRestartingStream = false
+                return
+            }
+
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                guard let display = content.displays.first else {
+                    isRestartingStream = false
+                    return
+                }
+
+                let filter = SCContentFilter(display: display, including: [app], exceptingWindows: [])
+
+                let config = SCStreamConfiguration()
+                config.capturesAudio = true
+                config.excludesCurrentProcessAudio = true
+                config.channelCount = 1
+                config.sampleRate = 48000
+                config.width = 2
+                config.height = 2
+                config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+
+                let newStream = SCStream(filter: filter, configuration: config, delegate: self)
+                try newStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.whisperasr.audio-capture"))
+                try await newStream.startCapture()
+                self.stream = newStream
+                self.lastAudioBufferTime.withLock { $0 = Date() }
+
+                print("[AudioRecorder] stream restarted successfully")
+            } catch {
+                print("[AudioRecorder] stream restart failed: \(error)")
+            }
+
+            isRestartingStream = false
+        }
+    }
+
     // MARK: - Zoom Meeting Monitor
 
     private func startMeetingMonitor(app: SCRunningApplication) {
@@ -535,6 +632,9 @@ class AudioRecorder: NSObject, SCStreamOutput {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
         guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
+
+        // Track that we're still receiving audio (for stall detection)
+        lastAudioBufferTime.withLock { $0 = Date() }
 
         // Use mixed buffer if mic is active, otherwise use original
         let bufferToWrite = mixedSampleBuffer(from: sampleBuffer) ?? sampleBuffer

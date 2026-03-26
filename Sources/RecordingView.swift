@@ -154,6 +154,7 @@ struct RecordingView: View {
                     .onChange(of: appState.liveTranslatedSegments.count) { _, _ in
                         deferredScrollToBottom(proxy: proxy)
                     }
+                    .overlay { WindowDragOverlay() }
                 }
             }
         }
@@ -396,6 +397,52 @@ private struct WindowConfigurator: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSView { ConfigView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+// MARK: - Window Drag Overlay
+
+/// Transparent overlay that lets single-finger click+drag move the window
+/// while forwarding two-finger trackpad scroll events to the List beneath.
+private struct WindowDragOverlay: NSViewRepresentable {
+    class DragView: NSView {
+        weak var targetScrollView: NSScrollView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                self?.targetScrollView = self?.findScrollView()
+            }
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
+
+        override func scrollWheel(with event: NSEvent) {
+            if targetScrollView == nil { targetScrollView = findScrollView() }
+            targetScrollView?.scrollWheel(with: event)
+        }
+
+        private func findScrollView() -> NSScrollView? {
+            var current: NSView? = superview
+            while let parent = current {
+                if let sv = Self.findTableScrollView(in: parent) { return sv }
+                current = parent.superview
+            }
+            return nil
+        }
+
+        private static func findTableScrollView(in view: NSView) -> NSScrollView? {
+            if let sv = view as? NSScrollView, sv.documentView is NSTableView { return sv }
+            for sub in view.subviews {
+                if let found = findTableScrollView(in: sub) { return found }
+            }
+            return nil
+        }
+    }
+
+    func makeNSView(context: Context) -> NSView { DragView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 

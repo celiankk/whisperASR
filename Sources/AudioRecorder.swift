@@ -24,6 +24,7 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var meetingEnded = false
     var includeMicrophone = false
     var onMeetingEnded: (() -> Void)?
+    var customRecordingName: String?
 
     private var stream: SCStream?
     private var assetWriter: AVAssetWriter?
@@ -183,6 +184,7 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
                 let fileURL = self.makeOutputURL(appName: app.applicationName)
+                self.customRecordingName = nil
 
                 let writer = try AVAssetWriter(outputURL: fileURL, fileType: .m4a)
                 let audioSettings: [String: Any] = [
@@ -707,9 +709,14 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let df = DateFormatter()
         df.dateFormat = "yyyyMMdd HH'h'"
         let timestamp = df.string(from: Date())
-        let sanitized = appName
-            .replacingOccurrences(of: "/", with: "-")
-        let baseName = "\(timestamp) \(sanitized)"
+        let baseName: String
+        if let custom = customRecordingName, !custom.isEmpty {
+            let sanitized = custom.replacingOccurrences(of: "/", with: "-")
+            baseName = "\(timestamp) \(sanitized)"
+        } else {
+            let sanitized = appName.replacingOccurrences(of: "/", with: "-")
+            baseName = "\(timestamp) \(sanitized)"
+        }
         var url = recordingsDir.appendingPathComponent("\(baseName).m4a")
         var counter = 2
         while FileManager.default.fileExists(atPath: url.path) {

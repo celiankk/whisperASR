@@ -90,6 +90,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard url.scheme == "whisperasr", url.host == "record",
               let openWindow else { return }
 
+        // Parse optional recording name from query: whisperasr://record?name=MyMeeting
+        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let nameItem = components.queryItems?.first(where: { $0.name == "name" }),
+           let name = nameItem.value, !name.isEmpty {
+            audioRecorder?.customRecordingName = name
+        }
+
         let isRecording = audioRecorder?.state == .recording
         let targetWindowID = isRecording ? "recording" : "app-picker"
         let targetTitle = isRecording ? "Recording" : "Select App to Record"

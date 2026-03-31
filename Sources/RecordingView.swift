@@ -7,6 +7,7 @@ struct RecordingView: View {
     @Environment(\.dismiss) var dismiss
     @State private var shouldAutoScroll = true
     @State private var isAlwaysOnTop = false
+    @State private var translationOnly = false
     @AppStorage("transcriptFontSize") private var transcriptFontSizeRaw = TranscriptFontSize.normal.rawValue
     private var fontSize: TranscriptFontSize { TranscriptFontSize(rawValue: transcriptFontSizeRaw) ?? .normal }
 
@@ -73,6 +74,17 @@ struct RecordingView: View {
                 Divider()
                     .frame(height: 16)
 
+                if appState.enableLiveTranslation {
+                    Button {
+                        translationOnly.toggle()
+                    } label: {
+                        Image(systemName: translationOnly ? "eye.fill" : "eye")
+                            .foregroundStyle(translationOnly ? .blue : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(translationOnly ? "Show original and translation" : "Show translation only")
+                }
+
                 Button {
                     isAlwaysOnTop.toggle()
                     setWindowAlwaysOnTop(isAlwaysOnTop)
@@ -131,7 +143,8 @@ struct RecordingView: View {
                                 segment: segment,
                                 translation: index < appState.liveTranslatedSegments.count
                                     ? appState.liveTranslatedSegments[index] : "",
-                                fontSize: fontSize
+                                fontSize: fontSize,
+                                translationOnly: translationOnly
                             )
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
@@ -156,7 +169,7 @@ struct RecordingView: View {
                     .onChange(of: appState.liveSegments.count) { _, _ in
                         deferredScrollToBottom(proxy: proxy)
                     }
-                    .onChange(of: appState.liveTranslatedSegments.count) { _, _ in
+                    .onChange(of: appState.liveTranslatedSegments) { _, _ in
                         deferredScrollToBottom(proxy: proxy)
                     }
                     .overlay { WindowDragOverlay() }
@@ -238,6 +251,7 @@ private struct LiveSegmentRow: View, Equatable {
     let segment: TranscriptionSegment
     let translation: String
     let fontSize: TranscriptFontSize
+    let translationOnly: Bool
 
     private static let translationColor = Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -247,15 +261,17 @@ private struct LiveSegmentRow: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(segment.text.trimmingCharacters(in: .whitespaces))
-                .font(fontSize.bodyFont)
-                .foregroundStyle(.primary.opacity(0.85))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if !translationOnly {
+                Text(segment.text.trimmingCharacters(in: .whitespaces))
+                    .font(fontSize.bodyFont)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if !translation.isEmpty {
                 Text(translation)
-                    .font(fontSize.translationFont)
+                    .font(translationOnly ? fontSize.bodyFont : fontSize.translationFont)
                     .foregroundStyle(Self.translationColor)
-                    .italic()
+                    .italic(translationOnly ? false : true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }

@@ -5,6 +5,7 @@ struct DetailView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioPlayerManager.self) var audioPlayer
     @State private var showTimestamps = true
+    @State private var translationOnly = false
 
     var body: some View {
         Group {
@@ -46,7 +47,7 @@ struct DetailView: View {
             TranscribingView(item: item)
 
         case .completed:
-            TranscriptContentView(item: item, showTimestamps: showTimestamps)
+            TranscriptContentView(item: item, showTimestamps: showTimestamps, translationOnly: translationOnly)
                 .toolbar {
                     ToolbarItem {
                         HStack(spacing: 4) {
@@ -81,6 +82,15 @@ struct DetailView: View {
                                 .menuIndicator(.hidden)
                             }
 
+                            if !item.translatedSegments.isEmpty {
+                                Button {
+                                    translationOnly.toggle()
+                                } label: {
+                                    Image(systemName: translationOnly ? "eye.fill" : "eye")
+                                }
+                                .help(translationOnly ? "Show original and translation" : "Show translation only")
+                            }
+
                             Button {
                                 showTimestamps.toggle()
                             } label: {
@@ -89,8 +99,10 @@ struct DetailView: View {
                             .help(showTimestamps ? "Hide timestamps" : "Show timestamps")
 
                             Menu {
-                                Button("Export as SRT...") { exportSRT(item) }
-                                Button("Export as Text...") { exportText(item) }
+                                Button("Export Text...") { exportText(item) }
+                                if !item.translatedSegments.isEmpty {
+                                    Button("Export Translation...") { exportTranslation(item) }
+                                }
                             } label: {
                                 Label("Export", systemImage: "square.and.arrow.up")
                             }
@@ -142,19 +154,6 @@ struct DetailView: View {
 
     // MARK: - Export
 
-    private func exportSRT(_ item: TranscriptionItem) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
-        panel.nameFieldStringValue = item.fileName
-            .replacingOccurrences(of: ".\(item.fileURL.pathExtension)", with: ".srt")
-
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            let srt = generateSRT(segments: item.segments)
-            try? srt.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-
     private func exportText(_ item: TranscriptionItem) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
@@ -170,26 +169,20 @@ struct DetailView: View {
         }
     }
 
-    private func generateSRT(segments: [TranscriptionSegment]) -> String {
-        var lines: [String] = []
-        for (i, seg) in segments.enumerated() {
-            let start = formatSRTTime(seg.start)
-            let end = formatSRTTime(seg.end ?? (seg.start + 5.0))
-            lines.append("\(i + 1)")
-            lines.append("\(start) --> \(end)")
-            lines.append(seg.text.trimmingCharacters(in: .whitespaces))
-            lines.append("")
-        }
-        return lines.joined(separator: "\n")
-    }
+    private func exportTranslation(_ item: TranscriptionItem) {
+        let lang = item.translationLanguage ?? "translation"
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = item.fileName
+            .replacingOccurrences(of: ".\(item.fileURL.pathExtension)", with: "-\(lang).txt")
 
-    private func formatSRTTime(_ seconds: Double) -> String {
-        let total = max(0, seconds)
-        let h = Int(total) / 3600
-        let m = (Int(total) % 3600) / 60
-        let s = Int(total) % 60
-        let ms = Int((total - Double(Int(total))) * 1000)
-        return String(format: "%02d:%02d:%02d,%03d", h, m, s, ms)
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let text = item.translatedSegments
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 }
 
@@ -253,6 +246,7 @@ struct TranscriptContentView: View {
     @State private var matchingSegmentIndices: Set<Int> = []  // segments that contain matches
     @State private var searchDebounceTask: Task<Void, Never>?
     var showTimestamps: Bool = true
+    var translationOnly: Bool = false
     @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
@@ -367,7 +361,8 @@ struct TranscriptContentView: View {
             translation: translation,
             searchQuery: query,
             highlightedMatchIndices: activeIndices,
-            showTimestamp: showTimestamps
+            showTimestamp: showTimestamps,
+            translationOnly: translationOnly
         )
         .id(index)
         .onTapGesture {
@@ -453,6 +448,7 @@ struct SegmentRow: View {
     var searchQuery: String = ""
     var highlightedMatchIndices: Set<Int> = []
     var showTimestamp: Bool = true
+    var translationOnly: Bool = false
 
     @AppStorage("transcriptFontSize") private var transcriptFontSizeRaw = TranscriptFontSize.normal.rawValue
     private var fontSize: TranscriptFontSize { TranscriptFontSize(rawValue: transcriptFontSizeRaw) ?? .normal }
@@ -468,20 +464,22 @@ struct SegmentRow: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                highlightedText(segment.text.trimmingCharacters(in: .whitespaces))
-                    .font(fontSize.bodyFont)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(isCurrent ? 1.0 : 0.85)
+                if !translationOnly {
+                    highlightedText(segment.text.trimmingCharacters(in: .whitespaces))
+                        .font(fontSize.bodyFont)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .opacity(isCurrent ? 1.0 : 0.85)
+                }
 
                 if let translation, !translation.isEmpty {
                     Text(translation)
-                        .font(fontSize.translationFont)
+                        .font(translationOnly ? fontSize.bodyFont : fontSize.translationFont)
                         .foregroundStyle(Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
                             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                                 ? NSColor.systemTeal.withAlphaComponent(0.85)
                                 : NSColor.systemBlue.withAlphaComponent(0.75)
                         })))
-                        .italic()
+                        .italic(translationOnly ? false : true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }

@@ -247,35 +247,18 @@ private struct LiveSegmentRow: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(Self.formatTimestamp(segment.start))
-                    .font(fontSize.timestampFont)
-                    .foregroundStyle(.orange.opacity(0.7))
-                    .frame(width: 44, alignment: .trailing)
-
-                Text(segment.text.trimmingCharacters(in: .whitespaces))
-                    .font(fontSize.bodyFont)
-                    .foregroundStyle(.primary.opacity(0.85))
+            Text(segment.text.trimmingCharacters(in: .whitespaces))
+                .font(fontSize.bodyFont)
+                .foregroundStyle(.primary.opacity(0.85))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if !translation.isEmpty {
+                Text(translation)
+                    .font(fontSize.translationFont)
+                    .foregroundStyle(Self.translationColor)
+                    .italic()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if !translation.isEmpty {
-                HStack(alignment: .top, spacing: 6) {
-                    Color.clear
-                        .frame(width: 44, height: 1)
-                    Text(translation)
-                        .font(fontSize.translationFont)
-                        .foregroundStyle(Self.translationColor)
-                        .italic()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
         }
-    }
-
-    private static func formatTimestamp(_ seconds: Double) -> String {
-        let m = Int(seconds) / 60
-        let s = Int(seconds) % 60
-        return String(format: "%d:%02d", m, s)
     }
 }
 

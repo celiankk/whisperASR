@@ -221,12 +221,12 @@ class AppState {
                     let totalSamples = recorder.accumulatedSampleCount
                     let newSampleCount = totalSamples - committedSampleCount
 
-                    // Only transcribe if we have at least 1 second of NEW audio (16000 samples)
-                    if newSampleCount >= 16000 {
+                    // Only transcribe if we have at least 0.5 seconds of NEW audio (8000 samples)
+                    if newSampleCount >= 8000 {
                         self.isChunkTranscribing = true
 
-                        // Include 2 seconds of overlap from previous chunk for context
-                        let contextSamples = min(committedSampleCount, 16000 * 2)
+                        // Include 1 second of overlap from previous chunk for context
+                        let contextSamples = min(committedSampleCount, 16000 * 1)
 
                         // Cap chunk size to prevent snowball: if we've fallen behind,
                         // skip ahead so we only transcribe the most recent audio.
@@ -238,7 +238,7 @@ class AppState {
                         } else {
                             effectiveCommitted = committedSampleCount
                         }
-                        let chunkStart = effectiveCommitted - min(effectiveCommitted, 16000 * 2)
+                        let chunkStart = effectiveCommitted - min(effectiveCommitted, 16000 * 1)
                         // Only copy the chunk we need, not the entire buffer
                         let chunk = recorder.getSamples(from: chunkStart)
                         let timeOffset = Double(chunkStart) / 16000.0
@@ -289,8 +289,8 @@ class AppState {
                             committedSampleCount = totalSamples
 
                             // Trim old PCM samples we'll never need again
-                            // (keep 2s of overlap for next chunk's context)
-                            let safeToTrim = max(0, committedSampleCount - 16000 * 2)
+                            // (keep 1s of overlap for next chunk's context)
+                            let safeToTrim = max(0, committedSampleCount - 16000 * 1)
                             recorder.trimSamples(upTo: safeToTrim)
 
                             await MainActor.run {
@@ -315,7 +315,7 @@ class AppState {
                 }
 
                 // Wait before the next chunk
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .milliseconds(500))
             }
         }
     }

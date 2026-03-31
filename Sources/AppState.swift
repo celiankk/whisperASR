@@ -258,7 +258,32 @@ class AppState {
                             // Keep committed segments before the context overlap window
                             let contextTime = Double(chunkStart) / 16000.0
                             let kept = committedSegments.filter { $0.start < contextTime }
-                            let allSegments = kept + newSegments
+
+                            // Add new segments, trimming any text at the start that
+                            // duplicates the end of the last segment (caused by the
+                            // 2s overlap re-transcription).
+                            var allSegments = kept
+                            for seg in newSegments {
+                                var text = seg.text
+                                if let lastText = allSegments.last?.text {
+                                    let suffixSource = lastText.trimmingCharacters(in: .whitespaces)
+                                    let prefixTarget = text.trimmingCharacters(in: .whitespaces)
+                                    // Find longest suffix of last segment that matches
+                                    // prefix of this segment, then trim it
+                                    let maxCheck = min(suffixSource.count, prefixTarget.count)
+                                    for len in stride(from: maxCheck, through: 4, by: -1) {
+                                        let suffix = String(suffixSource.suffix(len))
+                                        if prefixTarget.hasPrefix(suffix) {
+                                            text = String(prefixTarget.dropFirst(len))
+                                            break
+                                        }
+                                    }
+                                }
+                                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    allSegments.append(TranscriptionSegment(
+                                        start: seg.start, end: seg.end, text: text))
+                                }
+                            }
 
                             committedSegments = allSegments
                             committedSampleCount = totalSamples

@@ -99,6 +99,11 @@ struct RecordingView: View {
             if appState.enableLiveTranscription, !appState.isLiveTranscribing {
                 appState.startLiveTranscription(recorder: recorder)
             }
+            if recorder.pinWindow {
+                recorder.pinWindow = false
+                isAlwaysOnTop = true
+                setWindowAlwaysOnTop(true)
+            }
         }
     }
 

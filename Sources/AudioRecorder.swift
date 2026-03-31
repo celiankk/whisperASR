@@ -25,6 +25,7 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var includeMicrophone = false
     var onMeetingEnded: (() -> Void)?
     var customRecordingName: String?
+    var pinWindow = false
 
     private var stream: SCStream?
     private var assetWriter: AVAssetWriter?

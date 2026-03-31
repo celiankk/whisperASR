@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ScreenCaptureKit
 
 @main
 struct WhisperASRApp: App {
@@ -88,22 +89,104 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func handleURL(_ url: URL) {
         guard url.scheme == "whisperasr", url.host == "record",
-              let openWindow else { return }
+              let openWindow, let audioRecorder else { return }
 
-        // Parse optional recording name from query: whisperasr://record?name=MyMeeting
-        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-           let nameItem = components.queryItems?.first(where: { $0.name == "name" }),
-           let name = nameItem.value, !name.isEmpty {
-            audioRecorder?.customRecordingName = name
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryItems = components?.queryItems ?? []
+
+        func queryValue(_ key: String) -> String? {
+            queryItems.first(where: { $0.name == key })?.value
+        }
+        func queryBool(_ key: String) -> Bool? {
+            guard let val = queryValue(key) else { return nil }
+            return val == "true" || val == "1" || val == "yes"
         }
 
-        let isRecording = audioRecorder?.state == .recording
-        let targetWindowID = isRecording ? "recording" : "app-picker"
-        let targetTitle = isRecording ? "Recording" : "Select App to Record"
+        // Parse optional recording name
+        if let name = queryValue("name"), !name.isEmpty {
+            audioRecorder.customRecordingName = name
+        }
 
-        openWindow(id: targetWindowID)
+        // Apply optional toggle overrides
+        if let mic = queryBool("mic") {
+            audioRecorder.includeMicrophone = mic
+        }
+        if let live = queryBool("live") {
+            appState?.enableLiveTranscription = live
+        }
+        if let translate = queryBool("translate") {
+            appState?.enableLiveTranslation = translate
+            // Translation requires live transcription
+            if translate { appState?.enableLiveTranscription = true }
+        }
+        if let pin = queryBool("pin") {
+            audioRecorder.pinWindow = pin
+        }
 
-        // Wait for SwiftUI to finish creating the window, then reorder
+        // If already recording, just show the recording window
+        if audioRecorder.state == .recording {
+            openWindow(id: "recording")
+            bringWindowToFront(title: "Recording")
+            return
+        }
+
+        // If app parameter is provided, auto-start recording directly
+        if let appName = queryValue("app"), !appName.isEmpty {
+            autoStartRecording(appName: appName)
+            return
+        }
+
+        // Otherwise show the app picker
+        openWindow(id: "app-picker")
+        bringWindowToFront(title: "Select App to Record")
+    }
+
+    /// Find the named app and start recording automatically, skipping the picker.
+    private func autoStartRecording(appName: String) {
+        guard let audioRecorder, let openWindow else { return }
+
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                let myBundleID = Bundle.main.bundleIdentifier ?? "com.whisperasr"
+                let appsWithWindows = Set(content.windows.map { $0.owningApplication?.bundleIdentifier })
+                let apps = content.applications.filter {
+                    $0.bundleIdentifier != myBundleID
+                        && !$0.applicationName.isEmpty
+                        && appsWithWindows.contains($0.bundleIdentifier)
+                        && NSRunningApplication(processIdentifier: $0.processID)?.activationPolicy == .regular
+                }
+
+                // Match by case-insensitive substring
+                let lowerName = appName.lowercased()
+                guard let matchedApp = apps.first(where: { $0.applicationName.lowercased().contains(lowerName) }) else {
+                    await MainActor.run {
+                        audioRecorder.error = "App \"\(appName)\" not found"
+                        audioRecorder.availableApps = apps
+                        audioRecorder.state = .ready
+                        openWindow(id: "app-picker")
+                        self.bringWindowToFront(title: "Select App to Record")
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    audioRecorder.state = .ready
+                    audioRecorder.startRecording(app: matchedApp)
+                    openWindow(id: "recording")
+                    self.bringWindowToFront(title: "Recording")
+                }
+            } catch {
+                await MainActor.run {
+                    audioRecorder.error = "Failed to list apps: \(error.localizedDescription)"
+                    openWindow(id: "app-picker")
+                    self.bringWindowToFront(title: "Select App to Record")
+                }
+            }
+        }
+    }
+
+    private func bringWindowToFront(title: String) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             // Hide the main window if this was a cold launch via URL
             if self.launchedViaURL {
@@ -112,7 +195,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             // Bring target window to front
-            for window in NSApplication.shared.windows where window.title == targetTitle {
+            for window in NSApplication.shared.windows where window.title == title {
                 window.makeKeyAndOrderFront(nil)
                 break
             }

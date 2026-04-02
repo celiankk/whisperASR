@@ -20,6 +20,7 @@ class AppState {
     private let service = TranscriptionService()
     private var isTranscribing = false
     private var liveTranscriptionTask: Task<Void, Never>?
+    private var liveTranslationTask: Task<Void, Never>?
     private var isChunkTranscribing = false
     private var lastAutoSaveTime: Date = .distantPast
 
@@ -213,6 +214,7 @@ class AppState {
 
             var committedSegments: [TranscriptionSegment] = []
             var committedSampleCount = 0
+            var consecutiveSilenceCount = 0
 
             while !Task.isCancelled {
                 // Don't overlap chunk transcriptions; skip if one is still running
@@ -223,6 +225,17 @@ class AppState {
 
                     // Only transcribe if we have at least 0.5 seconds of NEW audio (8000 samples)
                     if newSampleCount >= 8000 {
+                        // Skip whisper inference if new audio is silence (RMS below threshold)
+                        let rms = recorder.rmsEnergy(from: committedSampleCount, count: newSampleCount)
+                        guard rms > 0.001 else {
+                            committedSampleCount = totalSamples
+                            let safeToTrim = max(0, committedSampleCount - 16000 * 1)
+                            recorder.trimSamples(upTo: safeToTrim)
+                            consecutiveSilenceCount += 1
+                            continue
+                        }
+                        consecutiveSilenceCount = 0
+
                         self.isChunkTranscribing = true
 
                         // Include 1 second of overlap from previous chunk for context
@@ -298,11 +311,15 @@ class AppState {
                                 self.isChunkTranscribing = false
                                 self.throttledAutoSave()
                             }
-                            // Translate if live translation is enabled
+                            // Translate if live translation is enabled (non-blocking)
                             if self.enableLiveTranslation && !allSegments.isEmpty {
                                 let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
                                 if !targetLang.isEmpty {
-                                    await self.translateLiveSegments(allSegments, targetLang: targetLang)
+                                    self.liveTranslationTask?.cancel()
+                                    let segmentsSnapshot = allSegments
+                                    self.liveTranslationTask = Task {
+                                        await self.translateLiveSegments(segmentsSnapshot, targetLang: targetLang)
+                                    }
                                 }
                             }
                         } catch {
@@ -314,8 +331,9 @@ class AppState {
                     }
                 }
 
-                // Wait before the next chunk
-                try? await Task.sleep(for: .milliseconds(500))
+                // Wait before the next chunk — back off during silence
+                let pollInterval = consecutiveSilenceCount >= 2 ? 1000 : 500
+                try? await Task.sleep(for: .milliseconds(pollInterval))
             }
         }
     }
@@ -324,6 +342,8 @@ class AppState {
     func stopLiveTranscription() {
         liveTranscriptionTask?.cancel()
         liveTranscriptionTask = nil
+        liveTranslationTask?.cancel()
+        liveTranslationTask = nil
         isLiveTranscribing = false
         isChunkTranscribing = false
         // Clear live results (the final file transcription will replace them)
@@ -419,6 +439,7 @@ class AppState {
     // MARK: - Live Translation
 
     private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String) async {
+        guard !Task.isCancelled else { return }
         let texts = segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
         let (existing, existingSourceTexts) = await MainActor.run {
             (self.liveTranslatedSegments, self.liveTranslatedSourceTexts)
@@ -451,6 +472,7 @@ class AppState {
             let newTranslations = try await TranslationService.translateSegmentsWithOpenAI(
                 segmentTexts: textsToTranslate, targetLanguage: targetLang,
                 previousTranslations: contextPairs)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.liveTranslatedSegments = Array(existing.prefix(dirtyIndex)) + newTranslations
                 self.liveTranslatedSourceTexts = Array(texts.prefix(dirtyIndex)) + textsToTranslate

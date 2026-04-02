@@ -103,7 +103,8 @@ final class TranscriptionService: @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
-                let (params, langCStr) = self.makeBaseParams()
+                let liveThreads = min(4, max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 4)))
+                let (params, langCStr) = self.makeBaseParams(threadCount: liveThreads)
                 defer { free(langCStr) }
 
                 let result = samples.withUnsafeBufferPointer { buf in
@@ -154,12 +155,12 @@ final class TranscriptionService: @unchecked Sendable {
 
     /// Create base whisper params with language/translation settings from UserDefaults.
     /// Caller must free the returned C string pointer after whisper_full completes.
-    private func makeBaseParams() -> (whisper_full_params, UnsafeMutablePointer<CChar>?) {
+    private func makeBaseParams(threadCount: Int32? = nil) -> (whisper_full_params, UnsafeMutablePointer<CChar>?) {
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         params.print_progress = false
         params.print_realtime = false
         params.print_timestamps = false
-        params.n_threads = max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
+        params.n_threads = threadCount ?? max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
 
         let langCStr = strdup("auto")
         params.language = UnsafePointer(langCStr)

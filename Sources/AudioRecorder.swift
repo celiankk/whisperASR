@@ -4,6 +4,7 @@ import AVFoundation
 import Observation
 import os
 import CoreGraphics
+import Darwin
 
 enum RecordingState: Equatable {
     case idle
@@ -93,6 +94,23 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             let trimCount = min(bufIndex, state.buffer.count)
             state.buffer.removeFirst(trimCount)
             state.trimOffset += trimCount
+        }
+    }
+
+    /// Compute the RMS energy of a range of samples without copying the buffer.
+    /// Used by the transcription loop to skip whisper inference on silence.
+    func rmsEnergy(from startIndex: Int, count: Int) -> Float {
+        pcmState.withLock { state in
+            let bufStart = startIndex - state.trimOffset
+            guard bufStart >= 0 else { return 0 }
+            let bufEnd = min(bufStart + count, state.buffer.count)
+            guard bufEnd > bufStart else { return 0 }
+            var sumSquares: Float = 0
+            for i in bufStart..<bufEnd {
+                let s = state.buffer[i]
+                sumSquares += s * s
+            }
+            return sqrt(sumSquares / Float(bufEnd - bufStart))
         }
     }
 
@@ -230,7 +248,7 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     self.state = .recording
                     self.recordingDuration = 0
                     self.recordingStartTime = Date()
-                    self.timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                    self.timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                         guard let self, let start = self.recordingStartTime else { return }
                         self.recordingDuration = Date().timeIntervalSince(start)
                     }
@@ -598,33 +616,17 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     /// Returns true if Zoom's CptHost (call/meeting host) subprocess is running under the given parent PID.
+    /// Uses Darwin syscalls instead of spawning a /bin/ps subprocess.
     private func zoomHasActiveCall(parentPID: pid_t) -> Bool {
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-eo", "ppid,comm"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return true // Assume meeting is still active if we can't check
-        }
-        // Read all output first — blocks until the process closes stdout (i.e. exits).
-        // Do NOT use waitUntilExit() here: it polls the current run loop, which doesn't
-        // exist on background GCD threads, causing an infinite hang.
-        guard let data = try? pipe.fileHandleForReading.readDataToEndOfFile(),
-              let output = String(data: data, encoding: .utf8) else {
-            return true
-        }
-        // Look for CptHost with the Zoom parent PID
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let parts = trimmed.split(separator: " ", maxSplits: 1)
-            guard parts.count == 2,
-                  let ppid = Int32(parts[0]) else { continue }
-            if ppid == parentPID && parts[1].contains("CptHost") {
-                return true
+        var childPIDs = [pid_t](repeating: 0, count: 128)
+        let byteCount = proc_listchildpids(parentPID, &childPIDs,
+            Int32(childPIDs.count * MemoryLayout<pid_t>.size))
+        guard byteCount > 0 else { return false }
+        let childCount = Int(byteCount) / MemoryLayout<pid_t>.size
+        for i in 0..<childCount {
+            var pathBuf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            if proc_pidpath(childPIDs[i], &pathBuf, UInt32(MAXPATHLEN)) > 0 {
+                if String(cString: pathBuf).contains("CptHost") { return true }
             }
         }
         return false

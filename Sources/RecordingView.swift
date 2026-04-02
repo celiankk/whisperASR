@@ -453,12 +453,14 @@ private struct WindowDragOverlay: NSViewRepresentable {
 // MARK: - Pulsing Animation
 
 private struct PulsingModifier: ViewModifier {
-    @State private var isPulsing = false
-
     func body(content: Content) -> some View {
-        content
-            .opacity(isPulsing ? 0.4 : 1.0)
-            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: isPulsing)
-            .onAppear { isPulsing = true }
+        TimelineView(.periodic(from: .now, by: 0.1)) { timeline in
+            let phase = timeline.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: 1.6)
+            let opacity = phase < 0.8
+                ? 1.0 - (phase / 0.8) * 0.6
+                : 0.4 + ((phase - 0.8) / 0.8) * 0.6
+            content.opacity(opacity)
+        }
     }
 }

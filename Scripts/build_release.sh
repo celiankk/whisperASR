@@ -141,7 +141,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.1</string>
+    <string>0.2.1</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -169,10 +169,25 @@ PLIST
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+    # Create entitlements for hardened runtime
+    ENTITLEMENTS=$(mktemp /tmp/entitlements.XXXXXX.plist)
+    cat > "$ENTITLEMENTS" << 'ENTPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>
+ENTPLIST
+
     echo "==> Signing app bundle..."
     codesign --deep --force --options runtime \
+        --entitlements "$ENTITLEMENTS" \
         --sign "$CODESIGN_IDENTITY" \
         "$APP_BUNDLE"
+    rm -f "$ENTITLEMENTS"
     echo "==> Verifying signature..."
     codesign --verify --deep --strict "$APP_BUNDLE"
     spctl --assess --type execute "$APP_BUNDLE" && echo "    Gatekeeper: OK" || echo "    Gatekeeper: not yet notarized (run notarytool to fix)"

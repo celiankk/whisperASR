@@ -21,6 +21,8 @@ class AppState {
     private var isTranscribing = false
     private var liveTranscriptionTask: Task<Void, Never>?
     private var liveTranslationTask: Task<Void, Never>?
+    private var pendingTranslationSnapshots: [[TranscriptionSegment]] = []
+    private var isTranslationWorkerRunning = false
     private var isChunkTranscribing = false
     private var lastAutoSaveTime: Date = .distantPast
 
@@ -315,10 +317,9 @@ class AppState {
                             if self.enableLiveTranslation && !allSegments.isEmpty {
                                 let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
                                 if !targetLang.isEmpty {
-                                    self.liveTranslationTask?.cancel()
                                     let segmentsSnapshot = allSegments
-                                    self.liveTranslationTask = Task {
-                                        await self.translateLiveSegments(segmentsSnapshot, targetLang: targetLang)
+                                    await MainActor.run {
+                                        self.enqueueLiveTranslation(segmentsSnapshot)
                                     }
                                 }
                             }
@@ -344,6 +345,8 @@ class AppState {
         liveTranscriptionTask = nil
         liveTranslationTask?.cancel()
         liveTranslationTask = nil
+        pendingTranslationSnapshots.removeAll()
+        isTranslationWorkerRunning = false
         isLiveTranscribing = false
         isChunkTranscribing = false
         // Clear live results (the final file transcription will replace them)
@@ -437,6 +440,39 @@ class AppState {
     }
 
     // MARK: - Live Translation
+
+    /// Queue a new translation request. The newest request goes to the top of
+    /// the queue so it is processed first, but previously queued requests are
+    /// preserved and will run afterwards. A single worker drains the queue
+    /// serially so in-flight requests are never cancelled mid-flight.
+    @MainActor
+    private func enqueueLiveTranslation(_ segments: [TranscriptionSegment]) {
+        pendingTranslationSnapshots.insert(segments, at: 0)
+        guard !isTranslationWorkerRunning else { return }
+        isTranslationWorkerRunning = true
+        liveTranslationTask = Task { [weak self] in
+            await self?.drainTranslationQueue()
+        }
+    }
+
+    private func drainTranslationQueue() async {
+        while !Task.isCancelled {
+            let next: [TranscriptionSegment]? = await MainActor.run { [weak self] in
+                guard let self else { return nil }
+                if self.pendingTranslationSnapshots.isEmpty {
+                    self.isTranslationWorkerRunning = false
+                    return nil
+                }
+                return self.pendingTranslationSnapshots.removeFirst()
+            }
+            guard let segments = next else { return }
+            if segments.isEmpty { continue }
+            let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
+            guard !targetLang.isEmpty else { continue }
+            await translateLiveSegments(segments, targetLang: targetLang)
+        }
+        await MainActor.run { self.isTranslationWorkerRunning = false }
+    }
 
     private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String) async {
         guard !Task.isCancelled else { return }

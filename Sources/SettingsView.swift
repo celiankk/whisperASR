@@ -8,6 +8,14 @@ struct SettingsView: View {
     @AppStorage("translationAPIKey") private var translationAPIKey = ""
     @AppStorage("translationModel") private var translationModel = ""
 
+    @State private var verifyInFlight = false
+    @State private var verifyResult: VerifyResult? = nil
+
+    private enum VerifyResult {
+        case success(String)
+        case failure(String)
+    }
+
     var body: some View {
         Form {
             Section("Appearance") {
@@ -35,15 +43,46 @@ struct SettingsView: View {
                 TextField("API Endpoint", text: $translationEndpoint,
                           prompt: Text("https://api.openai.com/v1"))
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: translationEndpoint) { _, _ in verifyResult = nil }
                 SecureField("API Key", text: $translationAPIKey,
                             prompt: Text("sk-..."))
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: translationAPIKey) { _, _ in verifyResult = nil }
                 TextField("Model", text: $translationModel,
                           prompt: Text("gpt-4o-mini"))
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: translationModel) { _, _ in verifyResult = nil }
                 Text("Only API Key is required. Endpoint defaults to OpenAI, model defaults to gpt-4o-mini.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    Button {
+                        verifyConnection()
+                    } label: {
+                        if verifyInFlight {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Verify Connection")
+                        }
+                    }
+                    .disabled(verifyInFlight || translationAPIKey.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                    switch verifyResult {
+                    case .success(let msg):
+                        Label(msg, systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    case .failure(let msg):
+                        Label(msg, systemImage: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                            .lineLimit(2)
+                    case .none:
+                        EmptyView()
+                    }
+                    Spacer()
+                }
             }
 
             Section("Whisper Model") {
@@ -76,6 +115,34 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 480)
         .padding()
+    }
+
+    private func verifyConnection() {
+        verifyInFlight = true
+        verifyResult = nil
+        let lang = targetLanguage.isEmpty ? "en" : targetLanguage
+        Task {
+            do {
+                let translations = try await TranslationService.translateSegmentsWithOpenAI(
+                    segmentTexts: ["Hello, world."],
+                    targetLanguage: lang
+                )
+                await MainActor.run {
+                    verifyInFlight = false
+                    let sample = translations.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if sample.isEmpty {
+                        verifyResult = .failure("Empty response")
+                    } else {
+                        verifyResult = .success("OK — \(sample)")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    verifyInFlight = false
+                    verifyResult = .failure(error.localizedDescription)
+                }
+            }
+        }
     }
 
     private func browseModel() {

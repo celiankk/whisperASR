@@ -99,6 +99,11 @@ struct DetailView: View {
                             .help(showTimestamps ? "Hide timestamps" : "Show timestamps")
 
                             Menu {
+                                Button("Copy Content") { copyContent(item) }
+                                if !item.translatedSegments.isEmpty {
+                                    Button("Copy Translation") { copyTranslation(item) }
+                                }
+                                Divider()
                                 Button("Export Text...") { exportText(item) }
                                 if !item.translatedSegments.isEmpty {
                                     Button("Export Translation...") { exportTranslation(item) }
@@ -152,7 +157,23 @@ struct DetailView: View {
         }
     }
 
-    // MARK: - Export
+    // MARK: - Copy & Export
+
+    private func copyContent(_ item: TranscriptionItem) {
+        let text = item.segments.isEmpty
+            ? item.fullText
+            : item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func copyTranslation(_ item: TranscriptionItem) {
+        let text = item.translatedSegments
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 
     private func exportText(_ item: TranscriptionItem) {
         let panel = NSSavePanel()

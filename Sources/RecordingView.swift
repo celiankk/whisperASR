@@ -24,9 +24,9 @@ struct RecordingView: View {
         }
         .frame(
             minWidth: 360, idealWidth: 420, maxWidth: .infinity,
-            minHeight: appState.enableLiveTranscription ? 200 : 90,
-            idealHeight: appState.enableLiveTranscription ? 300 : 200,
-            maxHeight: .infinity
+            minHeight: appState.enableLiveTranscription ? 200 : 44,
+            idealHeight: appState.enableLiveTranscription ? 300 : 44,
+            maxHeight: appState.enableLiveTranscription ? .infinity : 44
         )
         .background(WindowConfigurator())
     }
@@ -39,11 +39,8 @@ struct RecordingView: View {
             // Live transcription area (only shown if enabled)
             if appState.enableLiveTranscription {
                 liveTranscriptView
-            } else {
-                Spacer()
+                Divider()
             }
-
-            Divider()
 
             // Bottom bar: indicator + action buttons + window controls
             HStack(spacing: 10) {

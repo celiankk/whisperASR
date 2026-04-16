@@ -120,6 +120,12 @@ struct RecordingView: View {
 
     private var liveTranscriptView: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let message = appState.liveError {
+                errorBanner(message: message, tint: .red)
+            }
+            if let message = appState.liveTranslationError {
+                errorBanner(message: message, tint: .orange)
+            }
             if appState.isLiveTranscribing && appState.liveSegments.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView()
@@ -189,6 +195,21 @@ struct RecordingView: View {
     }
 
     // MARK: - Helpers
+
+    private func errorBanner(message: String, tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(tint)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(tint.opacity(0.12))
+    }
 
     /// Capture scroll intent before layout changes can race with the observer,
     /// then defer the actual scroll until LazyVStack finishes layout.

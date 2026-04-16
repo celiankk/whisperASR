@@ -12,17 +12,30 @@ class AppState {
     var isLiveTranscribing = false
     var enableLiveTranscription = true
 
+    // Inline error banners surfaced in RecordingView. Nil when no error.
+    var liveError: String?
+    var liveTranslationError: String?
+
     // Live translation state (per-segment)
     var liveTranslatedSegments: [String] = []
     var enableLiveTranslation = false
     private var liveTranslatedSourceTexts: [String] = []  // tracks what text each translation was for
+    /// Parallel to liveTranslatedSegments: number of consecutive chunks a segment's
+    /// source text has been stable. Sealed (>= sealThreshold) segments are never retranslated.
+    private var liveTranslatedSealCount: [Int] = []
+    private static let sealThreshold = 3
 
     private let service = TranscriptionService()
     private var isTranscribing = false
     private var liveTranscriptionTask: Task<Void, Never>?
     private var liveTranslationTask: Task<Void, Never>?
-    private var pendingTranslationSnapshots: [[TranscriptionSegment]] = []
+    /// Single-slot queue: each snapshot supersedes the previous one (they are cumulative),
+    /// so keeping a queue of old snapshots was pure wasted work.
+    private var pendingTranslationSnapshot: [TranscriptionSegment]?
     private var isTranslationWorkerRunning = false
+    private var translationFailureCount = 0
+    /// Set when translation is paused due to an auth error; cleared on next start.
+    private var translationAuthPaused = false
     private var isChunkTranscribing = false
     private var lastAutoSaveTime: Date = .distantPast
 
@@ -204,14 +217,28 @@ class AppState {
     func startLiveTranscription(recorder: AudioRecorder) {
         liveSegments = []
         liveText = ""
+        liveError = nil
+        liveTranslationError = nil
+        liveTranslatedSealCount = []
+        translationFailureCount = 0
+        translationAuthPaused = false
         isLiveTranscribing = true
         isChunkTranscribing = false
 
         liveTranscriptionTask = Task { [weak self] in
             guard let self else { return }
 
-            // Pre-load the model and wait for it — avoids model loading latency on first chunk
-            try? self.service.preloadModel()
+            // Pre-load the model and wait for it — avoids model loading latency on first chunk.
+            // Surface load failures so the user isn't stuck at a silent "Waiting for audio...".
+            do {
+                try self.service.preloadModel()
+            } catch {
+                await MainActor.run {
+                    self.liveError = "Couldn't load transcription model: \(error.localizedDescription)"
+                    self.isLiveTranscribing = false
+                }
+                return
+            }
             guard !Task.isCancelled else { return }
 
             var committedSegments: [TranscriptionSegment] = []
@@ -258,8 +285,14 @@ class AppState {
                         let chunk = recorder.getSamples(from: chunkStart)
                         let timeOffset = Double(chunkStart) / 16000.0
 
+                        // Cap the wait so a GPU/Metal hang doesn't deadlock the live loop.
+                        // Generous: 4× chunk duration, minimum 60s.
+                        let chunkSeconds = Double(chunk.count) / 16000.0
+                        let timeoutSeconds = max(60.0, chunkSeconds * 4.0)
                         do {
-                            let result = try await self.service.transcribeChunk(samples: chunk)
+                            let result = try await Self.withTimeout(seconds: timeoutSeconds) {
+                                try await self.service.transcribeChunk(samples: chunk)
+                            }
 
                             // Offset timestamps to match position in the full stream
                             let newSegments = result.segments.map { seg in
@@ -323,6 +356,12 @@ class AppState {
                                     }
                                 }
                             }
+                        } catch is TimeoutError {
+                            print("[AppState] live transcription chunk timed out after \(timeoutSeconds)s")
+                            await MainActor.run {
+                                self.liveError = "Transcription is slow — the model or GPU may be stuck. Continuing with next chunk."
+                                self.isChunkTranscribing = false
+                            }
                         } catch {
                             print("[AppState] live transcription chunk error: \(error)")
                             await MainActor.run {
@@ -345,15 +384,20 @@ class AppState {
         liveTranscriptionTask = nil
         liveTranslationTask?.cancel()
         liveTranslationTask = nil
-        pendingTranslationSnapshots.removeAll()
+        pendingTranslationSnapshot = nil
         isTranslationWorkerRunning = false
+        translationFailureCount = 0
+        translationAuthPaused = false
         isLiveTranscribing = false
         isChunkTranscribing = false
+        liveError = nil
+        liveTranslationError = nil
         // Clear live results (the final file transcription will replace them)
         liveSegments = []
         liveText = ""
         liveTranslatedSegments = []
         liveTranslatedSourceTexts = []
+        liveTranslatedSealCount = []
         enableLiveTranslation = false
         removeLiveRecoveryFile()
     }
@@ -441,13 +485,13 @@ class AppState {
 
     // MARK: - Live Translation
 
-    /// Queue a new translation request. The newest request goes to the top of
-    /// the queue so it is processed first, but previously queued requests are
-    /// preserved and will run afterwards. A single worker drains the queue
-    /// serially so in-flight requests are never cancelled mid-flight.
+    /// Queue the latest translation snapshot. Since each snapshot is cumulative
+    /// (contains all segments so far), a newer one always supersedes an older one,
+    /// so we keep only the most recent. A single worker drains this slot.
     @MainActor
     private func enqueueLiveTranslation(_ segments: [TranscriptionSegment]) {
-        pendingTranslationSnapshots.insert(segments, at: 0)
+        guard !translationAuthPaused else { return }
+        pendingTranslationSnapshot = segments
         guard !isTranslationWorkerRunning else { return }
         isTranslationWorkerRunning = true
         liveTranslationTask = Task { [weak self] in
@@ -459,11 +503,12 @@ class AppState {
         while !Task.isCancelled {
             let next: [TranscriptionSegment]? = await MainActor.run { [weak self] in
                 guard let self else { return nil }
-                if self.pendingTranslationSnapshots.isEmpty {
-                    self.isTranslationWorkerRunning = false
-                    return nil
+                if let snapshot = self.pendingTranslationSnapshot {
+                    self.pendingTranslationSnapshot = nil
+                    return snapshot
                 }
-                return self.pendingTranslationSnapshots.removeFirst()
+                self.isTranslationWorkerRunning = false
+                return nil
             }
             guard let segments = next else { return }
             if segments.isEmpty { continue }
@@ -476,9 +521,18 @@ class AppState {
 
     private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String) async {
         guard !Task.isCancelled else { return }
+
+        // Exponential backoff on repeated failures (500ms, 1s, 2s, ..., capped at 30s).
+        let failureCount = await MainActor.run { self.translationFailureCount }
+        if failureCount > 0 {
+            let delayMs = min(30_000, 500 * Int(pow(2.0, Double(failureCount - 1))))
+            try? await Task.sleep(for: .milliseconds(delayMs))
+            guard !Task.isCancelled else { return }
+        }
+
         let texts = segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
-        let (existing, existingSourceTexts) = await MainActor.run {
-            (self.liveTranslatedSegments, self.liveTranslatedSourceTexts)
+        let (existing, existingSourceTexts, sealCounts) = await MainActor.run {
+            (self.liveTranslatedSegments, self.liveTranslatedSourceTexts, self.liveTranslatedSealCount)
         }
 
         // Find the first index where the segment text changed or has no translation.
@@ -492,9 +546,22 @@ class AppState {
             }
         }
 
-        let dirtyIndex = firstDirtyIndex  // capture for Sendable closure
+        // Sealed segments are never retranslated — bounds the cascade when whisper's
+        // overlap zone shifts an early segment's text yet again after it has stabilized.
+        let firstUnsealedIndex: Int = {
+            for i in 0..<sealCounts.count {
+                if sealCounts[i] < Self.sealThreshold { return i }
+            }
+            return sealCounts.count
+        }()
+        let dirtyIndex = max(firstDirtyIndex, firstUnsealedIndex)
+
         let textsToTranslate = Array(texts.dropFirst(dirtyIndex))
-        guard !textsToTranslate.isEmpty else { return }
+        guard !textsToTranslate.isEmpty else {
+            // Nothing to translate, but still need to update seal counts for stable suffix.
+            await MainActor.run { self.updateSealCounts(newSourceTexts: texts) }
+            return
+        }
 
         // Use up to 2 clean translations before the dirty range as context
         let contextStart = max(0, dirtyIndex - 2)
@@ -512,16 +579,76 @@ class AppState {
             await MainActor.run {
                 self.liveTranslatedSegments = Array(existing.prefix(dirtyIndex)) + newTranslations
                 self.liveTranslatedSourceTexts = Array(texts.prefix(dirtyIndex)) + textsToTranslate
+                self.updateSealCounts(newSourceTexts: texts)
+                self.translationFailureCount = 0
+                self.liveTranslationError = nil
             }
-        } catch {
-            print("[Translation] OpenAI error: \(error)")
-            // On error, pad so next cycle can retry the failed segments
+        } catch let err as TranslationError {
+            print("[Translation] OpenAI error: \(err)")
             await MainActor.run {
+                switch err {
+                case .authFailed, .invalidEndpoint:
+                    // Pause translation entirely — retrying only wastes quota.
+                    self.translationAuthPaused = true
+                    self.liveTranslationError = err.errorDescription
+                    self.pendingTranslationSnapshot = nil
+                default:
+                    self.translationFailureCount += 1
+                    if self.translationFailureCount >= 3 {
+                        self.liveTranslationError = err.errorDescription
+                    }
+                }
+                // Pad source-text tracking so next cycle can detect segments still needing translation.
                 if self.liveTranslatedSegments.count < texts.count {
                     self.liveTranslatedSegments += Array(repeating: "", count: texts.count - self.liveTranslatedSegments.count)
                     self.liveTranslatedSourceTexts += texts.suffix(texts.count - self.liveTranslatedSourceTexts.count)
                 }
             }
+        } catch {
+            print("[Translation] error: \(error)")
+            await MainActor.run {
+                self.translationFailureCount += 1
+                if self.translationFailureCount >= 3 {
+                    self.liveTranslationError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// Increment seal count for each segment whose source text matches last cycle; reset on change.
+    @MainActor
+    private func updateSealCounts(newSourceTexts: [String]) {
+        var updated: [Int] = []
+        updated.reserveCapacity(newSourceTexts.count)
+        for i in 0..<newSourceTexts.count {
+            if i < liveTranslatedSealCount.count, i < liveTranslatedSourceTexts.count,
+               liveTranslatedSourceTexts[i] == newSourceTexts[i] {
+                updated.append(min(Self.sealThreshold, liveTranslatedSealCount[i] + 1))
+            } else {
+                updated.append(1)
+            }
+        }
+        liveTranslatedSealCount = updated
+    }
+
+    // MARK: - Timeout helper
+
+    private struct TimeoutError: Error {}
+
+    /// Run `operation` with a timeout. If it doesn't complete within `seconds`, throws TimeoutError.
+    private static func withTimeout<T: Sendable>(
+        seconds: Double,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw TimeoutError()
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
     }
 }

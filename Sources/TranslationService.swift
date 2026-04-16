@@ -32,6 +32,10 @@ struct TargetLanguage: Identifiable, Hashable {
 enum TranslationError: LocalizedError {
     case invalidEndpoint
     case apiFailed(String)
+    case authFailed(String)
+    case rateLimited(String)
+    case serverError(Int, String)
+    case transport(String)
     case parseError
     case unavailable
 
@@ -39,8 +43,20 @@ enum TranslationError: LocalizedError {
         switch self {
         case .invalidEndpoint: return "Invalid API endpoint URL"
         case .apiFailed(let msg): return "Translation API error: \(msg)"
+        case .authFailed(let msg): return "API key invalid or unauthorized: \(msg)"
+        case .rateLimited(let msg): return "Translation rate-limited: \(msg)"
+        case .serverError(let code, let msg): return "Translation service error (HTTP \(code)): \(msg)"
+        case .transport(let msg): return "Translation network error: \(msg)"
         case .parseError: return "Failed to parse translation response"
         case .unavailable: return "Translation requires OpenAI API configuration"
+        }
+    }
+
+    /// Whether the error is worth retrying (transient). Auth/client errors are not.
+    var isRetriable: Bool {
+        switch self {
+        case .serverError, .transport: return true
+        case .invalidEndpoint, .apiFailed, .authFailed, .rateLimited, .parseError, .unavailable: return false
         }
     }
 }
@@ -100,13 +116,7 @@ enum TranslationService {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw TranslationError.apiFailed("HTTP \(code)")
-        }
+        let data = try await performRequestWithRetry(request)
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
@@ -133,5 +143,62 @@ enum TranslationService {
         } else {
             return lines + Array(repeating: "", count: segmentTexts.count - lines.count)
         }
+    }
+
+    /// Send the request with up to 2 retries (3 attempts total) for transient failures
+    /// (URLSession transport errors and 5xx). Auth/client errors are never retried.
+    private static func performRequestWithRetry(_ request: URLRequest) async throws -> Data {
+        let backoffs: [Duration] = [.milliseconds(500), .milliseconds(1500)]
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            do {
+                return try await performRequest(request)
+            } catch let err as TranslationError where err.isRetriable && attempt < backoffs.count {
+                try? await Task.sleep(for: backoffs[attempt])
+                attempt += 1
+                continue
+            }
+        }
+    }
+
+    private static func performRequest(_ request: URLRequest) async throws -> Data {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw TranslationError.transport(error.localizedDescription)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TranslationError.transport("Invalid response")
+        }
+        if (200...299).contains(httpResponse.statusCode) {
+            return data
+        }
+
+        let message = parseErrorMessage(data) ?? "HTTP \(httpResponse.statusCode)"
+        switch httpResponse.statusCode {
+        case 401, 403:
+            throw TranslationError.authFailed(message)
+        case 429:
+            throw TranslationError.rateLimited(message)
+        case 500...599:
+            throw TranslationError.serverError(httpResponse.statusCode, message)
+        default:
+            throw TranslationError.apiFailed(message)
+        }
+    }
+
+    /// Extract `error.message` from an OpenAI-style error body.
+    private static func parseErrorMessage(_ data: Data) -> String? {
+        guard
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let error = json["error"] as? [String: Any],
+            let message = error["message"] as? String,
+            !message.isEmpty
+        else { return nil }
+        return message
     }
 }

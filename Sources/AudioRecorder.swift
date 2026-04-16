@@ -61,6 +61,17 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         var trimOffset: Int = 0
     }
     private var pcmState = OSAllocatedUnfairLock(initialState: PCMState())
+
+    // 48kHz → 16kHz resampler for live transcription (AVAudioConverter applies
+    // a proper anti-alias low-pass filter; naive decimation aliased above 8kHz).
+    private static let pcmSourceFormat: AVAudioFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
+    private static let pcmTargetFormat: AVAudioFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+    @ObservationIgnored
+    private lazy var pcmResampler: AVAudioConverter? = {
+        AVAudioConverter(from: AudioRecorder.pcmSourceFormat, to: AudioRecorder.pcmTargetFormat)
+    }()
     /// Total number of 16kHz samples accumulated since recording started (absolute count).
     var accumulatedSampleCount: Int {
         pcmState.withLock { $0.trimOffset + $0.buffer.count }
@@ -671,7 +682,8 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    /// Extracts Float32 samples from a CMSampleBuffer (48kHz) and downsamples to 16kHz for whisper.cpp.
+    /// Extracts Float32 samples from a CMSampleBuffer (48kHz) and resamples to 16kHz
+    /// via AVAudioConverter (applies anti-alias filter) for whisper.cpp.
     private func accumulatePCMSamples(from sampleBuffer: CMSampleBuffer) {
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var totalLength = 0
@@ -680,25 +692,38 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard status == kCMBlockBufferNoErr, let dataPointer, totalLength > 0 else { return }
 
         let sampleCount = totalLength / MemoryLayout<Float>.size
-        guard sampleCount > 0 else { return }
+        guard sampleCount > 0, let converter = pcmResampler else { return }
 
-        // Read 48kHz Float32 samples
         let floatPtr = UnsafeRawPointer(dataPointer).bindMemory(to: Float.self, capacity: sampleCount)
 
-        // Downsample 48kHz → 16kHz by taking every 3rd sample (48000/16000 = 3)
-        let downsampledCount = sampleCount / 3
-        guard downsampledCount > 0 else { return }
+        guard let inputBuffer = AVAudioPCMBuffer(
+                pcmFormat: Self.pcmSourceFormat, frameCapacity: AVAudioFrameCount(sampleCount)),
+              let inputChannel = inputBuffer.floatChannelData?[0] else { return }
+        memcpy(inputChannel, floatPtr, sampleCount * MemoryLayout<Float>.size)
+        inputBuffer.frameLength = AVAudioFrameCount(sampleCount)
 
-        let downsampled: [Float] = {
-            var result = [Float](repeating: 0, count: downsampledCount)
-            for i in 0..<downsampledCount {
-                result[i] = floatPtr[i * 3]
+        // 48000 / 16000 = 3; +1 guards against rounding on non-multiples of 3.
+        let outputCapacity = AVAudioFrameCount(sampleCount / 3 + 1)
+        guard let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: Self.pcmTargetFormat, frameCapacity: outputCapacity) else { return }
+
+        var convertError: NSError?
+        var consumed = false
+        converter.convert(to: outputBuffer, error: &convertError) { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
             }
-            return result
-        }()
+            consumed = true
+            outStatus.pointee = .haveData
+            return inputBuffer
+        }
+        guard convertError == nil, outputBuffer.frameLength > 0,
+              let outputChannel = outputBuffer.floatChannelData?[0] else { return }
 
+        let resampled = Array(UnsafeBufferPointer(start: outputChannel, count: Int(outputBuffer.frameLength)))
         pcmState.withLock { state in
-            state.buffer.append(contentsOf: downsampled)
+            state.buffer.append(contentsOf: resampled)
         }
     }
 

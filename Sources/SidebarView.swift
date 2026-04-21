@@ -198,6 +198,9 @@ struct SidebarView: View {
                             pasteboard.clearContents()
                             pasteboard.writeObjects([item.fileURL as NSURL])
                         }
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
+                        }
                         Divider()
                         if item.status == .completed || item.status != .transcribing {
                             Button("Re-transcribe") {

@@ -6,6 +6,7 @@ struct DetailView: View {
     @Environment(AudioPlayerManager.self) var audioPlayer
     @State private var showTimestamps = true
     @State private var translationOnly = false
+    @State private var showSearch = false
 
     var body: some View {
         Group {
@@ -14,6 +15,9 @@ struct DetailView: View {
             } else {
                 placeholderView
             }
+        }
+        .onChange(of: appState.selectedItem?.id) { _, _ in
+            showSearch = false
         }
     }
 
@@ -47,10 +51,17 @@ struct DetailView: View {
             TranscribingView(item: item)
 
         case .completed:
-            TranscriptContentView(item: item, showTimestamps: showTimestamps, translationOnly: translationOnly)
+            TranscriptContentView(item: item, showSearch: $showSearch, showTimestamps: showTimestamps, translationOnly: translationOnly)
                 .toolbar {
                     ToolbarItem {
                         HStack(spacing: 4) {
+                            Button {
+                                showSearch.toggle()
+                            } label: {
+                                Image(systemName: "magnifyingglass")
+                            }
+                            .help("Search transcript")
+
                             if item.isTranslating {
                                 ProgressView()
                                     .controlSize(.small)
@@ -259,7 +270,7 @@ struct TranscriptContentView: View {
     let item: TranscriptionItem
     @Environment(AudioPlayerManager.self) var audioPlayer
     @State private var currentIndex: Int?
-    @State private var showSearch = false
+    @Binding var showSearch: Bool
     @State private var searchQuery = ""
     @State private var committedQuery = ""  // debounced query actually used for highlighting
     @State private var currentMatchIndex = 0
@@ -280,7 +291,6 @@ struct TranscriptContentView: View {
         .onKeyPress(keys: [.escape]) { _ in
             if showSearch {
                 showSearch = false
-                clearSearch()
                 return .handled
             }
             return .ignored
@@ -288,11 +298,6 @@ struct TranscriptContentView: View {
         .background {
             Button("") {
                 showSearch.toggle()
-                if showSearch {
-                    isSearchFieldFocused = true
-                } else {
-                    clearSearch()
-                }
             }
             .keyboardShortcut("f", modifiers: .command)
             .hidden()
@@ -311,6 +316,13 @@ struct TranscriptContentView: View {
                 try? await Task.sleep(for: .milliseconds(200))
                 guard !Task.isCancelled else { return }
                 recomputeMatches(for: query)
+            }
+        }
+        .onChange(of: showSearch) { _, newValue in
+            if newValue {
+                isSearchFieldFocused = true
+            } else {
+                clearSearch()
             }
         }
     }
@@ -415,7 +427,6 @@ struct TranscriptContentView: View {
                 onNavigate: { navigateMatch(forward: $0) },
                 onDismiss: {
                     showSearch = false
-                    clearSearch()
                 }
             )
             Divider()

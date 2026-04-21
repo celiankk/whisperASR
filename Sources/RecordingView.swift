@@ -211,12 +211,14 @@ struct RecordingView: View {
         .background(tint.opacity(0.12))
     }
 
-    /// Capture scroll intent before layout changes can race with the observer,
-    /// then defer the actual scroll until LazyVStack finishes layout.
+    /// Defer the actual scroll until the List finishes layout, and re-check
+    /// shouldAutoScroll inside the dispatch so a concurrent user scroll-up
+    /// (which updates the flag synchronously via the observer) takes effect
+    /// before we decide whether to snap back to the bottom.
     private func deferredScrollToBottom(proxy: ScrollViewProxy) {
-        let wasAtBottom = shouldAutoScroll
-        guard wasAtBottom, !appState.liveSegments.isEmpty else { return }
+        guard !appState.liveSegments.isEmpty else { return }
         DispatchQueue.main.async {
+            guard shouldAutoScroll else { return }
             proxy.scrollTo("bottomAnchor", anchor: .bottom)
         }
     }
@@ -320,16 +322,14 @@ private struct ScrollPositionObserver: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = PassthroughView()
         view.onMoveToWindow = {
-            context.coordinator.setupIfNeeded(view: view)
+            context.coordinator.attemptSetup(view: view)
         }
-        DispatchQueue.main.async {
-            context.coordinator.setupIfNeeded(view: view)
-        }
+        context.coordinator.attemptSetup(view: view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.setupIfNeeded(view: nsView)
+        context.coordinator.attemptSetup(view: nsView)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -339,25 +339,35 @@ private struct ScrollPositionObserver: NSViewRepresentable {
     class Coordinator: NSObject {
         @Binding var isAtBottom: Bool
         private var isSetUp = false
+        private var retryCount = 0
 
         init(isAtBottom: Binding<Bool>) {
             _isAtBottom = isAtBottom
         }
 
-        func setupIfNeeded(view: NSView) {
+        /// The underlying NSScrollView (backing SwiftUI's List) may not be in the
+        /// view hierarchy when makeNSView / viewDidMoveToWindow fire. Retry with a
+        /// short delay so the observer attaches reliably; otherwise isAtBottom
+        /// stays at its initial value (true) forever and auto-scroll never stops.
+        func attemptSetup(view: NSView) {
             guard !isSetUp else { return }
-            // Try enclosingScrollView first (works when inside the scroll view).
-            // Fall back to searching the view hierarchy (needed when placed as
-            // .background on a List, where the observer is a sibling of the NSScrollView).
-            guard let scrollView = view.enclosingScrollView ?? Self.findScrollView(from: view) else { return }
-            isSetUp = true
-            scrollView.contentView.postsBoundsChangedNotifications = true
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(scrollViewDidScroll(_:)),
-                name: NSView.boundsDidChangeNotification,
-                object: scrollView.contentView
-            )
+            if let scrollView = view.enclosingScrollView ?? Self.findScrollView(from: view) {
+                isSetUp = true
+                scrollView.contentView.postsBoundsChangedNotifications = true
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(scrollViewDidScroll(_:)),
+                    name: NSView.boundsDidChangeNotification,
+                    object: scrollView.contentView
+                )
+                return
+            }
+            guard retryCount < 30 else { return }
+            retryCount += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.attemptSetup(view: view)
+            }
         }
 
         /// Walk up the view hierarchy and search sibling subtrees for an NSScrollView
@@ -392,8 +402,16 @@ private struct ScrollPositionObserver: NSViewRepresentable {
             } else {
                 distanceFromBottom = scrollOffset
             }
-            DispatchQueue.main.async {
-                self.isAtBottom = distanceFromBottom <= 150
+            // Update synchronously on main so a subsequent onChange(liveSegments)
+            // observes the new value. A main.async update can lose the race and
+            // cause auto-scroll to snap back to bottom even after the user scrolled up.
+            let atBottom = distanceFromBottom <= 150
+            if Thread.isMainThread {
+                if isAtBottom != atBottom { isAtBottom = atBottom }
+            } else {
+                DispatchQueue.main.async {
+                    if self.isAtBottom != atBottom { self.isAtBottom = atBottom }
+                }
             }
         }
 
@@ -435,6 +453,25 @@ private struct WindowDragOverlay: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 self?.targetScrollView = self?.findScrollView()
             }
+        }
+
+        /// Pass hit-tests through to views beneath when the point is over a
+        /// visible scrollbar. Without this, clicks on the scrollbar start a
+        /// window drag (via mouseDown below) instead of letting the scroller
+        /// handle them.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            if targetScrollView == nil { targetScrollView = findScrollView() }
+            if let scrollView = targetScrollView,
+               let scroller = scrollView.verticalScroller,
+               !scroller.isHidden,
+               scroller.alphaValue > 0.01,
+               let superview = superview {
+                let pointInScroller = scroller.convert(point, from: superview)
+                if scroller.bounds.contains(pointInScroller) {
+                    return nil
+                }
+            }
+            return super.hitTest(point)
         }
 
         override func mouseDown(with event: NSEvent) {

@@ -96,6 +96,17 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    /// Returns the samples in the absolute range `[startIndex, endIndex)` — used to copy only the
+    /// audio a chunk needs when its end is held back from the live tail.
+    func getSamples(from startIndex: Int, upTo endIndex: Int) -> [Float] {
+        pcmState.withLock { state in
+            let bufStart = startIndex - state.trimOffset
+            let bufEnd = min(endIndex - state.trimOffset, state.buffer.count)
+            guard bufStart >= 0, bufEnd > bufStart else { return [] }
+            return Array(state.buffer[bufStart..<bufEnd])
+        }
+    }
+
     /// Trim committed samples from the front of the PCM buffer to cap memory usage.
     /// `upTo` is an absolute sample index — samples before this index are freed.
     func trimSamples(upTo absoluteIndex: Int) {
@@ -122,6 +133,59 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 sumSquares += s * s
             }
             return sqrt(sumSquares / Float(bufEnd - bufStart))
+        }
+    }
+
+    /// Scan the absolute range `[searchFrom, searchTo)` in fixed `frameSamples`-sized frames and
+    /// return the absolute sample index at the START of the rightmost silence run of at least
+    /// `minSilenceFrames` frames, provided at least one speech frame precedes it. A frame is
+    /// "silent" when its RMS is below `silenceThreshold`.
+    ///
+    /// Used to place live-transcription chunk cuts at natural pauses: cutting here lets the loop
+    /// commit the completed utterance and hold back any trailing in-progress speech. Returns nil
+    /// when no qualifying trailing silence exists (e.g. continuous speech). Computed under a single
+    /// lock so it stays atomic with concurrent appends/trims.
+    func lastSilenceCut(searchFrom: Int, searchTo: Int,
+                        frameSamples: Int, silenceThreshold: Float, minSilenceFrames: Int) -> Int? {
+        pcmState.withLock { state in
+            let bufStart = max(0, searchFrom - state.trimOffset)
+            let bufEnd = min(searchTo - state.trimOffset, state.buffer.count)
+            guard frameSamples > 0, bufEnd - bufStart >= frameSamples else { return nil }
+
+            // Per-frame silence flags over the search range.
+            let frameCount = (bufEnd - bufStart) / frameSamples
+            guard frameCount > 0 else { return nil }
+            var isSilent = [Bool](repeating: false, count: frameCount)
+            for f in 0..<frameCount {
+                let s = bufStart + f * frameSamples
+                let e = s + frameSamples
+                var sumSquares: Float = 0
+                for i in s..<e {
+                    let v = state.buffer[i]
+                    sumSquares += v * v
+                }
+                isSilent[f] = sqrt(sumSquares / Float(frameSamples)) < silenceThreshold
+            }
+
+            // Walk from the right: find the rightmost run of >= minSilenceFrames silent frames
+            // whose start has at least one speech frame before it.
+            var run = 0
+            var f = frameCount - 1
+            while f >= 0 {
+                if isSilent[f] {
+                    run += 1
+                    if run >= minSilenceFrames {
+                        let runStartFrame = f               // start of this silence run
+                        let hasSpeechBefore = (0..<runStartFrame).contains { !isSilent[$0] }
+                        guard hasSpeechBefore else { return nil }
+                        return state.trimOffset + bufStart + runStartFrame * frameSamples
+                    }
+                } else {
+                    run = 0
+                }
+                f -= 1
+            }
+            return nil
         }
     }
 

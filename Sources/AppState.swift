@@ -50,12 +50,15 @@ class AppState {
     private var translationFailureCount = 0
     /// Set when translation is paused due to an auth error; cleared on next start.
     private var translationAuthPaused = false
-    private var isChunkTranscribing = false
     private var lastAutoSaveTime: Date = .distantPast
 
     /// Maximum chunk duration sent to whisper (30 seconds at 16kHz).
     /// Caps processing time so the loop never snowballs.
     private static let maxChunkSamples = 16000 * 30
+    /// When speech runs continuously past this without a pause (12s at 16kHz), force a chunk cut at
+    /// the live tail rather than waiting longer. Kept well under `maxChunkSamples` so the live tail
+    /// is always transcribed and no audio is silently dropped.
+    private static let forceChunkSamples = 16000 * 12
 
     init() {
         items = TranscriptionStore.loadAll()
@@ -276,7 +279,6 @@ class AppState {
         translationAuthPaused = false
         liveTranslationPaused = false
         isLiveTranscribing = true
-        isChunkTranscribing = false
 
         liveTranscriptionTask = Task { [weak self] in
             guard let self else { return }
@@ -294,139 +296,161 @@ class AppState {
             }
             guard !Task.isCancelled else { return }
 
-            var committedSegments: [TranscriptionSegment] = []
-            var committedSampleCount = 0
+            // Partial/final streaming model:
+            //  - Every pass re-transcribes the unsealed *tail* and shows it immediately, so the
+            //    in-progress sentence appears within ~1s (no waiting for a pause).
+            //  - Segments before the last silence pause are *sealed* (final) — they stop changing
+            //    and are never re-transcribed, which keeps boundaries clean and translation steady.
+            var sealedSegments: [TranscriptionSegment] = []
+            var sealedSampleCount = 0
+            // Whether the seal boundary fell inside a pause (clean). A clean boundary needs no
+            // left-context overlap; a forced mid-speech seal does, to avoid clipping the cut word.
+            var sealedClean = true
             var consecutiveSilenceCount = 0
+            var lastTranscribedTotal = 0
 
+            // Silence-scan tuning (16kHz): 100ms frames; a run of >=3 (~300ms) counts as a pause.
+            let frameSamples = 1600
+            let minSilenceFrames = 3
+            let silenceThreshold: Float = 0.001
+            let contextSamples = 16000   // 1s left-context, used only after a forced seal
+
+            // The loop awaits each transcribeChunk before iterating, so passes never overlap.
             while !Task.isCancelled {
-                // Don't overlap chunk transcriptions; skip if one is still running
-                if !self.isChunkTranscribing {
-                    // Only read the sample count (no copy) to check for new audio
-                    let totalSamples = recorder.accumulatedSampleCount
-                    let newSampleCount = totalSamples - committedSampleCount
+                let totalSamples = recorder.accumulatedSampleCount
+                let tailCount = totalSamples - sealedSampleCount
 
-                    // Only transcribe if we have at least 0.5 seconds of NEW audio (8000 samples)
-                    if newSampleCount >= 8000 {
-                        // Skip whisper inference if new audio is silence (RMS below threshold)
-                        let rms = recorder.rmsEnergy(from: committedSampleCount, count: newSampleCount)
-                        guard rms > 0.001 else {
-                            committedSampleCount = totalSamples
-                            let safeToTrim = max(0, committedSampleCount - 16000 * 1)
-                            recorder.trimSamples(upTo: safeToTrim)
-                            consecutiveSilenceCount += 1
-                            continue
-                        }
-                        consecutiveSilenceCount = 0
-
-                        self.isChunkTranscribing = true
-
-                        // Include 1 second of overlap from previous chunk for context
-                        let contextSamples = min(committedSampleCount, 16000 * 1)
-
-                        // Cap chunk size to prevent snowball: if we've fallen behind,
-                        // skip ahead so we only transcribe the most recent audio.
-                        let maxNew = Self.maxChunkSamples - contextSamples
-                        let effectiveCommitted: Int
-                        if newSampleCount > maxNew {
-                            // Skip ahead — we can't keep up, prioritize recent audio
-                            effectiveCommitted = totalSamples - maxNew
-                        } else {
-                            effectiveCommitted = committedSampleCount
-                        }
-                        let chunkStart = effectiveCommitted - min(effectiveCommitted, 16000 * 1)
-                        // Only copy the chunk we need, not the entire buffer
-                        let chunk = recorder.getSamples(from: chunkStart)
-                        let timeOffset = Double(chunkStart) / 16000.0
-
-                        // Cap the wait so a GPU/Metal hang doesn't deadlock the live loop.
-                        // Generous: 4× chunk duration, minimum 60s.
-                        let chunkSeconds = Double(chunk.count) / 16000.0
-                        let timeoutSeconds = max(60.0, chunkSeconds * 4.0)
-                        do {
-                            let result = try await Self.withTimeout(seconds: timeoutSeconds) {
-                                try await self.service.transcribeChunk(samples: chunk)
-                            }
-
-                            // Offset timestamps to match position in the full stream
-                            let newSegments = result.segments.map { seg in
-                                TranscriptionSegment(
-                                    start: seg.start + timeOffset,
-                                    end: seg.end.map { $0 + timeOffset },
-                                    text: seg.text
-                                )
-                            }
-
-                            // Keep committed segments before the context overlap window
-                            let contextTime = Double(chunkStart) / 16000.0
-                            let kept = committedSegments.filter { $0.start < contextTime }
-
-                            // Add new segments, trimming any text at the start that
-                            // duplicates the end of the last segment (caused by the
-                            // 2s overlap re-transcription).
-                            var allSegments = kept
-                            for seg in newSegments {
-                                var text = seg.text
-                                if let lastText = allSegments.last?.text {
-                                    let suffixSource = lastText.trimmingCharacters(in: .whitespaces)
-                                    let prefixTarget = text.trimmingCharacters(in: .whitespaces)
-                                    // Find longest suffix of last segment that matches
-                                    // prefix of this segment, then trim it
-                                    let maxCheck = min(suffixSource.count, prefixTarget.count)
-                                    for len in stride(from: maxCheck, through: 4, by: -1) {
-                                        let suffix = String(suffixSource.suffix(len))
-                                        if prefixTarget.hasPrefix(suffix) {
-                                            text = String(prefixTarget.dropFirst(len))
-                                            break
-                                        }
-                                    }
-                                }
-                                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    allSegments.append(TranscriptionSegment(
-                                        start: seg.start, end: seg.end, text: text))
-                                }
-                            }
-
-                            committedSegments = allSegments
-                            committedSampleCount = totalSamples
-
-                            // Trim old PCM samples we'll never need again
-                            // (keep 1s of overlap for next chunk's context)
-                            let safeToTrim = max(0, committedSampleCount - 16000 * 1)
-                            recorder.trimSamples(upTo: safeToTrim)
-
-                            await MainActor.run {
-                                self.liveSegments = allSegments
-                                self.isChunkTranscribing = false
-                                self.throttledAutoSave()
-                            }
-                            // Translate if live translation is enabled (non-blocking)
-                            if self.enableLiveTranslation && !allSegments.isEmpty {
-                                let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
-                                if !targetLang.isEmpty {
-                                    let segmentsSnapshot = allSegments
-                                    await MainActor.run {
-                                        self.enqueueLiveTranslation(segmentsSnapshot)
-                                    }
-                                }
-                            }
-                        } catch is TimeoutError {
-                            print("[AppState] live transcription chunk timed out after \(timeoutSeconds)s")
-                            await MainActor.run {
-                                self.liveError = "Transcription is slow — the model or GPU may be stuck. Continuing with next chunk."
-                                self.isChunkTranscribing = false
-                            }
-                        } catch {
-                            print("[AppState] live transcription chunk error: \(error)")
-                            await MainActor.run {
-                                self.isChunkTranscribing = false
-                            }
-                        }
-                    }
+                // Need >=0.5s of unsealed audio and >=0.3s of new audio since the last pass —
+                // keeps the live tail fresh without re-transcribing identical audio in a tight loop.
+                guard tailCount >= 8000, totalSamples - lastTranscribedTotal >= 4800 else {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    continue
                 }
 
-                // Wait before the next chunk — back off during silence
-                let pollInterval = consecutiveSilenceCount >= 2 ? 1000 : 500
-                try? await Task.sleep(for: .milliseconds(pollInterval))
+                // If the whole unsealed tail is silence, seal forward and show only sealed text.
+                let rms = recorder.rmsEnergy(from: sealedSampleCount, count: tailCount)
+                guard rms > silenceThreshold else {
+                    sealedSampleCount = totalSamples
+                    sealedClean = true
+                    lastTranscribedTotal = totalSamples
+                    recorder.trimSamples(upTo: max(0, sealedSampleCount - contextSamples))
+                    consecutiveSilenceCount += 1
+                    let snapshot = sealedSegments
+                    await MainActor.run {
+                        self.liveSegments = snapshot
+                        self.throttledAutoSave()
+                    }
+                    try? await Task.sleep(for: .milliseconds(consecutiveSilenceCount >= 2 ? 1000 : 500))
+                    continue
+                }
+                consecutiveSilenceCount = 0
+
+                // Re-transcribe the unsealed tail for live display. After a clean (silence) seal the
+                // boundary needs no overlap; after a forced seal, re-transcribe 1s of context and
+                // dedup so the cut word isn't dropped.
+                let useOverlap = !sealedClean
+                var tailStart = useOverlap ? max(0, sealedSampleCount - contextSamples) : sealedSampleCount
+
+                // Defensive: bound the tail to whisper's 30s window. Only reachable if a pass
+                // stalled badly; surface it instead of silently mis-transcribing.
+                if totalSamples - tailStart > Self.maxChunkSamples {
+                    print("[AppState] live tail \(totalSamples - tailStart) samples exceeds maxChunkSamples — transcribing only the most recent (older audio skipped)")
+                    await MainActor.run {
+                        self.liveError = "Transcription is falling behind — some audio may be skipped."
+                    }
+                    tailStart = totalSamples - Self.maxChunkSamples
+                }
+
+                let chunk = recorder.getSamples(from: tailStart, upTo: totalSamples)
+                guard !chunk.isEmpty else {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    continue
+                }
+                lastTranscribedTotal = totalSamples
+                let timeOffset = Double(tailStart) / 16000.0
+
+                // Cap the wait so a GPU/Metal hang doesn't deadlock the live loop.
+                // Generous: 4× chunk duration, minimum 60s.
+                let chunkSeconds = Double(chunk.count) / 16000.0
+                let timeoutSeconds = max(60.0, chunkSeconds * 4.0)
+                do {
+                    let result = try await Self.withTimeout(seconds: timeoutSeconds) {
+                        try await self.service.transcribeChunk(samples: chunk)
+                    }
+
+                    // Offset timestamps to match position in the full stream.
+                    let tailSegments = result.segments.map { seg in
+                        TranscriptionSegment(
+                            start: seg.start + timeOffset,
+                            end: seg.end.map { $0 + timeOffset },
+                            text: seg.text
+                        )
+                    }
+
+                    // Combine sealed (final) + freshly transcribed tail (interim) for display.
+                    let tailStartTime = Double(tailStart) / 16000.0
+                    let kept = sealedSegments.filter { $0.start < tailStartTime }
+                    var combined = kept
+                    for seg in tailSegments {
+                        var text = seg.text
+                        if useOverlap, let lastText = combined.last?.text {
+                            text = Self.trimOverlap(previous: lastText, current: text)
+                        }
+                        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            combined.append(TranscriptionSegment(
+                                start: seg.start, end: seg.end, text: text))
+                        }
+                    }
+
+                    // Advance the seal: to a trailing pause (clean), or forced once the tail has
+                    // grown past the cap without one. Everything before it becomes final.
+                    let silenceCut = recorder.lastSilenceCut(
+                        searchFrom: sealedSampleCount, searchTo: totalSamples,
+                        frameSamples: frameSamples, silenceThreshold: silenceThreshold,
+                        minSilenceFrames: minSilenceFrames)
+                    var newSeal = sealedSampleCount
+                    var newSealClean = sealedClean
+                    if let cut = silenceCut, cut - sealedSampleCount >= 8000 {
+                        newSeal = cut; newSealClean = true
+                    } else if tailCount >= Self.forceChunkSamples {
+                        newSeal = totalSamples; newSealClean = false
+                    }
+
+                    var sealAdvanced = false
+                    if newSeal > sealedSampleCount {
+                        let sealTime = Double(newSeal) / 16000.0
+                        sealedSegments = combined.filter { $0.start < sealTime }
+                        sealedSampleCount = newSeal
+                        sealedClean = newSealClean
+                        sealAdvanced = true
+                        // Nothing behind a clean (silence) seal is needed again; keep 1s behind a
+                        // forced seal for the next pass's overlap.
+                        recorder.trimSamples(upTo: max(0, newSeal - (newSealClean ? 0 : contextSamples)))
+                    }
+
+                    let snapshot = combined
+                    await MainActor.run {
+                        self.liveSegments = snapshot
+                        self.throttledAutoSave()
+                    }
+                    // Translate only when a phrase seals — re-translating the churning, mid-utterance
+                    // interim tail every pass would spam the API and flicker the translations.
+                    if sealAdvanced && self.enableLiveTranslation && !snapshot.isEmpty {
+                        let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
+                        if !targetLang.isEmpty {
+                            await MainActor.run { self.enqueueLiveTranslation(snapshot) }
+                        }
+                    }
+                } catch is TimeoutError {
+                    print("[AppState] live transcription chunk timed out after \(timeoutSeconds)s")
+                    await MainActor.run {
+                        self.liveError = "Transcription is slow — the model or GPU may be stuck. Continuing with next chunk."
+                    }
+                } catch {
+                    print("[AppState] live transcription chunk error: \(error)")
+                }
+
+                try? await Task.sleep(for: .milliseconds(250))
             }
         }
     }
@@ -442,7 +466,6 @@ class AppState {
         translationFailureCount = 0
         translationAuthPaused = false
         isLiveTranscribing = false
-        isChunkTranscribing = false
         liveError = nil
         liveTranslationError = nil
         // Clear live results (the final file transcription will replace them)
@@ -454,6 +477,34 @@ class AppState {
         enableLiveTranslation = false
         liveTranslationPaused = false
         removeLiveRecoveryFile()
+    }
+
+    /// Punctuation/whitespace whisper sprinkles at chunk edges; ignored when matching an overlap.
+    private static let overlapTrimChars = CharacterSet(
+        charactersIn: "，。、！？；：「」『』（）()【】［］…—~,.!?;:'\" \t\n")
+
+    /// Trim the leading portion of `current` that duplicates the trailing portion of `previous`.
+    /// Produced when a forced chunk re-transcribes the 1s context overlap. The match floor is a
+    /// single character (Mandarin is dense — the previous 4-char floor missed most overlaps) and
+    /// boundary punctuation/whitespace is stripped so a comma/period whisper added at the cut can't
+    /// block the match.
+    static func trimOverlap(previous: String, current: String) -> String {
+        var source = previous.trimmingCharacters(in: .whitespaces)
+        while let last = source.unicodeScalars.last, overlapTrimChars.contains(last) {
+            source.unicodeScalars.removeLast()
+        }
+        var target = Substring(current.trimmingCharacters(in: .whitespaces))
+        while let first = target.unicodeScalars.first, overlapTrimChars.contains(first) {
+            target = target.dropFirst()
+        }
+        let maxCheck = min(source.count, target.count)
+        guard maxCheck >= 1 else { return current }
+        for len in stride(from: maxCheck, through: 1, by: -1) {
+            if target.hasPrefix(String(source.suffix(len))) {
+                return String(target.dropFirst(len))
+            }
+        }
+        return current
     }
 
     // MARK: - Live Transcription Auto-Save (crash recovery)

@@ -8,6 +8,7 @@ struct SidebarView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var renamingItem: TranscriptionItem?
     @State private var renameText = ""
+    @State private var itemPendingRemoval: TranscriptionItem?
     @State private var searchText = ""
 
     private let supportedExtensions: Set<String> = [
@@ -110,6 +111,22 @@ struct SidebarView: View {
         } message: {
             Text("Enter a new name for this file.")
         }
+        .confirmationDialog(
+            "Remove this transcription?",
+            isPresented: Binding(
+                get: { itemPendingRemoval != nil },
+                set: { if !$0 { itemPendingRemoval = nil } }
+            ),
+            presenting: itemPendingRemoval
+        ) { item in
+            Button("Remove", role: .destructive) {
+                appState.removeItem(item)
+                itemPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) { itemPendingRemoval = nil }
+        } message: { item in
+            Text("\"\(item.fileURL.lastPathComponent)\" will be removed. This cannot be undone.")
+        }
     }
 
     // MARK: - Empty State
@@ -207,8 +224,14 @@ struct SidebarView: View {
                                 appState.retranscribe(item)
                             }
                         }
+                        // Buffer rows to push Remove well away from Re-transcribe,
+                        // so it can't be triggered by an accidental click.
+                        Divider()
+                        Button(" ") {}.disabled(true)
+                        Button(" ") {}.disabled(true)
+                        Divider()
                         Button("Remove", role: .destructive) {
-                            appState.removeItem(item)
+                            itemPendingRemoval = item
                         }
                     }
                 }

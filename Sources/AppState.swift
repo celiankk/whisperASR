@@ -16,6 +16,14 @@ class AppState {
     var liveError: String?
     var liveTranslationError: String?
 
+    /// A short-lived, auto-dismissing toast for translation errors in the main
+    /// window (e.g. expired/invalid API key, failed API call). Deduplicated and
+    /// rate-limited so a stream of identical failures can't spam the user.
+    var transientToast: String?
+    private var toastDismissTask: Task<Void, Never>?
+    /// Monotonic-ish marker for the last toast shown, used to suppress repeats.
+    private var lastToastText: String?
+
     // Live translation state (per-segment)
     var liveTranslatedSegments: [String] = []
     var enableLiveTranslation = false
@@ -112,6 +120,24 @@ class AppState {
 
     // MARK: - Translate Completed Transcription
 
+    /// Show a transient, auto-dismissing toast. Repeats of the same message are
+    /// ignored (the timer just restarts) so a continuously-failing translation
+    /// queue surfaces the problem once rather than flickering on every retry.
+    @MainActor
+    func showToast(_ text: String, duration: Duration = .seconds(6)) {
+        transientToast = text
+        lastToastText = text
+        toastDismissTask?.cancel()
+        toastDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                // Only clear if it's still the same message we scheduled.
+                if self?.lastToastText == text { self?.transientToast = nil }
+            }
+        }
+    }
+
     func translateItem(_ item: TranscriptionItem, targetLanguage: String) {
         guard !item.segments.isEmpty, !item.isTranslating else { return }
         item.isTranslating = true
@@ -121,8 +147,9 @@ class AppState {
         Task {
             let texts = item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
             let batchSize = 20
+            var transientFailures = 0
 
-            for batchStart in stride(from: 0, to: texts.count, by: batchSize) {
+            batchLoop: for batchStart in stride(from: 0, to: texts.count, by: batchSize) {
                 let batchEnd = min(batchStart + batchSize, texts.count)
                 let batch = Array(texts[batchStart..<batchEnd])
 
@@ -141,8 +168,27 @@ class AppState {
                     for (offset, translation) in translations.enumerated() {
                         item.translatedSegments[batchStart + offset] = translation
                     }
+                } catch let err as TranslationError {
+                    print("[Translation] batch error: \(err)")
+                    switch err {
+                    case .authFailed, .invalidEndpoint, .unavailable:
+                        // Not retriable — stop hammering the API and report it once.
+                        await MainActor.run { self.showToast(err.errorDescription ?? "Translation failed") }
+                        break batchLoop
+                    default:
+                        transientFailures += 1
+                    }
                 } catch {
                     print("[Translation] batch error: \(error)")
+                    transientFailures += 1
+                }
+            }
+
+            // Some batches failed transiently (network/server/rate-limit) but we
+            // kept going; let the user know the result is incomplete.
+            if transientFailures > 0 {
+                await MainActor.run {
+                    self.showToast("Translation incomplete — \(transientFailures) section\(transientFailures == 1 ? "" : "s") couldn't be translated. Check your network or API settings.")
                 }
             }
 

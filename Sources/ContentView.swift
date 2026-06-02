@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showModelDownload = false
 
     var body: some View {
+        @Bindable var appState = appState
         VStack(spacing: 0) {
             NavigationSplitView {
                 SidebarView()
@@ -19,6 +20,7 @@ struct ContentView: View {
                 PlayerView()
             }
         }
+        .toast(message: $appState.transientToast)
         .sheet(isPresented: $showModelDownload) {
             ModelDownloadView(isPresented: $showModelDownload)
         }

@@ -27,6 +27,12 @@ class AppState {
     // Live translation state (per-segment)
     var liveTranslatedSegments: [String] = []
     var enableLiveTranslation = false
+    /// User-controlled pause for live translation (e.g. the speaker switched to
+    /// the listener's native language). Distinct from `translationAuthPaused`,
+    /// which is an error-driven stop. While paused, no API calls are made; on
+    /// resume, segments spoken during the pause are skipped so only new speech
+    /// is translated.
+    var liveTranslationPaused = false
     private var liveTranslatedSourceTexts: [String] = []  // tracks what text each translation was for
     /// Parallel to liveTranslatedSegments: number of consecutive chunks a segment's
     /// source text has been stable. Sealed (>= sealThreshold) segments are never retranslated.
@@ -268,6 +274,7 @@ class AppState {
         liveTranslatedSealCount = []
         translationFailureCount = 0
         translationAuthPaused = false
+        liveTranslationPaused = false
         isLiveTranscribing = true
         isChunkTranscribing = false
 
@@ -445,6 +452,7 @@ class AppState {
         liveTranslatedSourceTexts = []
         liveTranslatedSealCount = []
         enableLiveTranslation = false
+        liveTranslationPaused = false
         removeLiveRecoveryFile()
     }
 
@@ -534,9 +542,34 @@ class AppState {
     /// Queue the latest translation snapshot. Since each snapshot is cumulative
     /// (contains all segments so far), a newer one always supersedes an older one,
     /// so we keep only the most recent. A single worker drains this slot.
+    /// Pause or resume live translation on demand. When resuming, everything
+    /// spoken during the pause is marked as already handled (sealed) so the
+    /// dirty-scan won't retroactively translate the skipped (native-language)
+    /// portion — only segments transcribed from here on get translated.
+    @MainActor
+    func setLiveTranslationPaused(_ paused: Bool) {
+        guard liveTranslationPaused != paused else { return }
+        liveTranslationPaused = paused
+        if paused {
+            // Stop calling the API immediately by dropping any queued snapshot.
+            pendingTranslationSnapshot = nil
+        } else {
+            // Seal the current segments so they're not retranslated on resume.
+            let texts = liveSegments.map { $0.text.trimmingCharacters(in: .whitespaces) }
+            let n = texts.count
+            if liveTranslatedSegments.count < n {
+                liveTranslatedSegments += Array(repeating: "", count: n - liveTranslatedSegments.count)
+            }
+            liveTranslatedSourceTexts = texts
+            liveTranslatedSealCount = Array(repeating: Self.sealThreshold, count: n)
+            // Kick the worker so subsequent segments resume translating.
+            if isLiveTranscribing { enqueueLiveTranslation(liveSegments) }
+        }
+    }
+
     @MainActor
     private func enqueueLiveTranslation(_ segments: [TranscriptionSegment]) {
-        guard !translationAuthPaused else { return }
+        guard !translationAuthPaused, !liveTranslationPaused else { return }
         pendingTranslationSnapshot = segments
         guard !isTranslationWorkerRunning else { return }
         isTranslationWorkerRunning = true

@@ -73,6 +73,15 @@ struct RecordingView: View {
 
                 if appState.enableLiveTranslation {
                     Button {
+                        appState.setLiveTranslationPaused(!appState.liveTranslationPaused)
+                    } label: {
+                        Image(systemName: appState.liveTranslationPaused ? "character.bubble" : "character.bubble.fill")
+                            .foregroundStyle(appState.liveTranslationPaused ? Color.secondary : Color.blue)
+                    }
+                    .buttonStyle(.plain)
+                    .help(appState.liveTranslationPaused ? "Resume translation" : "Pause translation (e.g. speaker switched to your language)")
+
+                    Button {
                         translationOnly.toggle()
                     } label: {
                         Image(systemName: translationOnly ? "eye.fill" : "eye")

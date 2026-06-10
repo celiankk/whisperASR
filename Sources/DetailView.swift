@@ -19,6 +19,13 @@ struct DetailView: View {
         .onChange(of: appState.selectedItem?.id) { _, _ in
             showSearch = false
         }
+        // Lives in the detail toolbar (not the sidebar) so the narrow sidebar
+        // never pushes the Record button into the overflow menu.
+        .toolbar {
+            ToolbarItem {
+                ModelPickerMenu()
+            }
+        }
     }
 
     // MARK: - Placeholder

@@ -10,6 +10,10 @@ final class ModelDownloader {
         case failed(String)
     }
 
+    let model: WhisperModelInfo
+    /// Called on the main queue after a successful download.
+    private let onFinished: () -> Void
+
     var state: State = .prompt
     var progress: Double = 0
     var downloadedBytes: Int64 = 0
@@ -22,24 +26,18 @@ final class ModelDownloader {
     private var downloadStartTime: Date?
     private var downloadStartBytes: Int64 = 0
 
-    static let modelURL = URL(string: "https://huggingface.co/danielkao0421/Breeze-ASR-25-ggml/resolve/main/ggml-model.bin")!
-
-    static var modelDirectory: URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("WhisperASR/Models")
+    init(model: WhisperModelInfo, onFinished: @escaping () -> Void = {}) {
+        self.model = model
+        self.onFinished = onFinished
     }
 
-    static var modelPath: URL {
-        modelDirectory.appendingPathComponent("ggml-model.bin")
-    }
-
-    private static var resumeDataURL: URL {
+    private var resumeDataURL: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("WhisperASR/.model-download-resume")
+        return appSupport.appendingPathComponent("WhisperASR/.download-resume-\(model.fileName)")
     }
 
     var hasResumeData: Bool {
-        FileManager.default.fileExists(atPath: Self.resumeDataURL.path)
+        FileManager.default.fileExists(atPath: resumeDataURL.path)
     }
 
     var progressText: String {
@@ -48,7 +46,8 @@ final class ModelDownloader {
             let total = String(format: "%.0f", Double(totalBytes) / 1_000_000)
             return "\(downloaded) / \(total) MB"
         }
-        return "\(downloaded) / ~3,000 MB"
+        let approx = String(format: "%.0f", Double(model.approxBytes) / 1_000_000)
+        return "\(downloaded) / ~\(approx) MB"
     }
 
     func startDownload() {
@@ -64,11 +63,11 @@ final class ModelDownloader {
         self.delegate = del
         session = URLSession(configuration: .default, delegate: del, delegateQueue: nil)
 
-        if let resumeData = try? Data(contentsOf: Self.resumeDataURL) {
+        if let resumeData = try? Data(contentsOf: resumeDataURL) {
             downloadTask = session?.downloadTask(withResumeData: resumeData)
-            try? FileManager.default.removeItem(at: Self.resumeDataURL)
+            try? FileManager.default.removeItem(at: resumeDataURL)
         } else {
-            downloadTask = session?.downloadTask(with: Self.modelURL)
+            downloadTask = session?.downloadTask(with: model.url)
         }
 
         downloadTask?.resume()
@@ -83,15 +82,16 @@ final class ModelDownloader {
 
     fileprivate func handleDownloadFinished(location: URL) {
         do {
-            try FileManager.default.createDirectory(at: Self.modelDirectory, withIntermediateDirectories: true)
-            let dest = Self.modelPath
+            try FileManager.default.createDirectory(at: ModelCatalog.modelDirectory, withIntermediateDirectories: true)
+            let dest = ModelCatalog.path(for: model)
             if FileManager.default.fileExists(atPath: dest.path) {
                 try FileManager.default.removeItem(at: dest)
             }
             try FileManager.default.moveItem(at: location, to: dest)
-            try? FileManager.default.removeItem(at: Self.resumeDataURL)
+            try? FileManager.default.removeItem(at: resumeDataURL)
             DispatchQueue.main.async {
                 self.state = .completed
+                self.onFinished()
             }
         } catch {
             DispatchQueue.main.async {
@@ -106,6 +106,8 @@ final class ModelDownloader {
             self.totalBytes = totalBytesExpected
             if totalBytesExpected > 0 {
                 self.progress = Double(totalBytesWritten) / Double(totalBytesExpected)
+            } else {
+                self.progress = min(1, Double(totalBytesWritten) / Double(self.model.approxBytes))
             }
 
             // Estimate time remaining based on average speed since download started
@@ -118,8 +120,8 @@ final class ModelDownloader {
                     if totalBytesExpected > 0 {
                         remainingBytes = Double(totalBytesExpected - totalBytesWritten)
                     } else {
-                        // Assume ~3 GB total if server doesn't report size
-                        remainingBytes = max(0, 3_000_000_000 - Double(totalBytesWritten))
+                        // Server didn't report size; assume the catalog's estimate
+                        remainingBytes = max(0, Double(self.model.approxBytes) - Double(totalBytesWritten))
                     }
                     let secondsRemaining = remainingBytes / bytesPerSecond
                     self.estimatedTimeRemaining = self.formatTimeRemaining(secondsRemaining)
@@ -145,10 +147,10 @@ final class ModelDownloader {
         // Save resume data if available
         if let resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
             try? FileManager.default.createDirectory(
-                at: Self.resumeDataURL.deletingLastPathComponent(),
+                at: resumeDataURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try? resumeData.write(to: Self.resumeDataURL)
+            try? resumeData.write(to: resumeDataURL)
         }
         // Don't update state for user-initiated cancellation
         if (error as? URLError)?.code != .cancelled {

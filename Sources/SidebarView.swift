@@ -354,6 +354,36 @@ struct SidebarView: View {
     }
 }
 
+// MARK: - Model Picker
+
+/// Toolbar menu for choosing which downloaded model transcribes new audio.
+struct ModelPickerMenu: View {
+    @State private var manager = ModelManager.shared
+
+    var body: some View {
+        Menu {
+            Picker("Transcription Model", selection: Binding(
+                get: { manager.selectedFileName },
+                set: { manager.selectedFileName = $0 }
+            )) {
+                Text("Automatic").tag("")
+                ForEach(manager.downloadedModels) { model in
+                    Text(model.displayName).tag(model.fileName)
+                }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            SettingsLink {
+                Text("Manage Models...")
+            }
+        } label: {
+            Label(manager.selectedModel?.displayName ?? "Model", systemImage: "cpu")
+        }
+        .help("Model used for transcription: \(manager.selectedModel?.displayName ?? "Automatic")")
+        .onAppear { manager.refresh() }
+    }
+}
+
 // MARK: - Circular Progress
 
 struct CircularProgressView: View {

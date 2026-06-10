@@ -68,4 +68,6 @@ Native macOS SwiftUI app (macOS 14+, arm64) that transcribes audio using whisper
 
 ### Model resolution
 
-`TranscriptionService.resolveModelPath()` checks UserDefaults `"modelPath"` first (set via `SettingsView`), then falls back to `{projectRoot}/Models/ggml-model.bin` using `#filePath` to locate the project root.
+`ModelCatalog` defines the downloadable models (Breeze-ASR-25 plus official whisper.cpp tiny/base/small/medium/large-v3-turbo); `ModelManager` (shared `@Observable`) tracks downloaded files in `~/Library/Application Support/WhisperASR/Models/`, per-model `ModelDownloader` instances, and the active selection (UserDefaults `"selectedModelFile"`, settable from `SettingsView` or the toolbar `ModelPickerMenu`).
+
+`TranscriptionService.resolveModelPath()` checks `"selectedModelFile"` first, then the custom `"modelPath"` (set via `SettingsView`), then the App Support default `ggml-model.bin`, then falls back to `{projectRoot}/Models/ggml-model.bin` using `#filePath` to locate the project root. The model is lazily (re)loaded whenever the resolved path changes, so switching models takes effect on the next transcription.

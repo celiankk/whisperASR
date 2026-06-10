@@ -85,36 +85,31 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Whisper Model") {
-                HStack {
-                    TextField("GGML model file", text: $modelPath,
-                              prompt: Text("Models/ggml-model.bin (auto-detected)"))
-                        .textFieldStyle(.roundedBorder)
-                    Button("Browse...") { browseModel() }
+            Section("Speech Recognition Models") {
+                ForEach(ModelCatalog.all) { model in
+                    ModelRowView(model: model)
                 }
-                Text("Leave empty to use Models/ggml-model.bin in the project directory.")
+                Text("Select a downloaded model to use it for transcription. Smaller models are faster but less accurate.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Model Setup") {
-                Text("Convert the Breeze-ASR-25 model to GGML format:")
+            Section("Custom Model") {
+                HStack {
+                    TextField("GGML model file", text: $modelPath,
+                              prompt: Text("Path to a custom ggml model"))
+                        .textFieldStyle(.roundedBorder)
+                    Button("Browse...") { browseModel() }
+                }
+                Text("Used only when no model is selected above. Leave empty otherwise.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("bash Scripts/convert_model.sh")
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(6)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                Text("This downloads and converts the model (~3 GB). Only needed once.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
             }
         }
         .formStyle(.grouped)
         .frame(width: 480)
         .padding()
+        .onAppear { ModelManager.shared.refresh() }
     }
 
     private func verifyConnection() {
@@ -154,6 +149,87 @@ struct SettingsView: View {
             if response == .OK, let url = panel.url {
                 modelPath = url.path
             }
+        }
+    }
+}
+
+// MARK: - Model Row
+
+private struct ModelRowView: View {
+    let model: WhisperModelInfo
+    @State private var manager = ModelManager.shared
+    @State private var confirmDelete = false
+
+    private var downloader: ModelDownloader { manager.downloader(for: model) }
+    private var isDownloaded: Bool { manager.isDownloaded(model) }
+    private var isSelected: Bool { manager.selectedFileName == model.fileName }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                manager.selectedFileName = model.fileName
+            } label: {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!isDownloaded)
+            .help(isDownloaded ? "Use this model for transcription" : "Download the model first")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName)
+                Text("\(model.detail) · \(model.approxSizeText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if isDownloaded {
+                Button {
+                    confirmDelete = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete downloaded model")
+            } else if downloader.state == .downloading {
+                ProgressView(value: downloader.progress)
+                    .progressViewStyle(.linear)
+                    .frame(width: 70)
+                Text("\(Int(downloader.progress * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Button {
+                    downloader.cancelDownload()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel download")
+            } else {
+                if case .failed = downloader.state {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .help("Download failed — click Download to retry")
+                }
+                Button(downloader.hasResumeData ? "Resume" : "Download") {
+                    downloader.startDownload()
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete \(model.displayName)?",
+            isPresented: $confirmDelete
+        ) {
+            Button("Delete", role: .destructive) {
+                manager.delete(model)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The model file (\(model.approxSizeText)) will be removed from disk. You can download it again later.")
         }
     }
 }

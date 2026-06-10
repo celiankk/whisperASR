@@ -190,6 +190,10 @@ final class TranscriptionService: @unchecked Sendable {
 
     /// Check whether a usable model file exists at any known location.
     static func modelExists() -> Bool {
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: ModelCatalog.modelDirectory.path),
+           files.contains(where: { $0.hasSuffix(".bin") }) {
+            return true
+        }
         if let custom = UserDefaults.standard.string(forKey: "modelPath"),
            !custom.isEmpty,
            FileManager.default.fileExists(atPath: custom) {
@@ -210,8 +214,7 @@ final class TranscriptionService: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: path) else {
             throw TranscriptionError.scriptNotFound(
                 "Model not found at: \(path)\n\n" +
-                "Convert the Breeze-ASR-25 model first:\n" +
-                "  bash Scripts/convert_model.sh"
+                "Download a model in Settings → Speech Recognition Models."
             )
         }
         if loadedModelPath != path {
@@ -230,6 +233,15 @@ final class TranscriptionService: @unchecked Sendable {
     }
 
     private func resolveModelPath() -> String {
+        // Explicitly selected downloaded model (set via Settings or the toolbar picker)
+        if let selected = UserDefaults.standard.string(forKey: "selectedModelFile"),
+           !selected.isEmpty {
+            let selectedPath = ModelCatalog.modelDirectory.appendingPathComponent(selected).path
+            if FileManager.default.fileExists(atPath: selectedPath) {
+                return selectedPath
+            }
+        }
+
         if let custom = UserDefaults.standard.string(forKey: "modelPath"),
            !custom.isEmpty,
            FileManager.default.fileExists(atPath: custom) {

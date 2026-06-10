@@ -1,8 +1,17 @@
 import SwiftUI
 
 struct ModelDownloadView: View {
-    @State private var downloader = ModelDownloader()
     @Binding var isPresented: Bool
+    @State private var manager = ModelManager.shared
+    @State private var selectedID = ModelCatalog.all[0].id
+
+    private var model: WhisperModelInfo {
+        ModelCatalog.model(id: selectedID) ?? ModelCatalog.all[0]
+    }
+
+    private var downloader: ModelDownloader {
+        manager.downloader(for: model)
+    }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -18,7 +27,7 @@ struct ModelDownloadView: View {
             }
         }
         .padding(24)
-        .frame(width: 420)
+        .frame(width: 440)
     }
 
     private var promptView: some View {
@@ -30,12 +39,23 @@ struct ModelDownloadView: View {
             Text("Speech Recognition Model Required")
                 .font(.headline)
 
+            Text("WhisperASR needs a speech recognition model to transcribe audio. Choose one to download — you can add more or switch later in Settings.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+
+            Picker("Model", selection: $selectedID) {
+                ForEach(ModelCatalog.all) { m in
+                    Text("\(m.displayName) (\(m.approxSizeText))").tag(m.id)
+                }
+            }
+
+            Text(model.detail)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
             if downloader.hasResumeData {
-                Text("A previous download was interrupted. Would you like to resume downloading the Breeze-ASR-25 model? The file is approximately 3 GB.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("WhisperASR needs the Breeze-ASR-25 model to transcribe audio. Would you like to download it automatically? The file is approximately 3 GB.")
+                Text("A previous download of this model was interrupted and can be resumed.")
+                    .font(.caption)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
             }
@@ -56,7 +76,7 @@ struct ModelDownloadView: View {
 
     private var downloadingView: some View {
         VStack(spacing: 16) {
-            Text("Downloading Model...")
+            Text("Downloading \(model.displayName)...")
                 .font(.headline)
 
             ProgressView(value: downloader.progress)
@@ -88,7 +108,7 @@ struct ModelDownloadView: View {
             Text("Model Downloaded Successfully")
                 .font(.headline)
 
-            Text("The model has been saved and is ready to use.")
+            Text("\(model.displayName) has been saved and is ready to use.")
                 .foregroundStyle(.secondary)
 
             Button("Done") {

@@ -43,12 +43,17 @@
 - **同步高亮** — 播放時自動高亮目前句子
 - **點擊跳轉** — 點擊任意段落即跳至該時間點
 
+### 模型
+
+- **內建模型下載** — 在 App 內直接下載模型：Breeze-ASR-25（最適合台灣華語）以及官方 whisper.cpp 模型，從 Tiny（78 MB）到 Large v3 Turbo（1.6 GB）
+- **隨時切換** — 從工具列或設定選擇使用的模型，下次轉錄即生效
+- **自訂模型路徑** — 也可在設定中指定目錄外的 `ggml-*.bin` 模型檔案
+
 ### 隱私與效能
 
 - **Metal GPU 加速** — 透過 whisper.cpp 完全在裝置上執行，音訊不會離開你的 Mac
 - **自備 API** — 翻譯支援任何 OpenAI 相容端點，包括本地模型
 - **重新轉錄** 與 **失敗重試**，可複製錯誤訊息
-- **自訂模型路徑** — 在設定中指定
 
 ## 系統需求
 
@@ -68,15 +73,17 @@ bash Scripts/build_whisper_lib.sh
 
 此指令會複製 whisper.cpp、以 Metal + Accelerate 建置，並封裝靜態函式庫為 xcframework。
 
-### 2. 取得 Breeze-ASR-25 GGML 模型
+### 2. 取得語音辨識模型
 
-**方法 A（推薦）：** 直接從 HuggingFace 下載預先轉換的 GGML 檔案（約 3 GB），放至 `Models/ggml-model.bin`：
+**方法 A（推薦）：** 直接啟動 App — 首次執行會提示下載模型（Breeze-ASR-25 或較小的 Whisper 模型），之後可在「設定 → 語音辨識模型」中新增、選擇或刪除模型。
+
+**方法 B：** 直接從 HuggingFace 下載預先轉換的 Breeze-ASR-25 GGML 檔案（約 3 GB），放至 `Models/ggml-model.bin`：
 
 ```
 https://huggingface.co/danielkao0421/Breeze-ASR-25-ggml/blob/main/ggml-model.bin
 ```
 
-**方法 B：** 從原始模型自行轉換（需要 Python 3 及 `torch`、`transformers`、`numpy`、`huggingface_hub`）：
+**方法 C：** 從原始模型自行轉換（需要 Python 3 及 `torch`、`transformers`、`numpy`、`huggingface_hub`）：
 
 ```bash
 bash Scripts/convert_model.sh
@@ -135,7 +142,8 @@ xattr -cr /path/to/WhisperASR.app
 
 - **目標語言** — 選擇翻譯的目標語言
 - **OpenAI 翻譯 API** — 只需填入 API 金鑰；端點預設為 OpenAI，模型預設為 `gpt-4o-mini`。支援任何 OpenAI 相容端點（包括本地模型）。
-- **Whisper 模型** — 自訂 `ggml-*.bin` 模型檔案路徑；預設為專案目錄下的 `Models/ggml-model.bin`
+- **語音辨識模型** — 下載、選擇或刪除模型；轉錄會使用選取的模型
+- **自訂模型** — 可選的自訂 `ggml-*.bin` 模型檔案路徑，僅在未選取下載模型時使用
 
 ## 專案結構
 

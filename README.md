@@ -45,12 +45,17 @@ A native macOS app for audio transcription using [Breeze-ASR-25](https://github.
 - **Synced text highlighting** — the current sentence highlights as audio plays
 - **Click-to-seek** — click any segment to jump to that point in the audio
 
+### Models
+
+- **Downloadable model catalog** — download models in-app: Breeze-ASR-25 (best for Mandarin/Taiwanese-accented speech) plus official whisper.cpp models from Tiny (78 MB) to Large v3 Turbo (1.6 GB)
+- **Switch anytime** — pick the active model from the toolbar or Settings; takes effect on the next transcription
+- **Custom model path** — point to any `ggml-*.bin` outside the catalog via Settings
+
 ### Privacy & performance
 
 - **Metal GPU acceleration** via whisper.cpp — fully on-device, no audio ever leaves your Mac
 - **Bring your own API** — translation uses any OpenAI-compatible endpoint, including local models
 - **Re-transcribe** and **retry on failure** with copyable error messages
-- **Custom model path** — configure via Settings
 
 ## Requirements
 
@@ -70,15 +75,17 @@ bash Scripts/build_whisper_lib.sh
 
 This clones whisper.cpp, builds it with Metal + Accelerate, and packages the static libraries into an xcframework.
 
-### 2. Get the Breeze-ASR-25 GGML model
+### 2. Get a speech recognition model
 
-**Option A (recommended):** Download the pre-converted GGML file directly from HuggingFace (~3 GB) and place it at `Models/ggml-model.bin`:
+**Option A (recommended):** Just launch the app — it offers to download a model on first run (Breeze-ASR-25 or a smaller Whisper model), and you can add, select, or delete models later in **Settings → Speech Recognition Models**.
+
+**Option B:** Download the pre-converted Breeze-ASR-25 GGML file directly from HuggingFace (~3 GB) and place it at `Models/ggml-model.bin`:
 
 ```
 https://huggingface.co/danielkao0421/Breeze-ASR-25-ggml/blob/main/ggml-model.bin
 ```
 
-**Option B:** Convert from the original model (requires Python 3 + `torch`, `transformers`, `numpy`, `huggingface_hub`):
+**Option C:** Convert from the original model (requires Python 3 + `torch`, `transformers`, `numpy`, `huggingface_hub`):
 
 ```bash
 bash Scripts/convert_model.sh
@@ -137,7 +144,8 @@ Open **Settings** (Cmd+,) to configure:
 
 - **Target Language** — choose a language to translate transcriptions into
 - **OpenAI Translation API** — only the API key is required; endpoint defaults to OpenAI, model defaults to `gpt-4o-mini`. Any OpenAI-compatible endpoint (including local models) works.
-- **Whisper Model** — path to a custom `ggml-*.bin` model file; defaults to `Models/ggml-model.bin` in the project directory
+- **Speech Recognition Models** — download, select, or delete models; the selected model is used for all transcription
+- **Custom Model** — optional path to your own `ggml-*.bin` file, used when no downloaded model is selected
 
 ## Project Structure
 

@@ -38,6 +38,28 @@ enum TranscriptionStore {
         storeDirectory.appendingPathComponent("\(id.uuidString).json")
     }
 
+    private static var recordingsDirectory: URL {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!
+        return appSupport
+            .appendingPathComponent("WhisperASR", isDirectory: true)
+            .appendingPathComponent("Recordings", isDirectory: true)
+    }
+
+    /// Resolve a stored recording path, healing it if it no longer exists. After
+    /// moving to a new Mac the absolute path embeds the old username and breaks;
+    /// if a file of the same name sits in the local Recordings folder we re-link
+    /// to it. Only kicks in when the original is missing, so files that live
+    /// elsewhere (e.g. drag-dropped) are left untouched.
+    private static func resolveRecordingURL(storedPath: String) -> URL {
+        let original = URL(fileURLWithPath: storedPath)
+        if FileManager.default.fileExists(atPath: storedPath) { return original }
+        let candidate = recordingsDirectory.appendingPathComponent(original.lastPathComponent)
+        if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        return original
+    }
+
     // MARK: - Save
 
     static func save(_ item: TranscriptionItem) {
@@ -102,7 +124,7 @@ enum TranscriptionStore {
                 return TranscriptionItem(
                     id: stored.id,
                     fileName: stored.fileName,
-                    fileURL: URL(fileURLWithPath: stored.filePath),
+                    fileURL: resolveRecordingURL(storedPath: stored.filePath),
                     dateAdded: stored.dateAdded,
                     status: status,
                     segments: stored.segments,

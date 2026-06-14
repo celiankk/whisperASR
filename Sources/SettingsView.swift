@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @AppStorage("transcriptFontSize") private var transcriptFontSize = TranscriptFontSize.normal.rawValue
@@ -11,7 +12,17 @@ struct SettingsView: View {
     @State private var verifyInFlight = false
     @State private var verifyResult: VerifyResult? = nil
 
+    // Backup & restore
+    @State private var backupStatus: BackupStatus? = nil
+    @State private var pendingRestore: BackupService.BackupFile? = nil
+    @State private var showRestoreConfirm = false
+
     private enum VerifyResult {
+        case success(String)
+        case failure(String)
+    }
+
+    private enum BackupStatus {
         case success(String)
         case failure(String)
     }
@@ -105,11 +116,46 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Backup & Restore") {
+                HStack(spacing: 10) {
+                    Button("Export Backup…") { exportBackup() }
+                    Button("Restore from Backup…") { pickRestoreFile() }
+                    Spacer()
+                }
+
+                switch backupStatus {
+                case .success(let msg):
+                    Label(msg, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                case .failure(let msg):
+                    Label(msg, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                case .none:
+                    EmptyView()
+                }
+
+                Text("Saves your settings (model choice, translation API config, font size, recent apps) to one file. On a new Mac, copy your Recordings and Transcriptions folders into ~/Library/Application Support/WhisperASR/ — transcripts load from there and audio links repair automatically — then restore your settings here. The file includes your translation API key, so keep it private.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 480)
         .padding()
         .onAppear { ModelManager.shared.refresh() }
+        .confirmationDialog(
+            "Restore from backup?",
+            isPresented: $showRestoreConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Restore") { performRestore() }
+            Button("Cancel", role: .cancel) { pendingRestore = nil }
+        } message: {
+            Text("This overwrites your current settings (model choice, translation API config, font size, recent apps) with the values from the backup. Your transcriptions are not affected.")
+        }
     }
 
     private func verifyConnection() {
@@ -150,6 +196,60 @@ struct SettingsView: View {
                 modelPath = url.path
             }
         }
+    }
+
+    // MARK: - Backup & Restore
+
+    private static func backupDateString() -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        return df.string(from: Date())
+    }
+
+    private func exportBackup() {
+        let backup = BackupService.makeBackup()
+        guard let data = try? BackupService.encode(backup) else {
+            backupStatus = .failure("Couldn't create backup data.")
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "WhisperASR Backup \(Self.backupDateString()).json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try data.write(to: url, options: .atomic)
+                backupStatus = .success("Settings exported.")
+            } catch {
+                backupStatus = .failure("Export failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func pickRestoreFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let data = try Data(contentsOf: url)
+                pendingRestore = try BackupService.decode(data)
+                showRestoreConfirm = true
+            } catch {
+                backupStatus = .failure("Couldn't read backup: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func performRestore() {
+        guard let backup = pendingRestore else { return }
+        BackupService.restore(backup)
+        backupStatus = .success("Settings restored.")
+        pendingRestore = nil
     }
 }
 

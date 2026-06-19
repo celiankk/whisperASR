@@ -19,7 +19,12 @@ final class TranscriptionService: @unchecked Sendable {
         }
     }
 
-    func transcribe(fileURL: URL, onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
+    /// Transcribe (or translate-to-English, when `translate` is true) an audio file.
+    /// `language` is an optional ISO-639-1 code; nil/empty means auto-detect.
+    func transcribe(fileURL: URL,
+                    language: String? = nil,
+                    translate: Bool = false,
+                    onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
         try ensureModelLoaded()
         guard let ctx else {
             throw TranscriptionError.scriptNotFound("Model not loaded")
@@ -29,7 +34,7 @@ final class TranscriptionService: @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
-                var (params, langCStr) = self.makeBaseParams()
+                var (params, langCStr) = self.makeBaseParams(language: language, translate: translate)
                 defer { free(langCStr) }
 
                 // Progress callback
@@ -80,9 +85,17 @@ final class TranscriptionService: @unchecked Sendable {
                     fullText += text
                 }
 
+                // Whisper's auto-detected language for the audio.
+                var detected: String? = nil
+                let langId = whisper_full_lang_id(ctx)
+                if langId >= 0, let langPtr = whisper_lang_str(langId) {
+                    detected = String(cString: langPtr)
+                }
+
                 continuation.resume(returning: TranscriptionResult(
                     text: fullText,
-                    segments: segments
+                    segments: segments,
+                    detectedLanguage: detected
                 ))
             }
         }
@@ -153,16 +166,21 @@ final class TranscriptionService: @unchecked Sendable {
 
     // MARK: - Params Configuration
 
-    /// Create base whisper params with language/translation settings from UserDefaults.
+    /// Create base whisper params. `language` nil/empty means auto-detect; when
+    /// `translate` is true whisper translates the audio to English.
     /// Caller must free the returned C string pointer after whisper_full completes.
-    private func makeBaseParams(threadCount: Int32? = nil) -> (whisper_full_params, UnsafeMutablePointer<CChar>?) {
+    private func makeBaseParams(threadCount: Int32? = nil,
+                                language: String? = nil,
+                                translate: Bool = false) -> (whisper_full_params, UnsafeMutablePointer<CChar>?) {
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         params.print_progress = false
         params.print_realtime = false
         params.print_timestamps = false
         params.n_threads = threadCount ?? max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 2))
+        params.translate = translate
 
-        let langCStr = strdup("auto")
+        let lang = (language?.isEmpty == false) ? language! : "auto"
+        let langCStr = strdup(lang)
         params.language = UnsafePointer(langCStr)
 
         return (params, langCStr)

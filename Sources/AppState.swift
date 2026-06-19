@@ -67,6 +67,14 @@ class AppState {
         if items.contains(where: { $0.status == .pending }) {
             startNextTranscription()
         }
+        // Share the single loaded model with the OpenAI-compatible API server and
+        // start it if the user left it enabled.
+        Task { @MainActor [service] in
+            APIServer.shared.attach(service: service)
+            if UserDefaults.standard.bool(forKey: APIServer.enabledKey) {
+                APIServer.shared.start()
+            }
+        }
     }
 
     var selectedItem: TranscriptionItem? {

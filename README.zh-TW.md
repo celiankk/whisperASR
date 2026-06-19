@@ -49,6 +49,13 @@
 - **隨時切換** — 從工具列或設定選擇使用的模型，下次轉錄即生效
 - **自訂模型路徑** — 也可在設定中指定目錄外的 `ggml-*.bin` 模型檔案
 
+### 本機 API 伺服器（相容 OpenAI）
+
+- **可直接替換的 OpenAI 轉錄 API** — 在設定中啟用本機 HTTP 伺服器，將任何相容 OpenAI 的用戶端指向 `http://127.0.0.1:8080/v1`；轉錄在裝置上以你選擇的模型執行
+- **端點** — `POST /v1/audio/transcriptions`、`POST /v1/audio/translations`（將音訊翻譯成英文）與 `GET /v1/models`
+- **回應格式** — `json`、`verbose_json`（含時間軸片段）、`text`、`srt` 與 `vtt`
+- **可選 API 金鑰** — 可要求 `Bearer` 權杖，並可選擇開放區域網路內其他裝置存取
+
 ### 隱私與效能
 
 - **Metal GPU 加速** — 透過 whisper.cpp 完全在裝置上執行，音訊不會離開你的 Mac

@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(APIServer.portKey) private var apiServerPort = 8080
     @AppStorage(APIServer.tokenKey) private var apiServerToken = ""
     @AppStorage(APIServer.allowLANKey) private var apiServerAllowLAN = false
+    @AppStorage(APIServer.verboseLogKey) private var apiServerVerboseLog = false
     @State private var apiServer = APIServer.shared
 
     @State private var verifyInFlight = false
@@ -146,6 +147,8 @@ struct SettingsView: View {
 
                 Toggle("Allow access from other devices on your network", isOn: $apiServerAllowLAN)
                     .disabled(apiServer.isRunning)
+
+                Toggle("Verbose request logging (for troubleshooting)", isOn: $apiServerVerboseLog)
 
                 if apiServer.isRunning, let base = apiServer.baseURL {
                     HStack(spacing: 8) {

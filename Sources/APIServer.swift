@@ -26,6 +26,9 @@ final class APIServer {
     static let portKey = "apiServerPort"
     static let tokenKey = "apiServerToken"
     static let allowLANKey = "apiServerAllowLAN"
+    /// When true, each request and its outcome are logged to stderr (run log).
+    /// Off by default; flip on to diagnose client issues.
+    static let verboseLogKey = "apiServerVerboseLogging"
     static let defaultPort: UInt16 = 8080
 
     private(set) var isRunning = false
@@ -160,11 +163,19 @@ private struct OpenAITranscriptionAPI: Sendable {
     // MARK: Transcription / translation
 
     func handleTranscription(_ request: HTTPRequest, translate: Bool) async -> HTTPResponse {
-        if let denied = Self.checkAuth(request) { return denied }
+        let kind = translate ? "translations" : "transcriptions"
+        if let denied = Self.checkAuth(request) {
+            Self.log("\(kind): rejected (auth)")
+            return denied
+        }
+
+        let contentTypeHeader = request.headers[.contentType] ?? "(none)"
+        Self.log("\(kind): request content-type=\(contentTypeHeader)")
 
         guard let contentType = request.headers[.contentType],
               contentType.lowercased().contains("multipart/form-data"),
               let boundary = MultipartParser.boundary(from: contentType) else {
+            Self.log("\(kind): 400 not multipart/form-data")
             return Self.errorResponse(.badRequest,
                 "Request must be multipart/form-data with an audio 'file'.")
         }
@@ -173,11 +184,14 @@ private struct OpenAITranscriptionAPI: Sendable {
         do {
             body = try await request.bodyData
         } catch {
+            Self.log("\(kind): 400 couldn't read body: \(error.localizedDescription)")
             return Self.errorResponse(.badRequest, "Could not read request body.")
         }
 
         let parts = MultipartParser.parse(body: body, boundary: boundary)
+        Self.log("\(kind): body=\(body.count)B parts=[\(parts.map { $0.name }.joined(separator: ","))]")
         guard let filePart = parts.first(where: { $0.name == "file" }), !filePart.data.isEmpty else {
+            Self.log("\(kind): 400 missing/empty 'file' part")
             return Self.errorResponse(.badRequest, "Missing required 'file' field.")
         }
 
@@ -189,9 +203,12 @@ private struct OpenAITranscriptionAPI: Sendable {
         let ext = Self.fileExtension(filename: filePart.filename, contentType: filePart.contentType)
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("whisperasr-\(UUID().uuidString)\(ext)")
+        Self.log("\(kind): file='\(filePart.filename ?? "?")' type=\(filePart.contentType ?? "?") "
+            + "size=\(filePart.data.count)B -> \(tmp.lastPathComponent) format=\(responseFormat)")
         do {
             try filePart.data.write(to: tmp)
         } catch {
+            Self.log("\(kind): 500 couldn't stage upload: \(error.localizedDescription)")
             return Self.errorResponse(.internalServerError, "Could not stage upload.", type: "server_error")
         }
         defer { try? FileManager.default.removeItem(at: tmp) }
@@ -199,10 +216,20 @@ private struct OpenAITranscriptionAPI: Sendable {
         do {
             let result = try await service.transcribe(
                 fileURL: tmp, language: language, translate: translate) { _ in }
+            Self.log("\(kind): 200 ok (\(result.text.count) chars, \(result.segments.count) segments)")
             return Self.formatResult(result, format: responseFormat, translate: translate)
         } catch {
+            Self.log("\(kind): 500 transcribe failed: \(error.localizedDescription)")
             return Self.errorResponse(.internalServerError, error.localizedDescription, type: "server_error")
         }
+    }
+
+    /// Write a diagnostic line to stderr (captured in the run log) when verbose
+    /// logging is enabled. Unbuffered, so lines appear immediately even when stdout
+    /// is redirected to a file. The flag is read per call, so it toggles live.
+    static func log(_ message: String) {
+        guard UserDefaults.standard.bool(forKey: APIServer.verboseLogKey) else { return }
+        FileHandle.standardError.write(Data("[APIServer] \(message)\n".utf8))
     }
 
     // MARK: Models

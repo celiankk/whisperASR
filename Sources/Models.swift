@@ -53,6 +53,9 @@ struct TranscriptionSegment: Codable, Equatable {
 struct TranscriptionResult: Codable {
     let text: String
     let segments: [TranscriptionSegment]
+    /// Whisper's auto-detected language code (e.g. "en", "zh"). Populated for
+    /// file transcription; used by the OpenAI-compatible API's verbose_json.
+    var detectedLanguage: String? = nil
 }
 
 // MARK: - Status

@@ -51,6 +51,13 @@ A native macOS app for audio transcription using [Breeze-ASR-25](https://github.
 - **Switch anytime** — pick the active model from the toolbar or Settings; takes effect on the next transcription
 - **Custom model path** — point to any `ggml-*.bin` outside the catalog via Settings
 
+### Local API server (OpenAI-compatible)
+
+- **Drop-in OpenAI transcription API** — enable a local HTTP server in Settings and point any OpenAI-compatible client at `http://127.0.0.1:8080/v1`; transcription runs on-device with your selected model
+- **Endpoints** — `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` (translate audio to English), and `GET /v1/models`
+- **Response formats** — `json`, `verbose_json` (with timestamped segments), `text`, `srt`, and `vtt`
+- **Optional API key** — require a `Bearer` token, and optionally allow access from other devices on your network
+
 ### Privacy & performance
 
 - **Metal GPU acceleration** via whisper.cpp — fully on-device, no audio ever leaves your Mac

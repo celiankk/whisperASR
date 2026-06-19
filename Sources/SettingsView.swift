@@ -9,6 +9,14 @@ struct SettingsView: View {
     @AppStorage("translationAPIKey") private var translationAPIKey = ""
     @AppStorage("translationModel") private var translationModel = ""
 
+    // Local OpenAI-compatible API server
+    @AppStorage(APIServer.enabledKey) private var apiServerEnabled = false
+    @AppStorage(APIServer.portKey) private var apiServerPort = 8080
+    @AppStorage(APIServer.tokenKey) private var apiServerToken = ""
+    @AppStorage(APIServer.allowLANKey) private var apiServerAllowLAN = false
+    @AppStorage(APIServer.verboseLogKey) private var apiServerVerboseLog = false
+    @State private var apiServer = APIServer.shared
+
     @State private var verifyInFlight = false
     @State private var verifyResult: VerifyResult? = nil
 
@@ -113,6 +121,62 @@ struct SettingsView: View {
                     Button("Browse...") { browseModel() }
                 }
                 Text("Used only when no model is selected above. Leave empty otherwise.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Local API Server (OpenAI-compatible)") {
+                Toggle("Run transcription API server", isOn: $apiServerEnabled)
+                    .onChange(of: apiServerEnabled) { _, on in
+                        if on { apiServer.start() } else { apiServer.stop() }
+                    }
+
+                HStack {
+                    Text("Port")
+                    Spacer()
+                    TextField("8080", value: $apiServerPort, format: .number.grouping(.never))
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 80)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(apiServer.isRunning)
+                }
+
+                SecureField("API Key (optional)", text: $apiServerToken,
+                            prompt: Text("Leave empty to allow any client"))
+                    .textFieldStyle(.roundedBorder)
+
+                Toggle("Allow access from other devices on your network", isOn: $apiServerAllowLAN)
+                    .disabled(apiServer.isRunning)
+
+                Toggle("Verbose request logging (for troubleshooting)", isOn: $apiServerVerboseLog)
+
+                if apiServer.isRunning, let base = apiServer.baseURL {
+                    HStack(spacing: 8) {
+                        Label("Running", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                        Text("\(base)/v1")
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .foregroundStyle(.secondary)
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString("\(base)/v1", forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy base URL")
+                        Spacer()
+                    }
+                } else if let err = apiServer.lastError {
+                    Label(err, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                        .lineLimit(3)
+                }
+
+                Text("Point any OpenAI-compatible client at the address above (base_url). Endpoints: POST /v1/audio/transcriptions and /v1/audio/translations (multipart with a `file`; response_format supports json, verbose_json, text, srt, vtt). Requests use your currently selected model. Changing the port or network setting takes effect after toggling the server off and on.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

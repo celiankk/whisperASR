@@ -30,6 +30,9 @@ final class APIServer {
     /// Off by default; flip on to diagnose client issues.
     static let verboseLogKey = "apiServerVerboseLogging"
     static let defaultPort: UInt16 = 8080
+    /// Per-connection timeout for the HTTP server. Generous so long transcriptions
+    /// aren't severed mid-flight (FlyingFox defaults to a 15s timeout).
+    static let connectionTimeout: TimeInterval = 3600
 
     private(set) var isRunning = false
     private(set) var lastError: String?
@@ -71,11 +74,16 @@ final class APIServer {
         let api = OpenAITranscriptionAPI(service: service)
         runTask = Task.detached { [weak self] in
             do {
+                // FlyingFox's default connection timeout is 15s, which severs the
+                // client mid-transcription for anything but very short clips (the
+                // handler finishes and logs 200, but the client already got a 500).
+                // Allow long transcriptions to complete.
                 let server: HTTPServer
                 if allowLAN {
-                    server = HTTPServer(port: port)                // 0.0.0.0 — all interfaces
+                    server = HTTPServer(port: port, timeout: Self.connectionTimeout)  // 0.0.0.0 — all interfaces
                 } else {
-                    server = HTTPServer(address: try sockaddr_in.inet(ip4: "127.0.0.1", port: port))
+                    server = HTTPServer(address: try sockaddr_in.inet(ip4: "127.0.0.1", port: port),
+                                        timeout: Self.connectionTimeout)
                 }
                 await api.register(on: server)
                 await self?.setServer(server)
@@ -213,23 +221,36 @@ private struct OpenAITranscriptionAPI: Sendable {
         }
         defer { try? FileManager.default.removeItem(at: tmp) }
 
+        let start = Date()
+        Self.log("\(kind): transcribe START")
         do {
             let result = try await service.transcribe(
                 fileURL: tmp, language: language, translate: translate) { _ in }
-            Self.log("\(kind): 200 ok (\(result.text.count) chars, \(result.segments.count) segments)")
+            let secs = Date().timeIntervalSince(start)
+            Self.log(String(format: "%@: 200 ok (%d chars, %d segments) in %.1fs",
+                            kind, result.text.count, result.segments.count, secs))
             return Self.formatResult(result, format: responseFormat, translate: translate)
         } catch {
-            Self.log("\(kind): 500 transcribe failed: \(error.localizedDescription)")
+            let secs = Date().timeIntervalSince(start)
+            Self.log(String(format: "%@: 500 transcribe failed after %.1fs: %@",
+                            kind, secs, error.localizedDescription))
             return Self.errorResponse(.internalServerError, error.localizedDescription, type: "server_error")
         }
     }
 
-    /// Write a diagnostic line to stderr (captured in the run log) when verbose
-    /// logging is enabled. Unbuffered, so lines appear immediately even when stdout
-    /// is redirected to a file. The flag is read per call, so it toggles live.
+    private static let logTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
+
+    /// Write a timestamped diagnostic line to stderr (captured in the run log) when
+    /// verbose logging is enabled. Unbuffered, so lines appear immediately even when
+    /// stdout is redirected to a file. The flag is read per call, so it toggles live.
     static func log(_ message: String) {
         guard UserDefaults.standard.bool(forKey: APIServer.verboseLogKey) else { return }
-        FileHandle.standardError.write(Data("[APIServer] \(message)\n".utf8))
+        let ts = logTimeFormatter.string(from: Date())
+        FileHandle.standardError.write(Data("[APIServer \(ts)] \(message)\n".utf8))
     }
 
     // MARK: Models

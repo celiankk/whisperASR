@@ -45,6 +45,10 @@ final class APIServer {
     private var server: HTTPServer?
     private var runTask: Task<Void, Never>?
 
+    /// Bonjour/DNS-SD advertisement (only while LAN access is enabled).
+    private var netService: NetService?
+    private let bonjourDelegate = BonjourDelegate()
+
     private init() {}
 
     static var configuredPort: UInt16 {
@@ -70,6 +74,10 @@ final class APIServer {
         isRunning = true
         lastError = nil
         baseURL = "http://\(allowLAN ? Self.localIPAddress() : "127.0.0.1"):\(port)"
+
+        // Advertise on the local network only when LAN access is on — a 127.0.0.1
+        // binding isn't reachable by the devices that would discover it.
+        if allowLAN { publishBonjour(port: port) }
 
         let api = OpenAITranscriptionAPI(service: service)
         runTask = Task.detached { [weak self] in
@@ -99,6 +107,7 @@ final class APIServer {
         guard isRunning else { return }
         isRunning = false
         baseURL = nil
+        stopBonjour()
         let s = server
         server = nil
         runTask?.cancel()
@@ -112,11 +121,39 @@ final class APIServer {
         isRunning = false
         baseURL = nil
         server = nil
+        stopBonjour()
         if let error {
             lastError = error
             // Reflect the failure back to the toggle so the UI doesn't show "on".
             UserDefaults.standard.set(false, forKey: Self.enabledKey)
         }
+    }
+
+    // MARK: - Bonjour advertisement
+
+    /// Publish a DNS-SD service (`_whisperasr._tcp`) so clients on the LAN can
+    /// discover this server without knowing its IP. TXT records carry the API path
+    /// (`/v1`), app version, and whether a bearer token is required.
+    private func publishBonjour(port: UInt16) {
+        let macName = Host.current().localizedName ?? "Mac"
+        let service = NetService(domain: "local.", type: "_whisperasr._tcp.",
+                                 name: "WhisperASR on \(macName)", port: Int32(port))
+        var txt: [String: Data] = ["path": Data("/v1".utf8)]
+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            txt["version"] = Data(version.utf8)
+        }
+        let token = UserDefaults.standard.string(forKey: Self.tokenKey)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        txt["auth"] = Data((token.isEmpty ? "none" : "bearer").utf8)
+        service.setTXTRecord(NetService.data(fromTXTRecord: txt))
+        service.delegate = bonjourDelegate
+        service.publish()
+        netService = service
+    }
+
+    private func stopBonjour() {
+        netService?.stop()
+        netService = nil
     }
 
     /// Best-effort LAN IPv4 of the primary interface, for display in Settings.
@@ -145,6 +182,18 @@ final class APIServer {
             }
         }
         return address
+    }
+}
+
+// MARK: - Bonjour delegate
+
+/// Logs Bonjour publish results to the (gated) run log; retained by `APIServer`.
+private final class BonjourDelegate: NSObject, NetServiceDelegate {
+    func netServiceDidPublish(_ sender: NetService) {
+        OpenAITranscriptionAPI.log("bonjour: published '\(sender.name)' \(sender.type) on port \(sender.port)")
+    }
+    func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
+        OpenAITranscriptionAPI.log("bonjour: publish FAILED \(errorDict)")
     }
 }
 

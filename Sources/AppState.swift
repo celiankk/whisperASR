@@ -208,7 +208,9 @@ class AppState {
         item.translatedSegments = Array(repeating: "", count: item.segments.count)
         item.translationLanguage = targetLanguage
 
-        Task {
+        // @MainActor: `item` is observed by SwiftUI, so every mutation below must
+        // land on the main actor; only the translation API calls suspend off it.
+        Task { @MainActor in
             let texts = item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
             let batchSize = 20
             var transientFailures = 0
@@ -237,7 +239,7 @@ class AppState {
                     switch err {
                     case .authFailed, .invalidEndpoint, .unavailable:
                         // Not retriable — stop hammering the API and report it once.
-                        await MainActor.run { self.showToast(err.errorDescription ?? "Translation failed") }
+                        self.showToast(err.errorDescription ?? "Translation failed")
                         break batchLoop
                     default:
                         transientFailures += 1
@@ -251,9 +253,7 @@ class AppState {
             // Some batches failed transiently (network/server/rate-limit) but we
             // kept going; let the user know the result is incomplete.
             if transientFailures > 0 {
-                await MainActor.run {
-                    self.showToast("Translation incomplete — \(transientFailures) section\(transientFailures == 1 ? "" : "s") couldn't be translated. Check your network or API settings.")
-                }
+                self.showToast("Translation incomplete — \(transientFailures) section\(transientFailures == 1 ? "" : "s") couldn't be translated. Check your network or API settings.")
             }
 
             item.isTranslating = false

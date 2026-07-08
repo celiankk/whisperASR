@@ -459,6 +459,24 @@ struct TranscriptContentView: View {
         }
     }
 
+    /// Index of the last segment whose start is <= time. Binary search — segments
+    /// are ordered by start time, and this runs on every playback tick.
+    private func segmentIndex(at time: TimeInterval) -> Int? {
+        var low = 0
+        var high = item.segments.count - 1
+        var result: Int? = nil
+        while low <= high {
+            let mid = (low + high) / 2
+            if item.segments[mid].start <= time {
+                result = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return result
+    }
+
     private func updateHighlight(time: TimeInterval, proxy: ScrollViewProxy) {
         guard audioPlayer.currentURL == item.fileURL,
               audioPlayer.isPlaying || time > 0 else {
@@ -466,7 +484,7 @@ struct TranscriptContentView: View {
             return
         }
 
-        let newIndex = item.segments.lastIndex { $0.start <= time }
+        let newIndex = segmentIndex(at: time)
         guard newIndex != currentIndex else { return }
         currentIndex = newIndex
         if let idx = newIndex {

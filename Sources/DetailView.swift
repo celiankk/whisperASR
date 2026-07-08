@@ -196,8 +196,7 @@ struct DetailView: View {
     private func exportText(_ item: TranscriptionItem) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = item.fileName
-            .replacingOccurrences(of: ".\(item.fileURL.pathExtension)", with: ".txt")
+        panel.nameFieldStringValue = (item.fileName as NSString).deletingPathExtension + ".txt"
 
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
@@ -212,8 +211,7 @@ struct DetailView: View {
         let lang = item.translationLanguage ?? "translation"
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = item.fileName
-            .replacingOccurrences(of: ".\(item.fileURL.pathExtension)", with: "-\(lang).txt")
+        panel.nameFieldStringValue = (item.fileName as NSString).deletingPathExtension + "-\(lang).txt"
 
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }

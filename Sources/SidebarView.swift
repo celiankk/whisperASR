@@ -18,8 +18,11 @@ struct SidebarView: View {
     @State private var matchCounts: [UUID: Int] = [:]
     @State private var searchDebounceTask: Task<Void, Never>?
 
+    // Kept in step with what the file picker (.audio/.movie) and AudioLoader
+    // (AVFoundation, with an ffmpeg fallback for WebM/Opus/MKV) can handle.
     private let supportedExtensions: Set<String> = [
-        "mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "wma", "aiff", "caf"
+        "mp3", "wav", "m4a", "mp4", "m4v", "mov", "aac", "flac",
+        "ogg", "oga", "opus", "webm", "mkv", "wma", "aiff", "aif", "caf"
     ]
 
     private var filteredItems: [TranscriptionItem] {

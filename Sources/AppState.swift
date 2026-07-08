@@ -8,7 +8,6 @@ class AppState {
 
     // Live transcription state
     var liveSegments: [TranscriptionSegment] = []
-    var liveText: String = ""
     var isLiveTranscribing = false
     var enableLiveTranscription = true
 
@@ -326,7 +325,6 @@ class AppState {
     /// Start periodic live transcription from the AudioRecorder's accumulated PCM buffer.
     func startLiveTranscription(recorder: AudioRecorder) {
         liveSegments = []
-        liveText = ""
         liveError = nil
         liveTranslationError = nil
         liveTranslatedSealCount = []
@@ -525,7 +523,6 @@ class AppState {
         liveTranslationError = nil
         // Clear live results (the final file transcription will replace them)
         liveSegments = []
-        liveText = ""
         liveTranslatedSegments = []
         liveTranslatedSourceTexts = []
         liveTranslatedSealCount = []

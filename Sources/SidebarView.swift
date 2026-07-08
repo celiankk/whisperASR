@@ -258,7 +258,7 @@ struct SidebarView: View {
                             NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
                         }
                         Divider()
-                        if item.status == .completed || item.status != .transcribing {
+                        if item.status != .transcribing {
                             Button("Re-transcribe") {
                                 appState.retranscribe(item)
                             }

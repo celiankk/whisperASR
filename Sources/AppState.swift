@@ -122,8 +122,9 @@ class AppState {
     }
 
     /// Add a file with pre-existing live transcription results (skip re-transcription).
+    @discardableResult
     func addFileWithLiveResults(url: URL, segments: [TranscriptionSegment], fullText: String,
-                                translatedSegments: [String] = [], translationLanguage: String? = nil) {
+                                translatedSegments: [String] = [], translationLanguage: String? = nil) -> TranscriptionItem {
         let item = TranscriptionItem(fileURL: url)
         item.segments = segments
         item.fullText = fullText
@@ -133,6 +134,42 @@ class AppState {
         items.insert(item, at: 0)
         selectedItemID = item.id
         TranscriptionStore.save(item)
+        return item
+    }
+
+    /// Stop live transcription and the recorder, then file the finished recording.
+    /// Shared by the Finish Recording button and the Zoom meeting-ended flow.
+    /// If the audio file failed to save but live transcription produced a
+    /// transcript, the transcript is kept as an audio-less item instead of
+    /// being silently dropped with the recording.
+    @MainActor
+    func finishRecording(recorder: AudioRecorder) async {
+        let segments = liveSegments
+        let fullText = segments.map { $0.text }.joined()
+        let translations = liveTranslatedSegments
+        let lang: String? = !translations.isEmpty
+            ? UserDefaults.standard.string(forKey: "targetLanguage") : nil
+        let hadLiveResults = isLiveTranscribing && !segments.isEmpty
+
+        stopLiveTranscription()
+        let url = await recorder.stopRecording()
+
+        if let url {
+            if hadLiveResults {
+                addFileWithLiveResults(url: url, segments: segments, fullText: fullText,
+                                       translatedSegments: translations, translationLanguage: lang)
+            } else {
+                addFile(url: url)
+            }
+        } else if hadLiveResults {
+            let item = addFileWithLiveResults(
+                url: URL(fileURLWithPath: "/unsaved-recording-\(UUID().uuidString)"),
+                segments: segments, fullText: fullText,
+                translatedSegments: translations, translationLanguage: lang)
+            item.fileName = "Recording \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short)) (audio not saved)"
+            TranscriptionStore.save(item)
+        }
+        recorder.state = .idle
     }
 
     // MARK: - Translate Completed Transcription

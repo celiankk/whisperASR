@@ -12,10 +12,14 @@ final class TranscriptionService: @unchecked Sendable {
     }
 
     func shutdown() {
-        if let ctx {
-            whisper_free(ctx)
-            self.ctx = nil
-            self.loadedModelPath = nil
+        // Serialize with any in-flight whisper_full; if the process exits before
+        // this runs the OS reclaims the context anyway.
+        whisperQueue.async {
+            if let ctx = self.ctx {
+                whisper_free(ctx)
+                self.ctx = nil
+                self.loadedModelPath = nil
+            }
         }
     }
 
@@ -25,15 +29,18 @@ final class TranscriptionService: @unchecked Sendable {
                     language: String? = nil,
                     translate: Bool = false,
                     onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
-        try ensureModelLoaded()
-        guard let ctx else {
-            throw TranscriptionError.scriptNotFound("Model not loaded")
-        }
-
         let samples = try await AudioLoader.loadSamples(url: fileURL)
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
+                let ctx: OpaquePointer
+                do {
+                    ctx = try self.ensureModelLoaded()
+                } catch {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
                 var (params, langCStr) = self.makeBaseParams(language: language, translate: translate)
                 defer { free(langCStr) }
 
@@ -106,16 +113,20 @@ final class TranscriptionService: @unchecked Sendable {
     /// Transcribe raw 16kHz mono PCM Float32 samples directly (used for live transcription during recording).
     /// This reuses the already-loaded whisper model and runs on a background queue.
     func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
-        try ensureModelLoaded()
-        guard let ctx else {
-            throw TranscriptionError.scriptNotFound("Model not loaded")
-        }
         guard !samples.isEmpty else {
             return TranscriptionResult(text: "", segments: [])
         }
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
+                let ctx: OpaquePointer
+                do {
+                    ctx = try self.ensureModelLoaded()
+                } catch {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
                 let liveThreads = min(4, max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 4)))
                 let (params, langCStr) = self.makeBaseParams(threadCount: liveThreads)
                 defer { free(langCStr) }
@@ -160,8 +171,11 @@ final class TranscriptionService: @unchecked Sendable {
     }
 
     /// Ensure the whisper model is loaded (public access for pre-loading during recording start).
+    /// Blocks until any queued transcription finishes, then loads on the whisper queue.
     func preloadModel() throws {
-        try ensureModelLoaded()
+        try whisperQueue.sync {
+            _ = try ensureModelLoaded()
+        }
     }
 
     // MARK: - Params Configuration
@@ -227,7 +241,12 @@ final class TranscriptionService: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: projectPath)
     }
 
-    private func ensureModelLoaded() throws {
+    /// Load (or re-load, when the resolved path changed) the model and return the context.
+    /// MUST run on `whisperQueue`: reloading frees the previous context, which would
+    /// crash a whisper_full running concurrently on the queue if done anywhere else.
+    @discardableResult
+    private func ensureModelLoaded() throws -> OpaquePointer {
+        dispatchPrecondition(condition: .onQueue(whisperQueue))
         let path = resolveModelPath()
         guard FileManager.default.fileExists(atPath: path) else {
             throw TranscriptionError.scriptNotFound(
@@ -237,6 +256,8 @@ final class TranscriptionService: @unchecked Sendable {
         }
         if loadedModelPath != path {
             if let ctx { whisper_free(ctx) }
+            ctx = nil
+            loadedModelPath = nil
 
             var cparams = whisper_context_default_params()
             cparams.use_gpu = true  // Metal GPU acceleration
@@ -248,6 +269,10 @@ final class TranscriptionService: @unchecked Sendable {
             }
             loadedModelPath = path
         }
+        guard let ctx else {
+            throw TranscriptionError.processFailed("Model not loaded")
+        }
+        return ctx
     }
 
     private func resolveModelPath() -> String {

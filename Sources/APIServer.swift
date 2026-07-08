@@ -205,6 +205,12 @@ private final class BonjourDelegate: NSObject, NetServiceDelegate {
 private struct OpenAITranscriptionAPI: Sendable {
     let service: TranscriptionService
 
+    /// Uploads larger than this are rejected with 413. The whole body is held in
+    /// memory during multipart parsing (~2-3x the file size transiently), so an
+    /// unbounded upload from a LAN client could exhaust RAM. 1 GB covers hours
+    /// of audio in any common format.
+    static let maxUploadBytes = 1_000_000_000
+
     func register(on server: HTTPServer) async {
         await server.appendRoute("/v1/audio/transcriptions", for: [.POST]) { req in
             await self.handleTranscription(req, translate: false)
@@ -237,12 +243,27 @@ private struct OpenAITranscriptionAPI: Sendable {
                 "Request must be multipart/form-data with an audio 'file'.")
         }
 
+        // Reject oversized uploads up front when the client declares a length…
+        if let declared = request.headers[.contentLength].flatMap(Int.init),
+           declared > Self.maxUploadBytes {
+            Self.log("\(kind): 413 declared content-length \(declared)B exceeds cap")
+            return Self.errorResponse(.payloadTooLarge,
+                "Upload too large (\(declared) bytes); the limit is \(Self.maxUploadBytes) bytes.")
+        }
+
         let body: Data
         do {
             body = try await request.bodyData
         } catch {
             Self.log("\(kind): 400 couldn't read body: \(error.localizedDescription)")
             return Self.errorResponse(.badRequest, "Could not read request body.")
+        }
+
+        // …and re-check after reading for chunked requests without one.
+        guard body.count <= Self.maxUploadBytes else {
+            Self.log("\(kind): 413 body \(body.count)B exceeds cap")
+            return Self.errorResponse(.payloadTooLarge,
+                "Upload too large (\(body.count) bytes); the limit is \(Self.maxUploadBytes) bytes.")
         }
 
         let parts = MultipartParser.parse(body: body, boundary: boundary)

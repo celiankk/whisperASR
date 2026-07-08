@@ -10,33 +10,50 @@ struct SidebarView: View {
     @State private var renameText = ""
     @State private var itemPendingRemoval: TranscriptionItem?
     @State private var searchText = ""
+    // Search results are computed once per debounced query (not per keystroke,
+    // not per row per render) — scanning every transcript's full text on each
+    // keystroke made typing janky with a large library.
+    @State private var committedQuery = ""
+    @State private var matchingIDs: Set<UUID> = []
+    @State private var matchCounts: [UUID: Int] = [:]
+    @State private var searchDebounceTask: Task<Void, Never>?
 
     private let supportedExtensions: Set<String> = [
         "mp3", "wav", "m4a", "mp4", "aac", "flac", "ogg", "wma", "aiff", "caf"
     ]
 
     private var filteredItems: [TranscriptionItem] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return appState.items }
-        let lowered = query.lowercased()
-        return appState.items.filter { item in
-            item.fileName.lowercased().contains(lowered) ||
-            item.fullText.lowercased().contains(lowered)
-        }
+        guard !committedQuery.isEmpty else { return appState.items }
+        return appState.items.filter { matchingIDs.contains($0.id) }
     }
 
-    private func matchCount(for item: TranscriptionItem) -> Int {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return 0 }
-        let lowered = query.lowercased()
-        let text = item.fullText.lowercased()
-        var count = 0
-        var searchRange = text.startIndex..<text.endIndex
-        while let range = text.range(of: lowered, range: searchRange) {
-            count += 1
-            searchRange = range.upperBound..<text.endIndex
+    private func recomputeSearch(for query: String) {
+        var ids = Set<UUID>()
+        var counts: [UUID: Int] = [:]
+        for item in appState.items {
+            let text = item.fullText
+            var count = 0
+            var searchStart = text.startIndex
+            while searchStart < text.endIndex,
+                  let range = text.range(of: query, options: .caseInsensitive,
+                                         range: searchStart..<text.endIndex) {
+                count += 1
+                searchStart = range.upperBound
+            }
+            if count > 0 { counts[item.id] = count }
+            if count > 0 || item.fileName.localizedCaseInsensitiveContains(query) {
+                ids.insert(item.id)
+            }
         }
-        return count
+        matchingIDs = ids
+        matchCounts = counts
+        committedQuery = query
+    }
+
+    private func clearSearchResults() {
+        committedQuery = ""
+        matchingIDs = []
+        matchCounts = [:]
     }
 
     var body: some View {
@@ -84,6 +101,23 @@ struct SidebarView: View {
                     }
                 }
             }
+        }
+        .onChange(of: searchText) { _, newValue in
+            searchDebounceTask?.cancel()
+            let query = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if query.isEmpty {
+                clearSearchResults()
+                return
+            }
+            searchDebounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                recomputeSearch(for: query)
+            }
+        }
+        .onChange(of: appState.items.count) { _, _ in
+            // Keep active search results in sync when items are added/removed.
+            if !committedQuery.isEmpty { recomputeSearch(for: committedQuery) }
         }
         .onChange(of: recorder.state) { old, new in
             if new == .recording {
@@ -191,8 +225,8 @@ struct SidebarView: View {
                                 Text(statusLabel(item))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                if !searchText.isEmpty {
-                                    let count = matchCount(for: item)
+                                if !committedQuery.isEmpty {
+                                    let count = matchCounts[item.id] ?? 0
                                     if count > 0 {
                                         Text("\(count) match\(count == 1 ? "" : "es")")
                                             .font(.caption2)

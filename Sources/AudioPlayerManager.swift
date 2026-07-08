@@ -24,8 +24,10 @@ class AudioPlayerManager {
         let playerItem = AVPlayerItem(url: url)
         player = AVPlayer(playerItem: playerItem)
 
-        // Periodic time observer (~20 fps for smooth slider + highlighting)
-        let interval = CMTime(seconds: 0.05, preferredTimescale: 600)
+        // Periodic time observer. 10 Hz keeps the slider and segment highlight
+        // visually smooth (segments span seconds) at half the observable-update
+        // and view-invalidation churn of the previous 20 Hz.
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
             let seconds = time.seconds

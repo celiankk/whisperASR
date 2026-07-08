@@ -111,10 +111,20 @@ class AppState {
         let ext = item.fileURL.pathExtension
         let nameWithExt = trimmed.hasSuffix(".\(ext)") ? trimmed : "\(trimmed).\(ext)"
 
-        // Rename the actual file on disk
+        // Rename the actual file on disk; only adopt the new URL if the move
+        // succeeded (moveItem also fails when the destination already exists).
+        // Items without an audio file (e.g. recovered transcripts) just get a
+        // new display name.
         let newURL = item.fileURL.deletingLastPathComponent().appendingPathComponent(nameWithExt)
-        if newURL != item.fileURL {
-            try? FileManager.default.moveItem(at: item.fileURL, to: newURL)
+        if newURL != item.fileURL, FileManager.default.fileExists(atPath: item.fileURL.path) {
+            do {
+                try FileManager.default.moveItem(at: item.fileURL, to: newURL)
+            } catch {
+                Task { @MainActor in
+                    self.showToast("Couldn't rename \"\(item.fileName)\": \(error.localizedDescription)")
+                }
+                return
+            }
             item.fileURL = newURL
         }
         item.fileName = nameWithExt

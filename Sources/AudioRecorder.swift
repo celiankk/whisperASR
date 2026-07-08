@@ -323,7 +323,7 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     self.state = .recording
                     self.recordingDuration = 0
                     self.recordingStartTime = Date()
-                    self.timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                    self.timer = Self.commonModeTimer(interval: 1.0) { [weak self] in
                         guard let self, let start = self.recordingStartTime else { return }
                         self.recordingDuration = Date().timeIntervalSince(start)
                     }
@@ -594,9 +594,19 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Audio Watchdog
 
+    /// A repeating main-run-loop timer scheduled in `.common` modes, so it keeps
+    /// firing during modal sessions (e.g. the Zoom meeting-ended NSAlert) — the
+    /// default mode pauses there, which froze the duration display and stall
+    /// watchdog for as long as the alert stayed open.
+    private static func commonModeTimer(interval: TimeInterval, _ fire: @escaping () -> Void) -> Timer {
+        let t = Timer(timeInterval: interval, repeats: true) { _ in fire() }
+        RunLoop.main.add(t, forMode: .common)
+        return t
+    }
+
     private func startAudioWatchdog() {
         lastAudioBufferTime.withLock { $0 = Date() }
-        audioWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        audioWatchdogTimer = Self.commonModeTimer(interval: 5.0) { [weak self] in
             self?.checkAudioStall()
         }
     }
@@ -674,7 +684,7 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         meetingStarted = false
         meetingEnded = false
 
-        meetingMonitorTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        meetingMonitorTimer = Self.commonModeTimer(interval: 10.0) { [weak self] in
             self?.checkZoomMeetingWindows()
         }
     }

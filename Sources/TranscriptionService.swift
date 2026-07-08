@@ -249,7 +249,7 @@ final class TranscriptionService: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(whisperQueue))
         let path = resolveModelPath()
         guard FileManager.default.fileExists(atPath: path) else {
-            throw TranscriptionError.scriptNotFound(
+            throw TranscriptionError.modelNotFound(
                 "Model not found at: \(path)\n\n" +
                 "Download a model in Settings → Speech Recognition Models."
             )

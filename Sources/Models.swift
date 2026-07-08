@@ -48,7 +48,7 @@ struct TranscriptionSegment: Codable, Equatable {
     let text: String
 }
 
-// MARK: - Transcription Result (from Python script JSON)
+// MARK: - Transcription Result
 
 struct TranscriptionResult: Codable {
     let text: String
@@ -71,14 +71,12 @@ enum TranscriptionStatus: Equatable {
 
 enum TranscriptionError: LocalizedError {
     case processFailed(String)
-    case parseError(String)
-    case scriptNotFound(String)
+    case modelNotFound(String)
 
     var errorDescription: String? {
         switch self {
         case .processFailed(let msg): return "Transcription failed: \(msg)"
-        case .parseError(let msg): return "Failed to parse output: \(msg)"
-        case .scriptNotFound(let path): return "Script not found at: \(path)"
+        case .modelNotFound(let msg): return msg
         }
     }
 }

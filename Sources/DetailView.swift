@@ -344,14 +344,13 @@ struct TranscriptContentView: View {
     }
 
     private func recomputeMatches(for query: String) {
-        let lowered = query.lowercased()
         var results: [(segmentIndex: Int, matchIndex: Int)] = []
         var segIndices = Set<Int>()
         for (segIdx, segment) in item.segments.enumerated() {
-            let text = segment.text.trimmingCharacters(in: .whitespaces).lowercased()
+            let text = segment.text.trimmingCharacters(in: .whitespaces)
             var matchNum = 0
             var searchRange = text.startIndex..<text.endIndex
-            while let range = text.range(of: lowered, range: searchRange) {
+            while let range = text.range(of: query, options: .caseInsensitive, range: searchRange) {
                 results.append((segmentIndex: segIdx, matchIndex: matchNum))
                 matchNum += 1
                 searchRange = range.upperBound..<text.endIndex
@@ -538,13 +537,13 @@ struct SegmentRow: View {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return Text(text) }
 
-        let loweredText = text.lowercased()
-        let loweredQuery = query.lowercased()
-
+        // Search the original string case-insensitively. Computing ranges on a
+        // lowercased() copy and slicing `text` with them crashes when lowercasing
+        // changes the string's length (e.g. "İ" becomes "i" + combining dot).
         var ranges: [Range<String.Index>] = []
-        var searchStart = loweredText.startIndex
-        while searchStart < loweredText.endIndex,
-              let range = loweredText.range(of: loweredQuery, range: searchStart..<loweredText.endIndex) {
+        var searchStart = text.startIndex
+        while searchStart < text.endIndex,
+              let range = text.range(of: query, options: .caseInsensitive, range: searchStart..<text.endIndex) {
             ranges.append(range)
             searchStart = range.upperBound
         }

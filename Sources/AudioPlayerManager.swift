@@ -86,7 +86,10 @@ class AudioPlayerManager {
     }
 
     func seek(to time: TimeInterval) {
-        let clamped = max(0, min(time, duration))
+        // duration stays 0 until the async metadata load finishes; clamping
+        // against it then would turn every early seek into "jump to 0:00"
+        // (e.g. tapping a segment right after selecting an item).
+        let clamped = duration > 0 ? max(0, min(time, duration)) : max(0, time)
         player?.seek(to: CMTime(seconds: clamped, preferredTimescale: 600),
                      toleranceBefore: .zero,
                      toleranceAfter: .zero)

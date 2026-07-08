@@ -497,15 +497,17 @@ private struct WindowDragOverlay: NSViewRepresentable {
 
 // MARK: - Pulsing Animation
 
+/// Pulses opacity 1.0 → 0.4 on a 1.6s cycle. Driven by a single repeating
+/// Core Animation, not a TimelineView — a 10Hz timeline re-evaluated SwiftUI
+/// continuously for the whole recording session, exactly when the CPU is
+/// already busy with capture + live whisper.
 private struct PulsingModifier: ViewModifier {
+    @State private var dimmed = false
+
     func body(content: Content) -> some View {
-        TimelineView(.periodic(from: .now, by: 0.1)) { timeline in
-            let phase = timeline.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: 1.6)
-            let opacity = phase < 0.8
-                ? 1.0 - (phase / 0.8) * 0.6
-                : 0.4 + ((phase - 0.8) / 0.8) * 0.6
-            content.opacity(opacity)
-        }
+        content
+            .opacity(dimmed ? 0.4 : 1.0)
+            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: dimmed)
+            .onAppear { dimmed = true }
     }
 }

@@ -331,6 +331,24 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     self.startAudioWatchdog()
                 }
             } catch {
+                // Tear down whatever got as far as starting: cancel the writer,
+                // delete the stray output file, and drop the half-built stream so
+                // the next attempt starts from a clean slate.
+                if let stream = self.stream {
+                    try? await stream.stopCapture()
+                    self.stream = nil
+                }
+                if let writer = self.assetWriter {
+                    writer.cancelWriting()
+                }
+                self.assetWriter = nil
+                self.assetWriterInput = nil
+                if let url = self.outputURL {
+                    try? FileManager.default.removeItem(at: url)
+                    self.outputURL = nil
+                }
+                self.recordingApp = nil
+                self.recordingAppName = nil
                 await MainActor.run {
                     self.error = "Failed to start recording: \(error.localizedDescription)"
                 }

@@ -138,8 +138,19 @@ enum TranscriptionStore {
 
     // MARK: - Delete
 
+    /// Whether the audio file lives in the app's own Recordings folder, i.e. was
+    /// recorded by WhisperASR rather than imported (drag-drop / file picker).
+    static func isAppRecording(_ url: URL) -> Bool {
+        url.standardizedFileURL.path
+            .hasPrefix(recordingsDirectory.standardizedFileURL.path + "/")
+    }
+
     static func delete(_ item: TranscriptionItem) {
         try? FileManager.default.removeItem(at: fileURL(for: item.id))
-        try? FileManager.default.removeItem(at: item.fileURL)
+        // Only audio the app recorded is ours to dispose of — and it goes to the
+        // Trash, not straight to deletion. Imported files are left untouched.
+        if isAppRecording(item.fileURL) {
+            try? FileManager.default.trashItem(at: item.fileURL, resultingItemURL: nil)
+        }
     }
 }

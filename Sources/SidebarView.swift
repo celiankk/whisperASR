@@ -125,7 +125,9 @@ struct SidebarView: View {
             }
             Button("Cancel", role: .cancel) { itemPendingRemoval = nil }
         } message: { item in
-            Text("\"\(item.fileURL.lastPathComponent)\" will be removed. This cannot be undone.")
+            Text(TranscriptionStore.isAppRecording(item.fileURL)
+                ? "\"\(item.fileURL.lastPathComponent)\" will be removed and its recording moved to the Trash."
+                : "The transcription of \"\(item.fileURL.lastPathComponent)\" will be removed. The original audio file stays on disk.")
         }
     }
 

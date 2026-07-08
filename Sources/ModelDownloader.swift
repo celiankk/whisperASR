@@ -180,5 +180,9 @@ private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
         if let error {
             downloader?.handleError(error)
         }
+        // The task is finished either way (success, failure, or cancel). A
+        // URLSession retains its delegate until invalidated, so without this
+        // every download attempt leaked a session + delegate pair.
+        session.finishTasksAndInvalidate()
     }
 }

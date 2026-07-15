@@ -163,8 +163,11 @@ struct RecordingView: View {
                             .listRowBackground(Color.clear)
                         }
 
+                        // Tail padding: keeps the last transcript line clear of the
+                        // action bar below the list after auto-scroll (rows can grow
+                        // when a translation arrives after the scroll already happened).
                         Color.clear
-                            .frame(height: 1)
+                            .frame(height: 28)
                             .id("bottomAnchor")
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets())

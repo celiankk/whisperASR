@@ -54,7 +54,9 @@ Native macOS SwiftUI app (macOS 14+, arm64) that transcribes audio using whisper
 
 ### Key layers
 
-- **C interop** (`TranscriptionService`): Bridges Swift to whisper.cpp C API. Manages model lifecycle (`whisper_init`/`whisper_free`), runs `whisper_full()` on a background dispatch queue, uses `withCheckedThrowingContinuation` to bridge C callbacks to async/await. Progress is reported via a `ProgressBox` wrapper that passes Swift closures through C function pointers.
+- **C interop / engine routing** (`TranscriptionService`): Bridges Swift to whisper.cpp C API. Manages model lifecycle (`whisper_init`/`whisper_free`), runs `whisper_full()` on a background dispatch queue, uses `withCheckedThrowingContinuation` to bridge C callbacks to async/await. Progress is reported via a `ProgressBox` wrapper that passes Swift closures through C function pointers. Also routes by engine: when the selected model resolves to a *directory* (a Nemotron Core ML bundle) instead of a `.bin` file, transcription is delegated to `NemotronEngine` and the whisper context is freed (the two engines never stay loaded together).
+
+- **Nemotron engine** (`NemotronEngine`): Actor wrapping FluidAudio's `StreamingNemotronMultilingualAsrManager` (Core ML on the Apple Neural Engine, [FluidAudio](https://github.com/FluidInference/FluidAudio) is the only other SPM dependency). Feeds 16 kHz mono PCM in 5 s slices for progress, then converts per-token RNNT timings into `TranscriptionSegment`s (splitting on sentence-final punctuation, >1.5 s gaps, or a 30 s cap). Language hints are locale codes ("zh-TW", "ja", nil = auto-detect); the detected locale is reported as an ISO-639-1 base code. Translation to English is whisper-only and returns an error on this engine. First-ever load triggers ANE compilation (minutes); afterwards the OS caches it and loads take ~1 s.
 
 - **State** (`AppState`): Single `@Observable` object injected via SwiftUI environment. Owns the `TranscriptionService` and the item collection. Orchestrates transcription lifecycle (add → transcribe → save, or retry/remove).
 
@@ -70,6 +72,8 @@ Native macOS SwiftUI app (macOS 14+, arm64) that transcribes audio using whisper
 
 ### Model resolution
 
-`ModelCatalog` defines the downloadable models (Breeze-ASR-25 plus official whisper.cpp tiny/base/small/medium/large-v3-turbo); `ModelManager` (shared `@Observable`) tracks downloaded files in `~/Library/Application Support/WhisperASR/Models/`, per-model `ModelDownloader` instances, and the active selection (UserDefaults `"selectedModelFile"`, settable from `SettingsView` or the toolbar `ModelPickerMenu`).
+`ModelCatalog` defines the downloadable models (Breeze-ASR-25, Nemotron 3.5 Multilingual, plus official whisper.cpp tiny/base/small/medium/large-v3-turbo); `ModelManager` (shared `@Observable`) tracks downloaded files in `~/Library/Application Support/WhisperASR/Models/`, per-model `ModelDownloader` instances, and the active selection (UserDefaults `"selectedModelFile"`, settable from `SettingsView` or the toolbar `ModelPickerMenu`).
+
+A catalog entry's `engine` is `.whisper` (single `.bin` file, `DownloadSource.file`) or `.nemotron` (a directory bundle of Core ML models + `metadata.json`/`tokenizer.json`, `DownloadSource.hfFolder`). Folder models download by listing the Hugging Face repo subtree at download time, staging files sequentially under `Models/.partial-<name>/` (skipping already-complete files on resume), then moving the directory into place atomically. `ModelCatalog.isComplete(_:)` guards against half-downloaded bundles counting as installed.
 
 `TranscriptionService.resolveModelPath()` checks `"selectedModelFile"` first, then the custom `"modelPath"` (set via `SettingsView`), then the App Support default `ggml-model.bin`, then falls back to `{projectRoot}/Models/ggml-model.bin` using `#filePath` to locate the project root. The model is lazily (re)loaded whenever the resolved path changes, so switching models takes effect on the next transcription.

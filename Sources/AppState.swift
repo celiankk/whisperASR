@@ -43,8 +43,10 @@ class AppState {
     private var liveTranscriptionTask: Task<Void, Never>?
     private var liveTranslationTask: Task<Void, Never>?
     /// Single-slot queue: each snapshot supersedes the previous one (they are cumulative),
-    /// so keeping a queue of old snapshots was pure wasted work.
-    private var pendingTranslationSnapshot: [TranscriptionSegment]?
+    /// so keeping a queue of old snapshots was pure wasted work. `countsSeals` is
+    /// true for seal-anchored snapshots — only those advance the translation seal
+    /// counts, so the faster interim passes can't prematurely lock a segment.
+    private var pendingTranslationSnapshot: (segments: [TranscriptionSegment], countsSeals: Bool)?
     private var isTranslationWorkerRunning = false
     private var translationFailureCount = 0
     /// Set when translation is paused due to an auth error; cleared on next start.
@@ -58,6 +60,11 @@ class AppState {
     /// the live tail rather than waiting longer. Kept well under `maxChunkSamples` so the live tail
     /// is always transcribed and no audio is silently dropped.
     private static let forceChunkSamples = 16000 * 12
+    /// Minimum spacing between interim (mid-utterance) live-translation passes.
+    /// Seal-anchored passes are not throttled. Streaming engines like Nemotron
+    /// finish transcription passes in well under a second, so this is what sets
+    /// the effective translation cadence; whisper's slower passes self-limit.
+    private static let interimTranslationInterval: TimeInterval = 2.0
 
     init() {
         items = TranscriptionStore.loadAll()
@@ -361,6 +368,9 @@ class AppState {
             var sealedClean = true
             var consecutiveSilenceCount = 0
             var lastTranscribedTotal = 0
+            // Interim-translation debounce (see interimTranslationInterval).
+            var lastInterimTranslation = Date.distantPast
+            var lastTranslatedSnapshotText = ""
 
             // Silence-scan tuning (16kHz): 100ms frames; a run of >=3 (~300ms) counts as a pause.
             let frameSamples = 1600
@@ -486,12 +496,21 @@ class AppState {
                         self.liveSegments = snapshot
                         self.throttledAutoSave()
                     }
-                    // Translate only when a phrase seals — re-translating the churning, mid-utterance
-                    // interim tail every pass would spam the API and flicker the translations.
-                    if sealAdvanced && self.enableLiveTranslation && !snapshot.isEmpty {
+                    // Seal-anchored passes always translate. Between seals, also translate the
+                    // in-progress tail on a debounce so translations keep up with fast streaming
+                    // engines — the worker is single-flight/latest-wins and the dirty-scan skips
+                    // unchanged text, so this stays cheap and flicker is bounded to the tail.
+                    if self.enableLiveTranslation && !snapshot.isEmpty {
                         let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
-                        if !targetLang.isEmpty {
-                            await MainActor.run { self.enqueueLiveTranslation(snapshot) }
+                        let snapshotText = snapshot.map(\.text).joined(separator: "\n")
+                        let interimDue = Date().timeIntervalSince(lastInterimTranslation) >= Self.interimTranslationInterval
+                            && snapshotText != lastTranslatedSnapshotText
+                        if !targetLang.isEmpty && (sealAdvanced || interimDue) {
+                            lastInterimTranslation = Date()
+                            lastTranslatedSnapshotText = snapshotText
+                            await MainActor.run {
+                                self.enqueueLiveTranslation(snapshot, countsSeals: sealAdvanced)
+                            }
                         }
                     }
                 } catch is TimeoutError {
@@ -666,14 +685,17 @@ class AppState {
             liveTranslatedSourceTexts = texts
             liveTranslatedSealCount = Array(repeating: Self.sealThreshold, count: n)
             // Kick the worker so subsequent segments resume translating.
-            if isLiveTranscribing { enqueueLiveTranslation(liveSegments) }
+            if isLiveTranscribing { enqueueLiveTranslation(liveSegments, countsSeals: true) }
         }
     }
 
     @MainActor
-    private func enqueueLiveTranslation(_ segments: [TranscriptionSegment]) {
+    private func enqueueLiveTranslation(_ segments: [TranscriptionSegment], countsSeals: Bool) {
         guard !translationAuthPaused, !liveTranslationPaused else { return }
-        pendingTranslationSnapshot = segments
+        // A superseded seal-anchored snapshot keeps its seal-counting duty: the
+        // newer segments are cumulative, so counting seals on them is equivalent.
+        let carrySeals = countsSeals || (pendingTranslationSnapshot?.countsSeals ?? false)
+        pendingTranslationSnapshot = (segments: segments, countsSeals: carrySeals)
         guard !isTranslationWorkerRunning else { return }
         isTranslationWorkerRunning = true
         liveTranslationTask = Task { [weak self] in
@@ -683,7 +705,7 @@ class AppState {
 
     private func drainTranslationQueue() async {
         while !Task.isCancelled {
-            let next: [TranscriptionSegment]? = await MainActor.run { [weak self] in
+            let next: (segments: [TranscriptionSegment], countsSeals: Bool)? = await MainActor.run { [weak self] in
                 guard let self else { return nil }
                 if let snapshot = self.pendingTranslationSnapshot {
                     self.pendingTranslationSnapshot = nil
@@ -692,16 +714,16 @@ class AppState {
                 self.isTranslationWorkerRunning = false
                 return nil
             }
-            guard let segments = next else { return }
+            guard let (segments, countsSeals) = next else { return }
             if segments.isEmpty { continue }
             let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
             guard !targetLang.isEmpty else { continue }
-            await translateLiveSegments(segments, targetLang: targetLang)
+            await translateLiveSegments(segments, targetLang: targetLang, countsSeals: countsSeals)
         }
         await MainActor.run { self.isTranslationWorkerRunning = false }
     }
 
-    private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String) async {
+    private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String, countsSeals: Bool) async {
         guard !Task.isCancelled else { return }
 
         // Exponential backoff on repeated failures (500ms, 1s, 2s, ..., capped at 30s).
@@ -741,7 +763,9 @@ class AppState {
         let textsToTranslate = Array(texts.dropFirst(dirtyIndex))
         guard !textsToTranslate.isEmpty else {
             // Nothing to translate, but still need to update seal counts for stable suffix.
-            await MainActor.run { self.updateSealCounts(newSourceTexts: texts) }
+            if countsSeals {
+                await MainActor.run { self.updateSealCounts(newSourceTexts: texts) }
+            }
             return
         }
 
@@ -761,7 +785,9 @@ class AppState {
             await MainActor.run {
                 self.liveTranslatedSegments = Array(existing.prefix(dirtyIndex)) + newTranslations
                 self.liveTranslatedSourceTexts = Array(texts.prefix(dirtyIndex)) + textsToTranslate
-                self.updateSealCounts(newSourceTexts: texts)
+                if countsSeals {
+                    self.updateSealCounts(newSourceTexts: texts)
+                }
                 self.translationFailureCount = 0
                 self.liveTranslationError = nil
             }

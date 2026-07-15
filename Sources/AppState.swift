@@ -339,7 +339,7 @@ class AppState {
             // Pre-load the model and wait for it — avoids model loading latency on first chunk.
             // Surface load failures so the user isn't stuck at a silent "Waiting for audio...".
             do {
-                try self.service.preloadModel()
+                try await self.service.preloadModel()
             } catch {
                 await MainActor.run {
                     self.liveError = "Couldn't load transcription model: \(error.localizedDescription)"

@@ -6,14 +6,37 @@ final class TranscriptionService: @unchecked Sendable {
     private var loadedModelPath: String?
     /// Serial queue to ensure only one whisper_full() runs at a time (ctx is not thread-safe).
     private let whisperQueue = DispatchQueue(label: "com.whisperasr.whisper", qos: .userInitiated)
+    /// Core ML / ANE engine for Nemotron model bundles (directory models).
+    private let nemotron = NemotronEngine()
+
+    /// Which engine the currently selected model runs on.
+    private enum ResolvedEngine {
+        case whisper(path: String)
+        case nemotron(directory: String)
+    }
+
+    /// Whisper models are single files; Nemotron bundles are directories.
+    private func resolveEngine() -> ResolvedEngine {
+        let path = resolveModelPath()
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return .nemotron(directory: path)
+        }
+        return .whisper(path: path)
+    }
 
     deinit {
         if let ctx { whisper_free(ctx) }
     }
 
     func shutdown() {
-        // Serialize with any in-flight whisper_full; if the process exits before
-        // this runs the OS reclaims the context anyway.
+        unloadWhisper()
+        Task { await self.nemotron.unload() }
+    }
+
+    /// Serialize with any in-flight whisper_full; if the process exits before
+    /// this runs the OS reclaims the context anyway.
+    private func unloadWhisper() {
         whisperQueue.async {
             if let ctx = self.ctx {
                 whisper_free(ctx)
@@ -30,6 +53,18 @@ final class TranscriptionService: @unchecked Sendable {
                     translate: Bool = false,
                     onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
         let samples = try await AudioLoader.loadSamples(url: fileURL)
+
+        if case .nemotron(let directory) = resolveEngine() {
+            guard !translate else {
+                throw TranscriptionError.processFailed(
+                    "Translation to English is not supported by the Nemotron model. Select a Whisper model instead."
+                )
+            }
+            unloadWhisper()  // free the whisper ctx; the two engines never run together
+            try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
+            return try await nemotron.transcribe(samples: samples, language: language, onProgress: onProgress)
+        }
+        Task { await self.nemotron.unload() }
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
@@ -117,6 +152,11 @@ final class TranscriptionService: @unchecked Sendable {
             return TranscriptionResult(text: "", segments: [])
         }
 
+        if case .nemotron(let directory) = resolveEngine() {
+            try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
+            return try await nemotron.transcribeChunk(samples: samples)
+        }
+
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
                 let ctx: OpaquePointer
@@ -170,11 +210,23 @@ final class TranscriptionService: @unchecked Sendable {
         }
     }
 
-    /// Ensure the whisper model is loaded (public access for pre-loading during recording start).
-    /// Blocks until any queued transcription finishes, then loads on the whisper queue.
-    func preloadModel() throws {
-        try whisperQueue.sync {
-            _ = try ensureModelLoaded()
+    /// Ensure the selected model is loaded (public access for pre-loading during
+    /// recording start). Waits for any queued transcription, then loads.
+    func preloadModel() async throws {
+        switch resolveEngine() {
+        case .whisper:
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                whisperQueue.async {
+                    do {
+                        _ = try self.ensureModelLoaded()
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        case .nemotron(let directory):
+            try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
         }
     }
 
@@ -224,6 +276,9 @@ final class TranscriptionService: @unchecked Sendable {
     static func modelExists() -> Bool {
         if let files = try? FileManager.default.contentsOfDirectory(atPath: ModelCatalog.modelDirectory.path),
            files.contains(where: { $0.hasSuffix(".bin") }) {
+            return true
+        }
+        if ModelCatalog.all.contains(where: { $0.engine == .nemotron && ModelCatalog.isComplete($0) }) {
             return true
         }
         if let custom = UserDefaults.standard.string(forKey: "modelPath"),

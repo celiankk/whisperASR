@@ -559,7 +559,7 @@
     const langBtn = document.getElementById('lang-toggle');
     let currentLang = 'en';
 
-    function applyLang(lang) {
+    function applyLang(lang, persist = true) {
       const dict = I18N[lang];
       document.querySelectorAll('[data-i18n]').forEach(el => {
         const key = el.getAttribute('data-i18n');
@@ -569,13 +569,18 @@
       document.title = dict._title;
       langBtn.textContent = lang === 'zh' ? 'EN' : '中文';
       currentLang = lang;
-      try { localStorage.setItem('whisperasr-lang', lang); } catch (e) {}
+      // Shared ?lang= links shouldn't silently rewrite the visitor's saved
+      // preference, so only the explicit toggle click persists.
+      if (persist) { try { localStorage.setItem('whisperasr-lang', lang); } catch (e) {} }
     }
 
+    // Precedence: ?lang= URL parameter > saved preference > browser locale.
+    const urlParam = (new URLSearchParams(location.search).get('lang') || '').toLowerCase();
+    const urlLang = urlParam.startsWith('zh') ? 'zh' : (urlParam === 'en' ? 'en' : null);
     let saved = null;
     try { saved = localStorage.getItem('whisperasr-lang'); } catch (e) {}
-    const initial = saved || (((navigator.language || '').toLowerCase().startsWith('zh')) ? 'zh' : 'en');
-    if (initial !== 'en') applyLang(initial);
+    const initial = urlLang || saved || (((navigator.language || '').toLowerCase().startsWith('zh')) ? 'zh' : 'en');
+    if (initial !== 'en') applyLang(initial, false);
 
     langBtn.addEventListener('click', () => applyLang(currentLang === 'en' ? 'zh' : 'en'));
   </script>

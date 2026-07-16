@@ -20,10 +20,11 @@ struct MinutesPrompt: Codable, Identifiable, Equatable {
 final class MinutesPromptStore {
     static let shared = MinutesPromptStore()
 
-    static let promptsKey = "minutesPrompts"
-    static let selectedKey = "selectedMinutesPromptID"
-    static let contextTokensKey = "minutesContextTokens"
-    static let defaultContextTokens = 16_000
+    // nonisolated: BackupService reads these from nonisolated code.
+    nonisolated static let promptsKey = "minutesPrompts"
+    nonisolated static let selectedKey = "selectedMinutesPromptID"
+    nonisolated static let contextTokensKey = "minutesContextTokens"
+    nonisolated static let defaultContextTokens = 16_000
 
     var prompts: [MinutesPrompt]
     var selectedPromptID: UUID? {

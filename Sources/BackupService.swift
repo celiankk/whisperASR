@@ -37,6 +37,10 @@ enum BackupService {
         var translationAPIKey: String?
         var liveTranslationPref: Bool?
         var recentRecordingApps: [String]?
+        /// Meeting-minutes prompts as their raw JSON (the UserDefaults blob).
+        var minutesPromptsJSON: String?
+        var selectedMinutesPromptID: String?
+        var minutesContextTokens: Int?
     }
 
     // MARK: - Export
@@ -53,7 +57,12 @@ enum BackupService {
             translationAPIKey: d.string(forKey: "translationAPIKey"),
             liveTranslationPref: d.object(forKey: "liveTranslationPref") == nil
                 ? nil : d.bool(forKey: "liveTranslationPref"),
-            recentRecordingApps: d.stringArray(forKey: "recentRecordingApps")
+            recentRecordingApps: d.stringArray(forKey: "recentRecordingApps"),
+            minutesPromptsJSON: d.data(forKey: MinutesPromptStore.promptsKey)
+                .flatMap { String(data: $0, encoding: .utf8) },
+            selectedMinutesPromptID: d.string(forKey: MinutesPromptStore.selectedKey),
+            minutesContextTokens: d.object(forKey: MinutesPromptStore.contextTokensKey) == nil
+                ? nil : d.integer(forKey: MinutesPromptStore.contextTokensKey)
         )
 
         return BackupFile(
@@ -99,6 +108,12 @@ enum BackupService {
         set(c.translationAPIKey, "translationAPIKey")
         if let pref = c.liveTranslationPref { d.set(pref, forKey: "liveTranslationPref") }
         if let apps = c.recentRecordingApps { d.set(apps, forKey: "recentRecordingApps") }
+        if let prompts = c.minutesPromptsJSON?.data(using: .utf8) {
+            d.set(prompts, forKey: MinutesPromptStore.promptsKey)
+        }
+        set(c.selectedMinutesPromptID, MinutesPromptStore.selectedKey)
+        if let tokens = c.minutesContextTokens { d.set(tokens, forKey: MinutesPromptStore.contextTokensKey) }
+        MinutesPromptStore.shared.reloadFromDefaults()
 
         // ModelManager caches the selection in a stored property; nudge it so the
         // toolbar/Settings reflect the restored choice. refresh() will clear it

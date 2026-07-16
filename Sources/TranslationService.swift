@@ -39,16 +39,18 @@ enum TranslationError: LocalizedError {
     case parseError
     case unavailable
 
+    // Worded generically ("API error", not "Translation API error") because the
+    // meeting-minutes feature shares this client and surfaces the same errors.
     var errorDescription: String? {
         switch self {
         case .invalidEndpoint: return "Invalid API endpoint URL"
-        case .apiFailed(let msg): return "Translation API error: \(msg)"
+        case .apiFailed(let msg): return "API error: \(msg)"
         case .authFailed(let msg): return "API key invalid or unauthorized: \(msg)"
-        case .rateLimited(let msg): return "Translation rate-limited: \(msg)"
-        case .serverError(let code, let msg): return "Translation service error (HTTP \(code)): \(msg)"
-        case .transport(let msg): return "Translation network error: \(msg)"
-        case .parseError: return "Failed to parse translation response"
-        case .unavailable: return "Translation requires OpenAI API configuration"
+        case .rateLimited(let msg): return "Rate-limited by the API: \(msg)"
+        case .serverError(let code, let msg): return "API service error (HTTP \(code)): \(msg)"
+        case .transport(let msg): return "Network error: \(msg)"
+        case .parseError: return "Failed to parse the API response"
+        case .unavailable: return "Requires an OpenAI-compatible API — set the API key in Settings"
         }
     }
 
@@ -147,7 +149,8 @@ enum TranslationService {
 
     /// Send the request with up to 2 retries (3 attempts total) for transient failures
     /// (URLSession transport errors and 5xx). Auth/client errors are never retried.
-    private static func performRequestWithRetry(_ request: URLRequest) async throws -> Data {
+    /// Shared with MeetingMinutesService, which talks to the same API.
+    static func performRequestWithRetry(_ request: URLRequest) async throws -> Data {
         let backoffs: [Duration] = [.milliseconds(500), .milliseconds(1500)]
         var attempt = 0
         while true {

@@ -32,6 +32,7 @@ let package = Package(
                 .linkedFramework("Foundation"),
                 .linkedLibrary("c++"),
                 .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("WebKit"),
             ]
         )
     ]

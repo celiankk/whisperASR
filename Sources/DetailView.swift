@@ -4,9 +4,12 @@ import UniformTypeIdentifiers
 struct DetailView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioPlayerManager.self) var audioPlayer
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @State private var showTimestamps = true
     @State private var translationOnly = false
     @State private var showSearch = false
+    @State private var minutesPromptStore = MinutesPromptStore.shared
 
     var body: some View {
         Group {
@@ -117,6 +120,31 @@ struct DetailView: View {
                             .help(showTimestamps ? "Hide timestamps" : "Show timestamps")
 
                             Menu {
+                                ForEach(minutesPromptStore.prompts) { prompt in
+                                    Button {
+                                        generateMinutes(item, prompt: prompt)
+                                    } label: {
+                                        HStack {
+                                            Text(prompt.name)
+                                            if minutesPromptStore.selectedPromptID == prompt.id {
+                                                Spacer()
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                                Divider()
+                                if hasGeneratedMinutes(for: item) {
+                                    Button("Show Minutes") { openWindow(id: "minutes") }
+                                }
+                                Button("Edit Prompts…") { openSettings() }
+                            } label: {
+                                Label("Meeting Minutes", systemImage: "list.bullet.clipboard")
+                            }
+                            .menuIndicator(.hidden)
+                            .help("Generate meeting minutes with a prompt")
+
+                            Menu {
                                 Button("Copy Content") { copyContent(item) }
                                 if !item.translatedSegments.isEmpty {
                                     Button("Copy Translation") { copyTranslation(item) }
@@ -173,6 +201,19 @@ struct DetailView: View {
             }
             .padding()
         }
+    }
+
+    // MARK: - Meeting Minutes
+
+    private func generateMinutes(_ item: TranscriptionItem, prompt: MinutesPrompt) {
+        minutesPromptStore.selectedPromptID = prompt.id
+        MinutesGenerator.shared.generate(item: item, prompt: prompt)
+        openWindow(id: "minutes")
+    }
+
+    private func hasGeneratedMinutes(for item: TranscriptionItem) -> Bool {
+        let generator = MinutesGenerator.shared
+        return generator.sourceItemID == item.id && generator.phase == .completed
     }
 
     // MARK: - Copy & Export

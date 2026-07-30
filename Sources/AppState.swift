@@ -171,7 +171,13 @@ class AppState {
         let url = await recorder.stopRecording()
 
         if let url {
-            if hadLiveResults {
+            // Live results from a dedicated (usually smaller/faster) live model
+            // are a draft: send the saved recording through the normal pipeline
+            // so the main model produces the final transcript. Only when live
+            // ran on the same model are its results kept as final.
+            let liveModelDiffers = !ModelManager.shared.liveFileName.isEmpty
+                && ModelManager.shared.liveFileName != ModelManager.shared.selectedFileName
+            if hadLiveResults && !liveModelDiffers {
                 addFileWithLiveResults(url: url, segments: segments, fullText: fullText,
                                        translatedSegments: translations, translationLanguage: lang)
             } else {
@@ -346,7 +352,7 @@ class AppState {
             // Pre-load the model and wait for it — avoids model loading latency on first chunk.
             // Surface load failures so the user isn't stuck at a silent "Waiting for audio...".
             do {
-                try await self.service.preloadModel()
+                try await self.service.preloadLiveModel()
             } catch {
                 await MainActor.run {
                     self.liveError = "Couldn't load transcription model: \(error.localizedDescription)"
@@ -531,6 +537,9 @@ class AppState {
     func stopLiveTranscription() {
         liveTranscriptionTask?.cancel()
         liveTranscriptionTask = nil
+        // Free the dedicated live model (if one was loaded) — the final file
+        // transcription uses the main model.
+        service.unloadLiveModel()
         liveTranslationTask?.cancel()
         liveTranslationTask = nil
         pendingTranslationSnapshot = nil

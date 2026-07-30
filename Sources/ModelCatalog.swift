@@ -158,8 +158,16 @@ final class ModelManager {
         didSet { UserDefaults.standard.set(selectedFileName, forKey: "selectedModelFile") }
     }
 
+    /// File name of the model used for live transcription during recording —
+    /// usually a smaller, faster one than the main model. Empty = use the main
+    /// transcription model.
+    var liveFileName: String {
+        didSet { UserDefaults.standard.set(liveFileName, forKey: "liveModelFile") }
+    }
+
     private init() {
         selectedFileName = UserDefaults.standard.string(forKey: "selectedModelFile") ?? ""
+        liveFileName = UserDefaults.standard.string(forKey: "liveModelFile") ?? ""
         refresh()
         for model in ModelCatalog.all {
             downloaders[model.id] = ModelDownloader(model: model) { [weak self] in
@@ -175,6 +183,11 @@ final class ModelManager {
     var selectedModel: WhisperModelInfo? {
         guard !selectedFileName.isEmpty else { return nil }
         return ModelCatalog.model(fileName: selectedFileName)
+    }
+
+    var liveModel: WhisperModelInfo? {
+        guard !liveFileName.isEmpty else { return nil }
+        return ModelCatalog.model(fileName: liveFileName)
     }
 
     func isDownloaded(_ model: WhisperModelInfo) -> Bool {
@@ -201,6 +214,9 @@ final class ModelManager {
         // Drop a selection whose file no longer exists (deleted externally)
         if !selectedFileName.isEmpty && !downloadedFileNames.contains(selectedFileName) {
             selectedFileName = ""
+        }
+        if !liveFileName.isEmpty && !downloadedFileNames.contains(liveFileName) {
+            liveFileName = ""
         }
     }
 

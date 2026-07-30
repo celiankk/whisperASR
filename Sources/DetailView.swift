@@ -154,6 +154,13 @@ struct DetailView: View {
                                 if !item.translatedSegments.isEmpty {
                                     Button("Export Translation...") { exportTranslation(item) }
                                 }
+                                if !item.segments.isEmpty {
+                                    Menu("Export Subtitles") {
+                                        ForEach(SubtitleFormat.allCases) { format in
+                                            Button("\(format.displayName)...") { exportSubtitles(item, format: format) }
+                                        }
+                                    }
+                                }
                             } label: {
                                 Label("Export", systemImage: "square.and.arrow.up")
                             }
@@ -245,6 +252,21 @@ struct DetailView: View {
                 ? item.fullText
                 : item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
             try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func exportSubtitles(_ item: TranscriptionItem, format: SubtitleFormat) {
+        let baseName = (item.fileName as NSString).deletingPathExtension
+        let panel = NSSavePanel()
+        if let type = UTType(filenameExtension: format.fileExtension) {
+            panel.allowedContentTypes = [type]
+        }
+        panel.nameFieldStringValue = baseName + "." + format.fileExtension
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let content = SubtitleFormatter.make(format, segments: item.segments, title: baseName)
+            try? content.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 

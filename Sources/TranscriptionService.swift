@@ -71,10 +71,11 @@ final class TranscriptionService: @unchecked Sendable {
     /// live whisper context (if any), and the Nemotron engine when only the
     /// live selection was using it.
     func unloadLiveModel() {
-        liveStateLock.lock()
-        let wasNemotron = liveNemotronActive
-        liveNemotronActive = false
-        liveStateLock.unlock()
+        let wasNemotron = liveStateLock.withLock {
+            let was = liveNemotronActive
+            liveNemotronActive = false
+            return was
+        }
 
         whisperQueue.async {
             if let liveCtx = self.liveCtx {
@@ -106,9 +107,7 @@ final class TranscriptionService: @unchecked Sendable {
             try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
             return try await nemotron.transcribe(samples: samples, language: language, onProgress: onProgress)
         }
-        liveStateLock.lock()
-        let keepNemotron = liveNemotronActive  // live session is using it
-        liveStateLock.unlock()
+        let keepNemotron = liveStateLock.withLock { liveNemotronActive }  // live session is using it
         if !keepNemotron {
             Task { await self.nemotron.unload() }
         }
@@ -263,9 +262,7 @@ final class TranscriptionService: @unchecked Sendable {
     func preloadLiveModel() async throws {
         switch resolveLiveEngine() {
         case .whisper:
-            liveStateLock.lock()
-            liveNemotronActive = false
-            liveStateLock.unlock()
+            liveStateLock.withLock { liveNemotronActive = false }
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 whisperQueue.async {
                     do {
@@ -277,9 +274,7 @@ final class TranscriptionService: @unchecked Sendable {
                 }
             }
         case .nemotron(let directory):
-            liveStateLock.lock()
-            liveNemotronActive = true
-            liveStateLock.unlock()
+            liveStateLock.withLock { liveNemotronActive = true }
             try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
         }
     }

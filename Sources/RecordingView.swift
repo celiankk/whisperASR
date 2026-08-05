@@ -56,13 +56,13 @@ struct RecordingView: View {
 
                 Spacer()
 
-                Button("Cancel") {
+                Button("取消") {
                     appState.stopLiveTranscription()
                     recorder.cancelRecording()
                     dismiss()
                 }
 
-                Button("Finish Recording") {
+                Button("结束录制") {
                     stopAndDismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -79,7 +79,7 @@ struct RecordingView: View {
                             .foregroundStyle(appState.liveTranslationPaused ? Color.secondary : Color.blue)
                     }
                     .buttonStyle(.plain)
-                    .help(appState.liveTranslationPaused ? "Resume translation" : "Pause translation (e.g. speaker switched to your language)")
+                    .help(appState.liveTranslationPaused ? "继续翻译" : "暂停翻译（例如：说话人切换到你的语言）")
 
                     Button {
                         translationOnly.toggle()
@@ -88,7 +88,7 @@ struct RecordingView: View {
                             .foregroundStyle(translationOnly ? .blue : .secondary)
                     }
                     .buttonStyle(.plain)
-                    .help(translationOnly ? "Show original and translation" : "Show translation only")
+                    .help(translationOnly ? "显示原文和翻译" : "仅显示翻译")
                 }
 
                 Button {
@@ -99,7 +99,7 @@ struct RecordingView: View {
                         .foregroundStyle(isAlwaysOnTop ? .orange : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help(isAlwaysOnTop ? "Unpin window" : "Keep on top of all windows")
+                .help(isAlwaysOnTop ? "取消窗口置顶" : "保持在所有窗口顶部")
 
                 Button {
                     dismiss()
@@ -139,7 +139,7 @@ struct RecordingView: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Waiting for audio...")
+                    Text("等待音频…")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -200,7 +200,7 @@ struct RecordingView: View {
         VStack(spacing: 12) {
             ProgressView()
                 .scaleEffect(1.2)
-            Text("Saving recording...")
+            Text("正在保存录制…")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

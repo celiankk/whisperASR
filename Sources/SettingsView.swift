@@ -43,8 +43,8 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Appearance") {
-                Picker("Transcript Font Size", selection: $transcriptFontSize) {
+            Section("外观") {
+                Picker("转录字体大小", selection: $transcriptFontSize) {
                     ForEach(TranscriptFontSize.allCases, id: \.rawValue) { size in
                         Text(size.label).tag(size.rawValue)
                     }
@@ -52,32 +52,32 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
             }
 
-            Section("Translation") {
-                Picker("Target Language", selection: $targetLanguage) {
-                    Text("Off").tag("")
+            Section("翻译") {
+                Picker("目标语言", selection: $targetLanguage) {
+                    Text("关闭").tag("")
                     ForEach(TargetLanguage.available) { lang in
                         Text(lang.nativeName).tag(lang.id)
                     }
                 }
-                Text("Translate live transcription to this language using an OpenAI-compatible API configured below.")
+                Text("使用下方配置的 OpenAI 兼容 API 将实时转录翻译为此语言。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("OpenAI API") {
-                TextField("API Endpoint", text: $translationEndpoint,
+                TextField("API 端点", text: $translationEndpoint,
                           prompt: Text("https://api.openai.com/v1"))
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: translationEndpoint) { _, _ in verifyResult = nil }
-                SecureField("API Key", text: $translationAPIKey,
+                SecureField("API 密钥", text: $translationAPIKey,
                             prompt: Text("sk-..."))
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: translationAPIKey) { _, _ in verifyResult = nil }
-                TextField("Model", text: $translationModel,
+                TextField("模型", text: $translationModel,
                           prompt: Text("gpt-4o-mini"))
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: translationModel) { _, _ in verifyResult = nil }
-                Text("Used for translation and meeting minutes. Only API Key is required. Endpoint defaults to OpenAI, model defaults to gpt-4o-mini.")
+                Text("用于翻译和会议纪要。仅需 API 密钥。端点默认为 OpenAI，模型默认为 gpt-4o-mini。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -88,7 +88,7 @@ struct SettingsView: View {
                         if verifyInFlight {
                             ProgressView().controlSize(.small)
                         } else {
-                            Text("Verify Connection")
+                            Text("验证连接")
                         }
                     }
                     .disabled(verifyInFlight || translationAPIKey.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -110,7 +110,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Meeting Minutes") {
+            Section("会议纪要") {
                 ForEach(minutesStore.prompts) { prompt in
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -127,7 +127,7 @@ struct SettingsView: View {
                             Image(systemName: "pencil")
                         }
                         .buttonStyle(.borderless)
-                        .help("Edit prompt")
+                        .help("编辑提示词")
 
                         Button {
                             promptPendingDelete = prompt
@@ -137,16 +137,16 @@ struct SettingsView: View {
                         .buttonStyle(.borderless)
                         .disabled(minutesStore.prompts.count == 1)
                         .help(minutesStore.prompts.count == 1
-                              ? "The last prompt can't be deleted" : "Delete prompt")
+                              ? "无法删除最后一个提示词" : "删除提示词")
                     }
                 }
 
-                Button("Add Prompt…") {
+                Button("添加提示词…") {
                     editingPrompt = MinutesPrompt(name: "", prompt: "")
                 }
 
                 HStack {
-                    Text("Model context window")
+                    Text("模型上下文窗口")
                     Spacer()
                     TextField("16000", value: $minutesContextTokens, format: .number.grouping(.never))
                         .multilineTextAlignment(.trailing)
@@ -156,40 +156,40 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Prompts appear in the Meeting Minutes menu above the transcript. Transcripts longer than the context window are summarized in chunks first, then combined into the minutes. Uses the OpenAI API configured above.")
+                Text("提示词显示在转录内容上方的会议纪要菜单中。超过上下文窗口的转录内容会先分块摘要，然后合并为纪要。使用上方配置的 OpenAI API。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Speech Recognition Models") {
+            Section("语音识别模型") {
                 ForEach(ModelCatalog.all) { model in
                     ModelRowView(model: model)
                 }
-                Text("Select a downloaded model to use it for transcription. Smaller models are faster but less accurate.")
+                Text("选择已下载的模型用于转录。模型越小速度越快，但准确率越低。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Custom Model") {
+            Section("自定义模型") {
                 HStack {
-                    TextField("GGML model file", text: $modelPath,
-                              prompt: Text("Path to a custom ggml model"))
+                    TextField("GGML 模型文件", text: $modelPath,
+                              prompt: Text("自定义 ggml 模型路径"))
                         .textFieldStyle(.roundedBorder)
-                    Button("Browse...") { browseModel() }
+                    Button("浏览…") { browseModel() }
                 }
-                Text("Used only when no model is selected above. Leave empty otherwise.")
+                Text("仅在上方未选择模型时使用。否则请留空。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Local API Server (OpenAI-compatible)") {
-                Toggle("Run transcription API server", isOn: $apiServerEnabled)
+            Section("本地 API 服务器（兼容 OpenAI）") {
+                Toggle("运行转录 API 服务器", isOn: $apiServerEnabled)
                     .onChange(of: apiServerEnabled) { _, on in
                         if on { apiServer.start() } else { apiServer.stop() }
                     }
 
                 HStack {
-                    Text("Port")
+                    Text("端口")
                     Spacer()
                     TextField("8080", value: $apiServerPort, format: .number.grouping(.never))
                         .multilineTextAlignment(.trailing)
@@ -198,18 +198,18 @@ struct SettingsView: View {
                         .disabled(apiServer.isRunning)
                 }
 
-                SecureField("API Key (optional)", text: $apiServerToken,
-                            prompt: Text("Leave empty to allow any client"))
+                SecureField("API 密钥（可选）", text: $apiServerToken,
+                            prompt: Text("留空以允许任何客户端"))
                     .textFieldStyle(.roundedBorder)
 
-                Toggle("Allow access from other devices on your network", isOn: $apiServerAllowLAN)
+                Toggle("允许网络中其他设备访问", isOn: $apiServerAllowLAN)
                     .disabled(apiServer.isRunning)
 
-                Toggle("Verbose request logging (for troubleshooting)", isOn: $apiServerVerboseLog)
+                Toggle("详细请求日志（用于排查问题）", isOn: $apiServerVerboseLog)
 
                 if apiServer.isRunning, let base = apiServer.baseURL {
                     HStack(spacing: 8) {
-                        Label("Running", systemImage: "checkmark.circle.fill")
+                        Label("运行中", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                             .font(.caption)
                         Text("\(base)/v1")
@@ -223,7 +223,7 @@ struct SettingsView: View {
                             Image(systemName: "doc.on.doc")
                         }
                         .buttonStyle(.borderless)
-                        .help("Copy base URL")
+                        .help("复制基础 URL")
                         Spacer()
                     }
                 } else if let err = apiServer.lastError {
@@ -233,15 +233,15 @@ struct SettingsView: View {
                         .lineLimit(3)
                 }
 
-                Text("Point any OpenAI-compatible client at the address above (base_url). Endpoints: POST /v1/audio/transcriptions and /v1/audio/translations (multipart with a `file`; response_format supports json, verbose_json, text, srt, vtt). Requests use your currently selected model. Changing the port or network setting takes effect after toggling the server off and on.")
+                Text("将任何兼容 OpenAI 的客户端指向上述地址（base_url）。端点：POST /v1/audio/transcriptions 和 /v1/audio/translations（multipart 格式，带 `file` 参数；response_format 支持 json、verbose_json、text、srt、vtt）。请求使用当前选择的模型。更改端口或网络设置后，需重新开关服务器才能生效。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Backup & Restore") {
+            Section("备份与恢复") {
                 HStack(spacing: 10) {
-                    Button("Export Backup…") { exportBackup() }
-                    Button("Restore from Backup…") { pickRestoreFile() }
+                    Button("导出备份…") { exportBackup() }
+                    Button("从备份恢复…") { pickRestoreFile() }
                     Spacer()
                 }
 
@@ -258,7 +258,7 @@ struct SettingsView: View {
                     EmptyView()
                 }
 
-                Text("Saves your settings (model choice, translation API config, font size, recent apps) to one file. On a new Mac, copy your Recordings and Transcriptions folders into ~/Library/Application Support/WhisperASR/ — transcripts load from there and audio links repair automatically — then restore your settings here. The file includes your translation API key, so keep it private.")
+                Text("将你的设置（模型选择、翻译 API 配置、字体大小、最近使用的应用）保存到一个文件中。在新 Mac 上，将 Recordings 和 Transcriptions 文件夹复制到 ~/Library/Application Support/WhisperASR/ — 转录内容会从那里加载，音频链接会自动修复 — 然后在此处恢复设置。该文件包含你的翻译 API 密钥，请妥善保管。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -268,14 +268,14 @@ struct SettingsView: View {
         .padding()
         .onAppear { ModelManager.shared.refresh() }
         .confirmationDialog(
-            "Restore from backup?",
+            "从备份恢复？",
             isPresented: $showRestoreConfirm,
             titleVisibility: .visible
         ) {
-            Button("Restore") { performRestore() }
-            Button("Cancel", role: .cancel) { pendingRestore = nil }
+            Button("恢复") { performRestore() }
+            Button("取消", role: .cancel) { pendingRestore = nil }
         } message: {
-            Text("This overwrites your current settings (model choice, translation API config, font size, recent apps) with the values from the backup. Your transcriptions are not affected.")
+            Text("这将用备份中的值覆盖当前设置（模型选择、翻译 API 配置、字体大小、最近使用的应用）。转录内容不受影响。")
         }
         .sheet(item: $editingPrompt) { prompt in
             MinutesPromptEditorSheet(prompt: prompt) { saved in
@@ -283,22 +283,22 @@ struct SettingsView: View {
             }
         }
         .confirmationDialog(
-            "Delete \"\(promptPendingDelete?.name ?? "")\"?",
+            "删除「\(promptPendingDelete?.name ?? "")」？",
             isPresented: Binding(
                 get: { promptPendingDelete != nil },
                 set: { if !$0 { promptPendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button("删除", role: .destructive) {
                 if let prompt = promptPendingDelete {
                     minutesStore.delete(prompt)
                 }
                 promptPendingDelete = nil
             }
-            Button("Cancel", role: .cancel) { promptPendingDelete = nil }
+            Button("取消", role: .cancel) { promptPendingDelete = nil }
         } message: {
-            Text("The prompt text will be removed. This can't be undone.")
+            Text("提示词文本将被删除。此操作无法撤销。")
         }
     }
 
@@ -411,10 +411,10 @@ private struct MinutesPromptEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Meeting Minutes Prompt")
+            Text("会议纪要提示词")
                 .font(.headline)
 
-            TextField("Name (e.g. Weekly Standup, Client Call)", text: $prompt.name)
+            TextField("名称（例如：每周站会、客户通话）", text: $prompt.name)
                 .textFieldStyle(.roundedBorder)
 
             TextEditor(text: $prompt.prompt)
@@ -429,15 +429,15 @@ private struct MinutesPromptEditorSheet: View {
                 )
                 .frame(minHeight: 220)
 
-            Text("Describe the structure and focus of the minutes. The transcript is appended automatically, and the result is always formatted as HTML.")
+            Text("描述纪要的结构和重点。转录内容会自动附加，结果始终以 HTML 格式输出。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             HStack {
-                Button("Cancel") { dismiss() }
+                Button("取消") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save") {
+                Button("保存") {
                     onSave(prompt)
                     dismiss()
                 }
@@ -471,7 +471,7 @@ private struct ModelRowView: View {
             }
             .buttonStyle(.plain)
             .disabled(!isDownloaded)
-            .help(isDownloaded ? "Use this model for transcription" : "Download the model first")
+            .help(isDownloaded ? "使用此模型进行转录" : "请先下载模型")
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.displayName)
@@ -489,7 +489,7 @@ private struct ModelRowView: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help("Delete downloaded model")
+                .help("删除已下载的模型")
             } else if downloader.state == .downloading {
                 ProgressView(value: downloader.progress)
                     .progressViewStyle(.linear)
@@ -505,28 +505,28 @@ private struct ModelRowView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Cancel download")
+                .help("取消下载")
             } else {
                 if case .failed = downloader.state {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                        .help("Download failed — click Download to retry")
+                        .help("下载失败 — 点击下载重试")
                 }
-                Button(downloader.hasResumeData ? "Resume" : "Download") {
+                Button(downloader.hasResumeData ? "继续" : "下载") {
                     downloader.startDownload()
                 }
             }
         }
         .confirmationDialog(
-            "Delete \(model.displayName)?",
+            "删除 \(model.displayName)？",
             isPresented: $confirmDelete
         ) {
-            Button("Delete", role: .destructive) {
+            Button("删除", role: .destructive) {
                 manager.delete(model)
             }
-            Button("Cancel", role: .cancel) {}
+            Button("取消", role: .cancel) {}
         } message: {
-            Text("The model file (\(model.approxSizeText)) will be removed from disk. You can download it again later.")
+            Text("模型文件（\(model.approxSizeText)）将从磁盘中移除。你可以稍后重新下载。")
         }
     }
 }

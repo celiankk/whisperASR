@@ -38,7 +38,7 @@ struct DetailView: View {
             Image(systemName: "text.quote")
                 .font(.system(size: 40))
                 .foregroundStyle(.quaternary)
-            Text("Select a transcription to view")
+            Text("选择一个转录内容查看")
                 .foregroundStyle(.secondary)
         }
     }
@@ -53,7 +53,7 @@ struct DetailView: View {
                 Image(systemName: "clock")
                     .font(.title)
                     .foregroundStyle(.secondary)
-                Text("Waiting to start...")
+                Text("等待开始…")
                     .foregroundStyle(.secondary)
             }
 
@@ -70,12 +70,12 @@ struct DetailView: View {
                             } label: {
                                 Image(systemName: "magnifyingglass")
                             }
-                            .help("Search transcript")
+                            .help("搜索转录")
 
                             if item.isTranslating {
                                 ProgressView()
                                     .controlSize(.small)
-                                    .help("Translating...")
+                                    .help("翻译中…")
                             } else {
                                 Menu {
                                     ForEach(TargetLanguage.available) { lang in
@@ -93,12 +93,12 @@ struct DetailView: View {
                                     }
                                     if !item.translatedSegments.isEmpty {
                                         Divider()
-                                        Button("Clear Translation") {
+                                        Button("清除翻译") {
                                             appState.clearTranslation(item)
                                         }
                                     }
                                 } label: {
-                                    Label("Translate", systemImage: "character.bubble")
+                                    Label("翻译", systemImage: "character.bubble")
                                 }
                                 .menuIndicator(.hidden)
                             }
@@ -109,7 +109,7 @@ struct DetailView: View {
                                 } label: {
                                     Image(systemName: translationOnly ? "eye.fill" : "eye")
                                 }
-                                .help(translationOnly ? "Show original and translation" : "Show translation only")
+                                .help(translationOnly ? "显示原文和翻译" : "仅显示翻译")
                             }
 
                             Button {
@@ -117,7 +117,7 @@ struct DetailView: View {
                             } label: {
                                 Image(systemName: showTimestamps ? "clock.fill" : "clock")
                             }
-                            .help(showTimestamps ? "Hide timestamps" : "Show timestamps")
+                            .help(showTimestamps ? "隐藏时间戳" : "显示时间戳")
 
                             Menu {
                                 ForEach(minutesPromptStore.prompts) { prompt in
@@ -135,34 +135,34 @@ struct DetailView: View {
                                 }
                                 Divider()
                                 if hasGeneratedMinutes(for: item) {
-                                    Button("Show Minutes") { openWindow(id: "minutes") }
+                                    Button("显示纪要") { openWindow(id: "minutes") }
                                 }
-                                Button("Edit Prompts…") { openSettings() }
+                                Button("编辑提示词…") { openSettings() }
                             } label: {
-                                Label("Meeting Minutes", systemImage: "list.bullet.clipboard")
+                                Label("会议纪要", systemImage: "list.bullet.clipboard")
                             }
                             .menuIndicator(.hidden)
-                            .help("Generate meeting minutes with a prompt")
+                            .help("使用提示词生成会议纪要")
 
                             Menu {
-                                Button("Copy Content") { copyContent(item) }
+                                Button("复制内容") { copyContent(item) }
                                 if !item.translatedSegments.isEmpty {
-                                    Button("Copy Translation") { copyTranslation(item) }
+                                    Button("复制翻译") { copyTranslation(item) }
                                 }
                                 Divider()
-                                Button("Export Text...") { exportText(item) }
+                                Button("导出文本…") { exportText(item) }
                                 if !item.translatedSegments.isEmpty {
-                                    Button("Export Translation...") { exportTranslation(item) }
+                                    Button("导出翻译…") { exportTranslation(item) }
                                 }
                                 if !item.segments.isEmpty {
-                                    Menu("Export Subtitles") {
+                                    Menu("导出字幕") {
                                         ForEach(SubtitleFormat.allCases) { format in
-                                            Button("\(format.displayName)...") { exportSubtitles(item, format: format) }
+                                            Button("\(format.displayName)…") { exportSubtitles(item, format: format) }
                                         }
                                     }
                                 }
                             } label: {
-                                Label("Export", systemImage: "square.and.arrow.up")
+                                Label("导出", systemImage: "square.and.arrow.up")
                             }
                             .menuIndicator(.hidden)
                         }
@@ -174,7 +174,7 @@ struct DetailView: View {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.title)
                     .foregroundStyle(.red)
-                Text("Transcription Failed")
+                Text("转录失败")
                     .font(.headline)
 
                 ScrollView {
@@ -195,13 +195,13 @@ struct DetailView: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(error, forType: .string)
                     } label: {
-                        Label("Copy Error", systemImage: "doc.on.doc")
+                        Label("复制错误", systemImage: "doc.on.doc")
                     }
 
                     Button {
                         appState.retranscribe(item)
                     } label: {
-                        Label("Retry", systemImage: "arrow.clockwise")
+                        Label("重试", systemImage: "arrow.clockwise")
                     }
                     .keyboardShortcut("r", modifiers: .command)
                 }
@@ -301,7 +301,7 @@ struct TranscribingView: View {
                 .font(.system(.title, design: .monospaced))
                 .foregroundStyle(.secondary)
 
-            Text("Transcribing \(item.fileName)...")
+            Text("正在转录 \(item.fileName)…")
                 .foregroundStyle(.secondary)
 
             if let eta = estimatedTimeRemaining {
@@ -316,18 +316,18 @@ struct TranscribingView: View {
     private var estimatedTimeRemaining: String? {
         guard let startTime = item.transcriptionStartTime,
               item.progress > 0.05 else {
-            return "Estimating time remaining..."
+            return "估算剩余时间…"
         }
         let elapsed = Date().timeIntervalSince(startTime)
         let remaining = (elapsed / item.progress) - elapsed
         if remaining < 5 {
-            return "Almost done..."
+            return "即将完成…"
         } else if remaining < 60 {
-            return "~\(Int(remaining))s remaining"
+            return "还剩 ~\(Int(remaining)) 秒"
         } else {
             let mins = Int(remaining) / 60
             let secs = Int(remaining) % 60
-            return "~\(mins)m \(secs)s remaining"
+            return "还剩 ~\(mins) 分 \(secs) 秒"
         }
     }
 }
@@ -686,7 +686,7 @@ struct SearchBarContent: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .font(.caption)
-            TextField("Find in transcript...", text: $searchQuery)
+            TextField("在转录中查找…", text: $searchQuery)
                 .textFieldStyle(.plain)
                 .font(.callout)
                 .focused(isSearchFieldFocused)
@@ -743,7 +743,7 @@ struct SearchBarContent: View {
 
     private var dismissButton: some View {
         Button(action: onDismiss) {
-            Text("Done")
+            Text("完成")
                 .font(.callout)
         }
         .buttonStyle(.plain)

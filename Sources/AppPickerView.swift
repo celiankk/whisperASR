@@ -48,7 +48,7 @@ struct AppPickerView: View {
         VStack(spacing: 12) {
             ProgressView()
                 .scaleEffect(1.2)
-            Text("Loading applications...")
+            Text("正在加载应用…")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,7 +71,7 @@ struct AppPickerView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Search apps...", text: $searchText)
+                TextField("搜索应用…", text: $searchText)
                     .textFieldStyle(.plain)
                 if !searchText.isEmpty {
                     Button {
@@ -111,7 +111,7 @@ struct AppPickerView: View {
                     Image(systemName: "mic")
                 }
                 Toggle(isOn: $appState.enableLiveTranscription) {
-                    Label("Live", systemImage: "text.word.spacing")
+                    Label("实时", systemImage: "text.word.spacing")
                 }
                 Toggle(isOn: Binding(
                     get: { appState.enableLiveTranslation },
@@ -127,13 +127,13 @@ struct AppPickerView: View {
 
             if appState.enableLiveTranscription {
                 HStack(spacing: 6) {
-                    Text("Live model:")
+                    Text("实时模型：")
                         .foregroundStyle(.secondary)
-                    Picker("Live transcription model", selection: Binding(
+                    Picker("实时转录模型", selection: Binding(
                         get: { modelManager.liveFileName },
                         set: { modelManager.liveFileName = $0 }
                     )) {
-                        Text("Same as transcription model").tag("")
+                        Text("与转录模型相同").tag("")
                         ForEach(modelManager.downloadedModels) { model in
                             Text(model.displayName).tag(model.fileName)
                         }
@@ -146,11 +146,11 @@ struct AppPickerView: View {
                 .controlSize(.small)
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
-                .help("A smaller, faster model keeps up with live audio; the final transcription of the recording still uses the main model")
+                .help("更小、更快的模型可以跟上实时音频；录制的最终转录仍使用主模型")
             }
 
             HStack {
-                Button("Cancel") {
+                Button("取消") {
                     recorder.state = .idle
                     dismiss()
                 }
@@ -158,7 +158,7 @@ struct AppPickerView: View {
 
                 Spacer()
 
-                Button("Start Recording") {
+                Button("开始录制") {
                     if let app = recorder.selectedApp {
                         recorder.startRecording(app: app)
                         openWindow(id: "recording")
@@ -182,28 +182,28 @@ struct AppPickerView: View {
                 .font(.system(size: 44))
                 .foregroundStyle(.secondary)
 
-            Text("Screen Recording Permission Required")
+            Text("需要屏幕录制权限")
                 .font(.headline)
 
-            Text("WhisperASR needs Screen Recording permission to capture audio from other applications.")
+            Text("WhisperASR 需要屏幕录制权限才能从其他应用捕获音频。")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 24)
 
             HStack(spacing: 12) {
-                Button("Open System Settings") {
+                Button("打开系统设置") {
                     recorder.openSystemPreferences()
                 }
                 .buttonStyle(.borderedProminent)
 
-                Button("Try Again") {
+                Button("重试") {
                     recorder.loadAvailableApps()
                 }
             }
 
             Spacer()
 
-            Button("Cancel") {
+            Button("取消") {
                 recorder.state = .idle
                 dismiss()
             }

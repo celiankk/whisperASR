@@ -85,7 +85,7 @@ struct SidebarView: View {
         .toolbar {
             ToolbarItem {
                 Button(action: openFilePicker) {
-                    Label("Add File", systemImage: "plus")
+                    Label("添加文件", systemImage: "plus")
                 }
             }
             ToolbarItem {
@@ -93,14 +93,14 @@ struct SidebarView: View {
                     Button {
                         openWindow(id: "recording")
                     } label: {
-                        Label("Recording", systemImage: "record.circle.fill")
+                        Label("录制中", systemImage: "record.circle.fill")
                             .foregroundStyle(.red)
                     }
                 } else {
                     Button {
                         openWindow(id: "app-picker")
                     } label: {
-                        Label("Record", systemImage: "record.circle")
+                        Label("录制", systemImage: "record.circle")
                     }
                 }
             }
@@ -133,38 +133,38 @@ struct SidebarView: View {
                 recorder.onMeetingEnded = nil
             }
         }
-        .alert("Rename", isPresented: Binding(
+        .alert("重命名", isPresented: Binding(
             get: { renamingItem != nil },
             set: { if !$0 { renamingItem = nil } }
         )) {
-            TextField("Name", text: $renameText)
-            Button("Cancel", role: .cancel) { renamingItem = nil }
-            Button("Rename") {
+            TextField("名称", text: $renameText)
+            Button("取消", role: .cancel) { renamingItem = nil }
+            Button("重命名") {
                 if let item = renamingItem {
                     appState.renameItem(item, to: renameText)
                 }
                 renamingItem = nil
             }
         } message: {
-            Text("Enter a new name for this file.")
+            Text("为此文件输入新名称。")
         }
         .confirmationDialog(
-            "Remove this transcription?",
+            "移除此转录？",
             isPresented: Binding(
                 get: { itemPendingRemoval != nil },
                 set: { if !$0 { itemPendingRemoval = nil } }
             ),
             presenting: itemPendingRemoval
         ) { item in
-            Button("Remove", role: .destructive) {
+            Button("移除", role: .destructive) {
                 appState.removeItem(item)
                 itemPendingRemoval = nil
             }
-            Button("Cancel", role: .cancel) { itemPendingRemoval = nil }
+            Button("取消", role: .cancel) { itemPendingRemoval = nil }
         } message: { item in
             Text(TranscriptionStore.isAppRecording(item.fileURL)
-                ? "\"\(item.fileURL.lastPathComponent)\" will be removed and its recording moved to the Trash."
-                : "The transcription of \"\(item.fileURL.lastPathComponent)\" will be removed. The original audio file stays on disk.")
+                ? "「\(item.fileURL.lastPathComponent)」将被移除，其录音将移至废纸篓。"
+                : "「\(item.fileURL.lastPathComponent)」的转录将被移除。原始音频文件保留在磁盘上。")
         }
     }
 
@@ -175,7 +175,7 @@ struct SidebarView: View {
             Image(systemName: "waveform.badge.plus")
                 .font(.system(size: 44))
                 .foregroundStyle(.secondary)
-            Text("Drop Audio Files Here")
+            Text("拖放音频文件到此处")
                 .font(.title3)
                 .foregroundStyle(.secondary)
             Text("MP3, WAV, M4A, MP4, AAC, FLAC")
@@ -194,7 +194,7 @@ struct SidebarView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                     .font(.caption)
-                TextField("Search transcriptions...", text: $searchText)
+                TextField("搜索转录…", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.callout)
                 if !searchText.isEmpty {
@@ -231,7 +231,7 @@ struct SidebarView: View {
                                 if !committedQuery.isEmpty {
                                     let count = matchCounts[item.id] ?? 0
                                     if count > 0 {
-                                        Text("\(count) match\(count == 1 ? "" : "es")")
+                                        Text("\(count) 个匹配")
                                             .font(.caption2)
                                             .foregroundStyle(.white)
                                             .padding(.horizontal, 5)
@@ -245,21 +245,21 @@ struct SidebarView: View {
                     }
                     .tag(item.id)
                     .contextMenu {
-                        Button("Rename") {
+                        Button("重命名") {
                             renameText = item.fileURL.deletingPathExtension().lastPathComponent
                             renamingItem = item
                         }
-                        Button("Copy File") {
+                        Button("复制文件") {
                             let pasteboard = NSPasteboard.general
                             pasteboard.clearContents()
                             pasteboard.writeObjects([item.fileURL as NSURL])
                         }
-                        Button("Show in Finder") {
+                        Button("在访达中显示") {
                             NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
                         }
                         Divider()
                         if item.status != .transcribing {
-                            Button("Re-transcribe") {
+                            Button("重新转录") {
                                 appState.retranscribe(item)
                             }
                         }
@@ -269,7 +269,7 @@ struct SidebarView: View {
                         Button(" ") {}.disabled(true)
                         Button(" ") {}.disabled(true)
                         Divider()
-                        Button("Remove", role: .destructive) {
+                        Button("移除", role: .destructive) {
                             itemPendingRemoval = item
                         }
                     }
@@ -300,10 +300,10 @@ struct SidebarView: View {
 
     private func statusLabel(_ item: TranscriptionItem) -> String {
         switch item.status {
-        case .pending: return "Pending"
+        case .pending: return "等待中"
         case .transcribing: return "\(Int(item.progress * 100))%"
-        case .completed: return "Completed"
-        case .failed: return "Failed"
+        case .completed: return "已完成"
+        case .failed: return "失败"
         }
     }
 
@@ -338,10 +338,10 @@ struct SidebarView: View {
         NSApp.requestUserAttention(.criticalRequest)
 
         let alert = NSAlert()
-        alert.messageText = "Meeting Ended"
-        alert.informativeText = "The Zoom meeting appears to have ended. Would you like to stop recording?"
-        alert.addButton(withTitle: "Stop Recording")
-        alert.addButton(withTitle: "Continue Recording")
+        alert.messageText = "会议已结束"
+        alert.informativeText = "Zoom 会议似乎已结束。你想停止录制吗？"
+        alert.addButton(withTitle: "停止录制")
+        alert.addButton(withTitle: "继续录制")
         alert.alertStyle = .informational
         alert.icon = AppIconGenerator.generate()
 
@@ -382,21 +382,21 @@ struct ModelPickerMenu: View {
 
     var body: some View {
         Menu {
-            Picker("Transcription Model", selection: Binding(
+            Picker("转录模型", selection: Binding(
                 get: { manager.selectedFileName },
                 set: { manager.selectedFileName = $0 }
             )) {
-                Text("Automatic").tag("")
+                Text("自动").tag("")
                 ForEach(manager.downloadedModels) { model in
                     Text(model.displayName).tag(model.fileName)
                 }
             }
             .pickerStyle(.inline)
-            Picker("Live Transcription Model", selection: Binding(
+            Picker("实时转录模型", selection: Binding(
                 get: { manager.liveFileName },
                 set: { manager.liveFileName = $0 }
             )) {
-                Text("Same as Transcription Model").tag("")
+                Text("与转录模型相同").tag("")
                 ForEach(manager.downloadedModels) { model in
                     Text(model.displayName).tag(model.fileName)
                 }
@@ -404,12 +404,12 @@ struct ModelPickerMenu: View {
             .pickerStyle(.inline)
             Divider()
             SettingsLink {
-                Text("Manage Models...")
+                Text("管理模型…")
             }
         } label: {
-            Label(manager.selectedModel?.displayName ?? "Model", systemImage: "cpu")
+            Label(manager.selectedModel?.displayName ?? "模型", systemImage: "cpu")
         }
-        .help("Model used for transcription: \(manager.selectedModel?.displayName ?? "Automatic")")
+        .help("用于转录的模型：\(manager.selectedModel?.displayName ?? "自动")")
         .onAppear { manager.refresh() }
     }
 }

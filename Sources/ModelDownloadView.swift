@@ -36,14 +36,14 @@ struct ModelDownloadView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.tint)
 
-            Text("Speech Recognition Model Required")
+            Text("需要语音识别模型")
                 .font(.headline)
 
-            Text("WhisperASR needs a speech recognition model to transcribe audio. Choose one to download — you can add more or switch later in Settings.")
+            Text("WhisperASR 需要语音识别模型才能转录音频。选择一个下载 — 你可以稍后在设置中添加更多或切换。")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            Picker("Model", selection: $selectedID) {
+            Picker("模型", selection: $selectedID) {
                 ForEach(ModelCatalog.all) { m in
                     Text("\(m.displayName) (\(m.approxSizeText))").tag(m.id)
                 }
@@ -54,19 +54,19 @@ struct ModelDownloadView: View {
                 .foregroundStyle(.tertiary)
 
             if downloader.hasResumeData {
-                Text("A previous download of this model was interrupted and can be resumed.")
+                Text("此模型的上次下载被中断，可以继续下载。")
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 12) {
-                Button("Not Now") {
+                Button("暂不") {
                     isPresented = false
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button(downloader.hasResumeData ? "Resume Download" : "Download") {
+                Button(downloader.hasResumeData ? "继续下载" : "下载") {
                     downloader.startDownload()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -76,7 +76,7 @@ struct ModelDownloadView: View {
 
     private var downloadingView: some View {
         VStack(spacing: 16) {
-            Text("Downloading \(model.displayName)...")
+            Text("正在下载 \(model.displayName)…")
                 .font(.headline)
 
             ProgressView(value: downloader.progress)
@@ -93,7 +93,7 @@ struct ModelDownloadView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            Button("Cancel") {
+            Button("取消") {
                 downloader.cancelDownload()
             }
         }
@@ -105,13 +105,13 @@ struct ModelDownloadView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.green)
 
-            Text("Model Downloaded Successfully")
+            Text("模型下载成功")
                 .font(.headline)
 
-            Text("\(model.displayName) has been saved and is ready to use.")
+            Text("\(model.displayName) 已保存并可以使用。")
                 .foregroundStyle(.secondary)
 
-            Button("Done") {
+            Button("完成") {
                 isPresented = false
             }
             .keyboardShortcut(.defaultAction)
@@ -124,7 +124,7 @@ struct ModelDownloadView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.orange)
 
-            Text("Download Failed")
+            Text("下载失败")
                 .font(.headline)
 
             Text(message)
@@ -132,12 +132,12 @@ struct ModelDownloadView: View {
                 .multilineTextAlignment(.center)
 
             HStack(spacing: 12) {
-                Button("Dismiss") {
+                Button("关闭") {
                     isPresented = false
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("Retry") {
+                Button("重试") {
                     downloader.startDownload()
                 }
                 .keyboardShortcut(.defaultAction)

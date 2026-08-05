@@ -13,9 +13,15 @@ enum AppIconGenerator {
 
         let rect = CGRect(x: 0, y: 0, width: size, height: size)
 
-        // Rounded rect clip (macOS icon shape)
-        let cornerRadius: CGFloat = size * 0.22
-        let path = CGPath(roundedRect: rect.insetBy(dx: 4, dy: 4),
+        // Rounded rect clip (macOS icon shape).
+        // Match Apple's standard app-icon grid: the squircle occupies ~80% of
+        // the canvas (Finder/Terminal measure 204/256) with corner radius
+        // ~22% of the squircle size. The previous edge-to-edge squircle made
+        // the icon render noticeably larger than neighboring Dock icons.
+        let inset: CGFloat = size * 0.10
+        let squircleSize = size - inset * 2
+        let cornerRadius: CGFloat = squircleSize * 0.22
+        let path = CGPath(roundedRect: rect.insetBy(dx: inset, dy: inset),
                           cornerWidth: cornerRadius, cornerHeight: cornerRadius,
                           transform: nil)
         ctx.addPath(path)

@@ -43,8 +43,11 @@ func generateIcon(size: CGFloat) -> NSImage {
     }
     let s = size
     let rect = CGRect(x: 0, y: 0, width: s, height: s)
-    let cornerRadius = s * 0.22
-    let path = CGPath(roundedRect: rect.insetBy(dx: s * 0.008, dy: s * 0.008),
+    // Match Apple's standard app-icon grid: squircle ~80% of canvas,
+    // corner radius ~22% of the squircle (see AppIconGenerator.swift).
+    let inset = s * 0.10
+    let cornerRadius = (s - inset * 2) * 0.22
+    let path = CGPath(roundedRect: rect.insetBy(dx: inset, dy: inset),
                       cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
     ctx.addPath(path)
     ctx.clip()

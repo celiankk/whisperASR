@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @Environment(AppState.self) private var appState
     @AppStorage("transcriptFontSize") private var transcriptFontSize = TranscriptFontSize.normal.rawValue
     @AppStorage("modelPath") private var modelPath = ""
     @AppStorage("targetLanguage") private var targetLanguage = ""
@@ -50,6 +51,25 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+            }
+
+            Section("字幕浮层") {
+                Toggle("显示实时字幕浮层", isOn: Binding(
+                    get: { appState.subtitleOverlayVisible },
+                    set: { appState.setSubtitleOverlayVisible($0) }
+                ))
+                Picker("字幕大小", selection: Binding(
+                    get: { appState.subtitleOverlayFontSize },
+                    set: { appState.setSubtitleOverlayFontSize($0) }
+                )) {
+                    ForEach(SubtitleOverlayFontSize.allCases, id: \.rawValue) { size in
+                        Text(size.label).tag(size.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Button("浮层回到默认位置") {
+                    appState.resetSubtitleOverlayPosition()
+                }
             }
 
             Section("翻译") {

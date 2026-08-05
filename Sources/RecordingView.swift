@@ -92,6 +92,15 @@ struct RecordingView: View {
                 }
 
                 Button {
+                    appState.setSubtitleOverlayVisible(!appState.subtitleOverlayVisible)
+                } label: {
+                    Image(systemName: appState.subtitleOverlayVisible ? "text.bubble.fill" : "text.bubble")
+                        .foregroundStyle(appState.subtitleOverlayVisible ? .blue : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(appState.subtitleOverlayVisible ? "隐藏字幕浮层" : "显示字幕浮层")
+
+                Button {
                     isAlwaysOnTop.toggle()
                     setWindowAlwaysOnTop(isAlwaysOnTop)
                 } label: {

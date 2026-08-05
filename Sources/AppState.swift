@@ -38,6 +38,14 @@ class AppState {
     private var liveTranslatedSealCount: [Int] = []
     private static let sealThreshold = 3
 
+    // Floating subtitle overlay (adapted from v2s): shows the live caption in a
+    // borderless always-on-top panel. The preference persists across launches;
+    // the panel itself appears while live transcription is running.
+    var subtitleOverlayVisible = UserDefaults.standard.bool(forKey: SubtitleOverlayKeys.visible)
+    var subtitleOverlayFontSize = UserDefaults.standard.string(forKey: SubtitleOverlayKeys.fontSize)
+        ?? SubtitleOverlayFontSize.normal.rawValue
+    private var subtitleOverlayController: SubtitleOverlayController?
+
     private let service = TranscriptionService()
     private var isTranscribing = false
     private var liveTranscriptionTask: Task<Void, Never>?
@@ -345,6 +353,7 @@ class AppState {
         translationAuthPaused = false
         liveTranslationPaused = false
         isLiveTranscribing = true
+        syncSubtitleOverlayVisibility()
 
         liveTranscriptionTask = Task { [weak self] in
             guard let self else { return }
@@ -557,6 +566,44 @@ class AppState {
         enableLiveTranslation = false
         liveTranslationPaused = false
         removeLiveRecoveryFile()
+        syncSubtitleOverlayVisibility()
+    }
+
+    // MARK: - Subtitle Overlay
+
+    /// Toggle the floating subtitle overlay. When live transcription isn't
+    /// running the preference is stored and the panel appears on the next session.
+    func setSubtitleOverlayVisible(_ visible: Bool) {
+        guard subtitleOverlayVisible != visible else { return }
+        subtitleOverlayVisible = visible
+        UserDefaults.standard.set(visible, forKey: SubtitleOverlayKeys.visible)
+        syncSubtitleOverlayVisibility()
+    }
+
+    func setSubtitleOverlayFontSize(_ rawValue: String) {
+        subtitleOverlayFontSize = rawValue
+        UserDefaults.standard.set(rawValue, forKey: SubtitleOverlayKeys.fontSize)
+    }
+
+    func resetSubtitleOverlayPosition() {
+        Task { @MainActor in
+            subtitleOverlayController?.resetPosition()
+        }
+    }
+
+    /// Show the panel only while live transcription is active; otherwise hide it.
+    /// Runs its UI work on the main actor since it touches AppKit windows.
+    private func syncSubtitleOverlayVisibility() {
+        let shouldShow = subtitleOverlayVisible && isLiveTranscribing
+        Task { @MainActor in
+            if shouldShow {
+                let controller = subtitleOverlayController ?? SubtitleOverlayController()
+                subtitleOverlayController = controller
+                controller.show(appState: self)
+            } else {
+                subtitleOverlayController?.hide()
+            }
+        }
     }
 
     /// Punctuation/whitespace whisper sprinkles at chunk edges; ignored when matching an overlap.

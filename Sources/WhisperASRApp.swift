@@ -33,6 +33,13 @@ struct WhisperASRApp: App {
                 }
         }
         .defaultSize(width: 1000, height: 650)
+        .commands {
+            CommandMenu("调试") {
+                Button("字幕浮层调试…") {
+                    openWindow(id: "debug-subtitle")
+                }
+            }
+        }
 
         Window("Select App to Record", id: "app-picker") {
             AppPickerView()
@@ -59,8 +66,16 @@ struct WhisperASRApp: App {
         }
         .defaultSize(width: 720, height: 820)
 
+        // Debug-only subtitle preview: manual text input → subtitle rendering.
+        // Remove with Sources/DebugSubtitleView.swift and the "调试" menu above.
+        Window("字幕浮层调试", id: "debug-subtitle") {
+            DebugSubtitleView()
+        }
+        .defaultSize(width: 540, height: 400)
+
         Settings {
             SettingsView()
+                .environment(appState)
         }
     }
 }

@@ -355,7 +355,8 @@ final class TranscriptionService: @unchecked Sendable {
     /// Check whether a usable model file exists at any known location.
     static func modelExists() -> Bool {
         if let files = try? FileManager.default.contentsOfDirectory(atPath: ModelCatalog.modelDirectory.path),
-           files.contains(where: { $0.hasSuffix(".bin") }) {
+           // whisper 模型是 .bin，Qwen3-ASR 等 GGUF 模型是 .gguf。
+           files.contains(where: { $0.hasSuffix(".bin") || $0.hasSuffix(".gguf") }) {
             return true
         }
         if ModelCatalog.all.contains(where: { $0.engine == .nemotron && ModelCatalog.isComplete($0) }) {

@@ -256,12 +256,6 @@ class AppState {
 
     func translateItem(_ item: TranscriptionItem, targetLanguage: String) {
         guard !item.segments.isEmpty, !item.isTranslating else { return }
-        if TranslationMode.current == .localModel {
-            Task { @MainActor in
-                self.showToast("本地翻译模型未安装：请先在设置中选择「在线 API」翻译方式。")
-            }
-            return
-        }
         item.isTranslating = true
         item.translatedSegments = Array(repeating: "", count: item.segments.count)
         item.translationLanguage = targetLanguage
@@ -287,7 +281,8 @@ class AppState {
                     let translations = try await TranslationService.translateSegmentsWithOpenAI(
                         segmentTexts: batch,
                         targetLanguage: targetLanguage,
-                        previousTranslations: contextPairs
+                        previousTranslations: contextPairs,
+                        local: TranslationMode.current == .localModel
                     )
                     for (offset, translation) in translations.enumerated() {
                         item.translatedSegments[batchStart + offset] = translation
@@ -295,7 +290,7 @@ class AppState {
                 } catch let err as TranslationError {
                     print("[Translation] batch error: \(err)")
                     switch err {
-                    case .authFailed, .invalidEndpoint, .unavailable:
+                    case .authFailed, .invalidEndpoint, .localModelNotDetected, .unavailable:
                         // Not retriable — stop hammering the API and report it once.
                         self.showToast(err.errorDescription ?? "Translation failed")
                         break batchLoop
@@ -825,15 +820,6 @@ class AppState {
     private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String, countsSeals: Bool) async {
         guard !Task.isCancelled else { return }
 
-        // 本地模型翻译尚未内置：给出明确提示，不发起在线请求。
-        if TranslationMode.current == .localModel {
-            await MainActor.run {
-                self.liveTranslationError = "本地翻译模型未安装：请先在设置中选择「在线 API」翻译方式。"
-                self.pendingTranslationSnapshot = nil
-            }
-            return
-        }
-
         // Exponential backoff on repeated failures (500ms, 1s, 2s, ..., capped at 30s).
         let failureCount = await MainActor.run { self.translationFailureCount }
         if failureCount > 0 {
@@ -888,7 +874,8 @@ class AppState {
         do {
             let newTranslations = try await TranslationService.translateSegmentsWithOpenAI(
                 segmentTexts: textsToTranslate, targetLanguage: targetLang,
-                previousTranslations: contextPairs)
+                previousTranslations: contextPairs,
+                local: TranslationMode.current == .localModel)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.liveTranslatedSegments = Array(existing.prefix(dirtyIndex)) + newTranslations
@@ -903,7 +890,7 @@ class AppState {
             print("[Translation] OpenAI error: \(err)")
             await MainActor.run {
                 switch err {
-                case .authFailed, .invalidEndpoint:
+                case .authFailed, .invalidEndpoint, .localModelNotDetected:
                     // Pause translation entirely — retrying only wastes quota.
                     self.translationAuthPaused = true
                     self.liveTranslationError = err.errorDescription

@@ -144,7 +144,7 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .localModel:
-                    Text("本地翻译模型尚未安装：请选择「在线 API」，或安装本地翻译模型后使用。")
+                    Text("使用本机运行的 OpenAI 兼容服务（LM Studio / Ollama / llama.cpp）。地址留空时自动探测；模型名称留空时自动识别。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .onlineAPI:
@@ -160,18 +160,19 @@ struct SettingsView: View {
                 }
             }
 
-            if TranslationMode(rawValue: translationModeRaw) ?? .off == .onlineAPI {
-                Section("在线 API 配置") {
+            if TranslationMode(rawValue: translationModeRaw) ?? .off != .off {
+                let mode = TranslationMode(rawValue: translationModeRaw) ?? .off
+                Section(mode == .localModel ? "本地模型配置" : "在线 API 配置") {
                     TextField("API Base URL", text: $translationEndpoint,
-                              prompt: Text("https://api.openai.com/v1"))
+                              prompt: Text(mode == .localModel ? "http://127.0.0.1:1234/v1" : "https://api.openai.com/v1"))
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: translationEndpoint) { _, _ in verifyResult = nil }
                     SecureField("API Key", text: $translationAPIKey,
-                                prompt: Text("sk-..."))
+                                prompt: Text(mode == .localModel ? "本地服务通常留空" : "sk-..."))
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: translationAPIKey) { _, _ in verifyResult = nil }
                     TextField("模型名称", text: $translationModel,
-                              prompt: Text("gpt-4o-mini"))
+                              prompt: Text(mode == .localModel ? "留空自动检测" : "gpt-4o-mini"))
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: translationModel) { _, _ in verifyResult = nil }
 
@@ -205,7 +206,9 @@ struct SettingsView: View {
                             .frame(width: 34, alignment: .trailing)
                     }
 
-                    Text("兼容 OpenAI API 格式（/v1/chat/completions）。示例模型：Qwen3、GPT-5-mini、DeepSeek、Claude。翻译请求异步执行，失败自动重试，不阻塞字幕显示。")
+                    Text(mode == .localModel
+                         ? "兼容 OpenAI 格式（/v1/chat/completions）。自动探测 127.0.0.1:1234（LM Studio）、11434（Ollama）、8080（llama.cpp/本应用 API 服务器）。"
+                         : "兼容 OpenAI API 格式（/v1/chat/completions）。示例模型：Qwen3、GPT-5-mini、DeepSeek、Claude。翻译请求异步执行，失败自动重试，不阻塞字幕显示。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -219,7 +222,10 @@ struct SettingsView: View {
                                 Text("检测 API 状态")
                             }
                         }
-                        .disabled(verifyInFlight || !TranslationService.isAPIConfigured)
+                        .disabled(
+                            verifyInFlight
+                                || (mode == .onlineAPI && !TranslationService.isAPIConfigured)
+                        )
 
                         switch verifyResult {
                         case .success(let msg):
@@ -439,7 +445,8 @@ struct SettingsView: View {
             do {
                 let translations = try await TranslationService.translateSegmentsWithOpenAI(
                     segmentTexts: ["Hello, world."],
-                    targetLanguage: lang
+                    targetLanguage: lang,
+                    local: TranslationMode(rawValue: translationModeRaw) ?? .off == .localModel
                 )
                 await MainActor.run {
                     verifyInFlight = false

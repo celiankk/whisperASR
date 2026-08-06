@@ -18,7 +18,12 @@ enum TranslationMode: String, CaseIterable, Codable {
 
     /// 当前保存的翻译方式。
     static var current: TranslationMode {
-        TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "") ?? .off
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "translationMode") == nil {
+            // 迁移旧设置：曾开启实时翻译的用户默认走在线 API，避免升级后翻译静默失效。
+            return defaults.bool(forKey: "liveTranslationPref") ? .onlineAPI : .off
+        }
+        return TranslationMode(rawValue: defaults.string(forKey: "translationMode") ?? "") ?? .off
     }
 }
 
@@ -59,6 +64,7 @@ enum TranslationError: LocalizedError {
     case serverError(Int, String)
     case transport(String)
     case parseError
+    case localModelNotDetected
     case unavailable
 
     // Worded generically ("API error", not "Translation API error") because the
@@ -72,6 +78,7 @@ enum TranslationError: LocalizedError {
         case .serverError(let code, let msg): return "API service error (HTTP \(code)): \(msg)"
         case .transport(let msg): return "Network error: \(msg)"
         case .parseError: return "Failed to parse the API response"
+        case .localModelNotDetected: return "无法从本地服务获取模型列表 — 请确认本地服务已加载模型，或在设置中填写模型名称"
         case .unavailable: return "Requires an OpenAI-compatible API — set the API key in Settings"
         }
     }
@@ -80,7 +87,7 @@ enum TranslationError: LocalizedError {
     var isRetriable: Bool {
         switch self {
         case .serverError, .transport: return true
-        case .invalidEndpoint, .apiFailed, .authFailed, .rateLimited, .parseError, .unavailable: return false
+        case .invalidEndpoint, .apiFailed, .authFailed, .rateLimited, .parseError, .localModelNotDetected, .unavailable: return false
         }
     }
 }
@@ -103,16 +110,104 @@ enum TranslationService {
         return !endpoint.isEmpty || !apiKey.isEmpty
     }
 
+    /// 本地模型服务候选（LM Studio / Ollama / llama.cpp 服务器 / 本应用 API 服务器）。
+    private static let localEndpointCandidates = [
+        "http://127.0.0.1:1234/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://127.0.0.1:8080/v1",
+    ]
+
+    /// 把用户填写的端点归一化为 OpenAI 兼容 base URL（确保带 `/v1` 前缀）。
+    /// 兼容以下写法，避免把请求发到缺失 `/v1` 的路径上（如 LM Studio 只服务
+    /// `/v1/chat/completions`，`/chat/completions` 会 404/返回非 OpenAI 格式）：
+    /// - "http://127.0.0.1:1234"                     -> "http://127.0.0.1:1234/v1"
+    /// - "http://127.0.0.1:1234/v1/"                 -> "http://127.0.0.1:1234/v1"
+    /// - "http://127.0.0.1:1234/v1/chat/completions" -> 原样返回
+    static func normalizedBaseURL(_ raw: String) -> String {
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        guard !trimmed.isEmpty,
+              var components = URLComponents(string: trimmed),
+              components.scheme != nil, components.host != nil else {
+            return trimmed
+        }
+        let path = components.path
+        // 已是完整 chat 端点时不再拼接。
+        if path.hasSuffix("/chat/completions") {
+            return trimmed
+        }
+        // 路径中还没有 v1 段时补上 OpenAI 兼容前缀。
+        if !path.split(separator: "/").contains("v1") {
+            components.path = "/v1" + path
+        }
+        return components.url?.absoluteString ?? trimmed
+    }
+
+    /// 本地模式：依次探测可用的 OpenAI 兼容服务，返回第一个可用的 base URL。
+    /// 用户配置了 translationEndpoint 时优先使用。
+    static func resolveLocalEndpoint() async -> String {
+        let configured = (UserDefaults.standard.string(forKey: ConfigKeys.endpoint) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configured.isEmpty {
+            return normalizedBaseURL(configured)
+        }
+        for candidate in localEndpointCandidates {
+            if await isLocalServerReachable(candidate) {
+                return candidate
+            }
+        }
+        return localEndpointCandidates[0]
+    }
+
+    /// 本地模式：从 /v1/models 取第一个模型 id；失败返回 nil（由调用方回退）。
+    static func fetchFirstLocalModel(baseURL: String) async -> String? {
+        let base = normalizedBaseURL(baseURL)
+        guard let url = URL(string: base.hasSuffix("/") ? base + "models" : base + "/models") else {
+            return nil
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["data"] as? [[String: Any]],
+              let first = models.first,
+              let id = first["id"] as? String, !id.isEmpty else {
+            return nil
+        }
+        return id
+    }
+
+    private static func isLocalServerReachable(_ base: String) async -> Bool {
+        let normalized = normalizedBaseURL(base)
+        guard let url = URL(string: normalized.hasSuffix("/") ? normalized + "models" : normalized + "/models") else {
+            return false
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        guard let (_, response) = try? await URLSession.shared.data(for: request) else {
+            return false
+        }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
     static func translateSegmentsWithOpenAI(
         segmentTexts: [String],
         targetLanguage: String,
-        previousTranslations: [(original: String, translated: String)] = []
+        previousTranslations: [(original: String, translated: String)] = [],
+        local: Bool = false
     ) async throws -> [String] {
         guard !segmentTexts.isEmpty else { return [] }
 
-        let endpoint = (UserDefaults.standard.string(forKey: ConfigKeys.endpoint) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredEndpoint = (UserDefaults.standard.string(forKey: ConfigKeys.endpoint) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // 本地模式：配置地址优先，否则自动探测本地服务；在线模式默认 OpenAI。
+        let endpoint = local
+            ? (configuredEndpoint.isEmpty ? await resolveLocalEndpoint() : configuredEndpoint)
+            : configuredEndpoint
         let apiKey = UserDefaults.standard.string(forKey: ConfigKeys.apiKey) ?? ""
-        let model = (UserDefaults.standard.string(forKey: ConfigKeys.model) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredModel = (UserDefaults.standard.string(forKey: ConfigKeys.model) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let timeout = max(5, UserDefaults.standard.double(forKey: ConfigKeys.timeout) == 0
                           ? 30 : UserDefaults.standard.double(forKey: ConfigKeys.timeout))
         let maxContextTokens = max(256, UserDefaults.standard.integer(forKey: ConfigKeys.maxContext) == 0
@@ -120,12 +215,25 @@ enum TranslationService {
         let temperature = max(0, min(2, UserDefaults.standard.double(forKey: ConfigKeys.temperature) == 0
                                      ? 0.3 : UserDefaults.standard.double(forKey: ConfigKeys.temperature)))
 
-        var baseURL = endpoint.isEmpty ? "https://api.openai.com/v1" : endpoint
+        var baseURL = endpoint.isEmpty
+            ? (local ? "http://127.0.0.1:1234/v1" : "https://api.openai.com/v1")
+            : normalizedBaseURL(endpoint)
+        // 本地模式且未配置模型名：自动取服务第一个模型。
+        var effectiveModel = configuredModel
+        if local, effectiveModel.isEmpty {
+            if let detected = await fetchFirstLocalModel(baseURL: baseURL) {
+                effectiveModel = detected
+            } else {
+                throw TranslationError.localModelNotDetected
+            }
+        }
+        if effectiveModel.isEmpty {
+            effectiveModel = "gpt-4o-mini"
+        }
         if !baseURL.hasSuffix("/chat/completions") {
             if !baseURL.hasSuffix("/") { baseURL += "/" }
             baseURL += "chat/completions"
         }
-        let effectiveModel = model.isEmpty ? "gpt-4o-mini" : model
 
         guard let url = URL(string: baseURL) else {
             throw TranslationError.invalidEndpoint
@@ -152,7 +260,10 @@ enum TranslationService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // 本地服务通常不需要密钥；空密钥时不发送 Authorization 头。
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         request.timeoutInterval = timeout
 
         // 按最大上下文长度（tokens ≈ 4 字符/token）截断输入，防止超长请求。

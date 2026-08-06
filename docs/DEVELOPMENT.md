@@ -31,9 +31,11 @@ ScreenCaptureKit 屏幕音频捕获，FlyingFox 本地 HTTP 服务。
 
 ### 行为
 
-- 录制且开启浮层时，显示在屏幕底部居中的置顶无边框窗口
+- 开启浮层后立即显示（无需录制）：屏幕**顶部居中**的置顶无边框字幕条
+- 无实时内容时显示欢迎语「欢迎使用，顶部字幕条已经准备好了。」
 - `statusBar` 层级 + `fullScreenAuxiliary`，可盖在全屏窗口上；非激活面板，不抢焦点
-- 显示内容：当前实时字幕（原文）+ 翻译（开启实时翻译时）+ 最近 2 条历史（淡出）
+- 显示内容：当前实时字幕（原文）+ 翻译（开启实时翻译时）
+- 历史文本不参与动画；只有**新出现**的字/词播放入场动画
 - 可拖动、右上角关闭、位置自动记忆；面板高度随内容自适应
 - 背景黑色 0.32、白色描边 0.08、圆角遵循 Apple 规范
 
@@ -42,7 +44,9 @@ ScreenCaptureKit 屏幕音频捕获，FlyingFox 本地 HTTP 服务。
 | Key | 说明 |
 |---|---|
 | `subtitleOverlayVisible` | 浮层开关（持久化） |
-| `subtitleOverlayFontSize` | 字号：small / normal / large |
+| `subtitleOverlaySourceFontSize` | 原文字号（pt，滑杆 14–40） |
+| `subtitleOverlayTranslationFontSize` | 翻译字号（pt，滑杆 12–32） |
+| `subtitleOverlayBorderOpacity` | 边框透明度（0–0.3，滑杆 0–30%） |
 | `subtitleOverlayFrame` | 面板位置与尺寸 |
 
 ### 圆角规范
@@ -56,8 +60,12 @@ Apple 标准窗口圆角：macOS 11–15 为 10pt，macOS 26+（Tahoe）为 26pt
 
 - 每个词（中文无空格时按字）从 `blur(10px) + opacity 0 + y -50` 入场
 - 两段关键帧：`blur 10→5→0`、`opacity 0→0.5→1`、`y -50→5→0`
-- 每段时长 `stepDuration = 0.35s`（共 0.7s），段间错峰 `delay = 索引 × 0.2s`
+- 每段时长 `stepDuration = 0.25s`（共 0.5s），段间错峰 `delay = 索引 × 0.12s`
+- **增量动画**：组件记录上一段文本，与当前文本做公共前缀对比，
+  已显示的字保持静止，只对新追加的字/词播放入场动画
 - 换行使用自实现 `SubtitleFlowLayout`（居中、可换行）
+- 间距遵循 Apple 规范：词间距 = 字体的空格宽度，中文逐字间距 = 0（字形紧排），
+  行高 = 字体 `lineHeight`（行间距 0 附加）
 
 实现要点：
 
@@ -70,7 +78,8 @@ Apple 标准窗口圆角：macOS 11–15 为 10pt，macOS 26+（Tahoe）为 26pt
 无需屏幕录制权限即可预览字幕效果：
 
 - 入口：菜单栏 **调试 → 字幕浮层调试…**
-- 输入文字 → 窗口内实时预览逐字动画；勾选「以浮层显示」→ 显示置顶悬浮层
+- 输入原文（可选翻译文本）→ 窗口内实时预览逐字动画（译文在上、原文在下）；
+  勾选「以浮层显示」→ 显示置顶悬浮层
 - 完全独立：不依赖 `AppState`、录制管线或正式浮层
 
 删除方式：

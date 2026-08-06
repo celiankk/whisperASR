@@ -42,9 +42,18 @@ class AppState {
     // borderless always-on-top panel. The preference persists across launches;
     // the panel itself appears while live transcription is running.
     var subtitleOverlayVisible = UserDefaults.standard.bool(forKey: SubtitleOverlayKeys.visible)
-    var subtitleOverlayFontSize = UserDefaults.standard.string(forKey: SubtitleOverlayKeys.fontSize)
-        ?? SubtitleOverlayFontSize.normal.rawValue
+    var subtitleOverlaySourceFontSize = AppState.storedDouble(SubtitleOverlayKeys.sourceFontSize, default: 26)
+    var subtitleOverlayTranslationFontSize = AppState.storedDouble(SubtitleOverlayKeys.translationFontSize, default: 19)
+    var subtitleOverlayBorderOpacity = AppState.storedDouble(SubtitleOverlayKeys.borderOpacity, default: 0.08)
     private var subtitleOverlayController: SubtitleOverlayController?
+
+    /// Read a Double from UserDefaults, falling back when the key is absent.
+    private static func storedDouble(_ key: String, default defaultValue: Double) -> Double {
+        if let number = UserDefaults.standard.object(forKey: key) as? NSNumber {
+            return number.doubleValue
+        }
+        return defaultValue
+    }
 
     private let service = TranscriptionService()
     private var isTranscribing = false
@@ -580,9 +589,19 @@ class AppState {
         syncSubtitleOverlayVisibility()
     }
 
-    func setSubtitleOverlayFontSize(_ rawValue: String) {
-        subtitleOverlayFontSize = rawValue
-        UserDefaults.standard.set(rawValue, forKey: SubtitleOverlayKeys.fontSize)
+    func setSubtitleOverlaySourceFontSize(_ value: Double) {
+        subtitleOverlaySourceFontSize = value
+        UserDefaults.standard.set(value, forKey: SubtitleOverlayKeys.sourceFontSize)
+    }
+
+    func setSubtitleOverlayTranslationFontSize(_ value: Double) {
+        subtitleOverlayTranslationFontSize = value
+        UserDefaults.standard.set(value, forKey: SubtitleOverlayKeys.translationFontSize)
+    }
+
+    func setSubtitleOverlayBorderOpacity(_ value: Double) {
+        subtitleOverlayBorderOpacity = value
+        UserDefaults.standard.set(value, forKey: SubtitleOverlayKeys.borderOpacity)
     }
 
     func resetSubtitleOverlayPosition() {
@@ -591,10 +610,11 @@ class AppState {
         }
     }
 
-    /// Show the panel only while live transcription is active; otherwise hide it.
+    /// Show the panel whenever the feature is enabled (even before recording,
+    /// so the top subtitle bar displays its welcome message right away).
     /// Runs its UI work on the main actor since it touches AppKit windows.
     private func syncSubtitleOverlayVisibility() {
-        let shouldShow = subtitleOverlayVisible && isLiveTranscribing
+        let shouldShow = subtitleOverlayVisible
         Task { @MainActor in
             if shouldShow {
                 let controller = subtitleOverlayController ?? SubtitleOverlayController()

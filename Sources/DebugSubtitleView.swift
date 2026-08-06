@@ -25,6 +25,7 @@ private enum DebugSubtitleMetrics {
 
 private final class DebugSubtitleModel: ObservableObject {
     @Published var text = ""
+    @Published var translation = ""
 }
 
 /// Borderless, non-activating floating panel that mirrors the typed text
@@ -40,16 +41,18 @@ private final class DebugSubtitleFloatingPanel: NSObject {
         super.init()
     }
 
-    func show(text: String) {
+    func show(text: String, translation: String) {
         model.text = text
+        model.translation = translation
         if panel == nil {
             createPanel()
         }
         panel?.orderFrontRegardless()
     }
 
-    func update(text: String) {
+    func update(text: String, translation: String) {
         model.text = text
+        model.translation = translation
     }
 
     func hide() {
@@ -93,6 +96,15 @@ private struct DebugFloatingSubtitleView: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if !model.translation.isEmpty {
+                SubtitleBlurText(
+                    text: model.translation,
+                    fontSize: 19,
+                    fontWeight: .semibold,
+                    foregroundStyle: .white.opacity(1.0)
+                )
+                .frame(maxWidth: .infinity)
+            }
             if !model.text.isEmpty {
                 SubtitleBlurText(
                     text: model.text,
@@ -100,9 +112,7 @@ private struct DebugFloatingSubtitleView: View {
                     fontWeight: .semibold,
                     foregroundStyle: .white.opacity(0.82)
                 )
-                    .id(model.text)
-                    .frame(maxWidth: .infinity)
-                    .transition(.opacity)
+                .frame(maxWidth: .infinity)
             } else {
                 Text("…")
                     .font(.system(size: 20))
@@ -133,6 +143,7 @@ struct DebugSubtitleView: View {
     )
 
     @State private var text = ""
+    @State private var translation = ""
     @State private var showFloating = false
 
     var body: some View {
@@ -142,14 +153,20 @@ struct DebugSubtitleView: View {
 
             TextField("输入字幕文本…", text: $text)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: text) { _, newValue in
-                    updateFloating(newValue)
+                .onChange(of: text) { _, _ in
+                    updateFloating()
+                }
+
+            TextField("翻译文本（可选）…", text: $translation)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: translation) { _, _ in
+                    updateFloating()
                 }
 
             Toggle("以浮层显示（置顶，可拖动）", isOn: $showFloating)
                 .onChange(of: showFloating) { _, isOn in
                     if isOn {
-                        DebugSubtitleFloatingPanel.shared.show(text: text)
+                        DebugSubtitleFloatingPanel.shared.show(text: text, translation: translation)
                     } else {
                         DebugSubtitleFloatingPanel.shared.hide()
                     }
@@ -157,21 +174,30 @@ struct DebugSubtitleView: View {
 
             Divider()
 
-            subtitlePreview(text: text)
+            subtitlePreview(text: text, translation: translation)
                 .frame(maxWidth: .infinity, minHeight: 140)
         }
         .padding(20)
         .frame(width: 540, height: 400)
     }
 
-    private func updateFloating(_ newText: String) {
+    private func updateFloating() {
         if showFloating {
-            DebugSubtitleFloatingPanel.shared.update(text: newText)
+            DebugSubtitleFloatingPanel.shared.update(text: text, translation: translation)
         }
     }
 
-    private func subtitlePreview(text: String) -> some View {
+    private func subtitlePreview(text: String, translation: String) -> some View {
         VStack(alignment: .center, spacing: 8) {
+            if !translation.isEmpty {
+                SubtitleBlurText(
+                    text: translation,
+                    fontSize: 19,
+                    fontWeight: .semibold,
+                    foregroundStyle: .white.opacity(1.0)
+                )
+                .frame(maxWidth: .infinity)
+            }
             if !text.isEmpty {
                 SubtitleBlurText(
                     text: text,
@@ -179,10 +205,8 @@ struct DebugSubtitleView: View {
                     fontWeight: .semibold,
                     foregroundStyle: .white.opacity(0.82)
                 )
-                    .id(text)
-                    .frame(maxWidth: .infinity)
-                    .transition(.opacity)
-            } else {
+                .frame(maxWidth: .infinity)
+            } else if translation.isEmpty {
                 Text("在此输入文字，上方预览字幕样式")
                     .font(.system(size: 14))
                     .foregroundStyle(.white.opacity(0.5))

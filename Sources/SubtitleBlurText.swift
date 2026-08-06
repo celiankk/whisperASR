@@ -14,10 +14,15 @@ struct SubtitleBlurText: View {
     var fontWeight: Font.Weight = .semibold
     var foregroundStyle: Color = .white
     /// Per-segment stagger delay (ms) — BlurText's `delay`.
-    var staggerDelay: Double = 0.20
+    var staggerDelay: Double = 0.12
     /// Per keyframe-step duration — BlurText's `stepDuration`.
-    var stepDuration: Double = 0.35
+    var stepDuration: Double = 0.25
     var direction: Direction = .top
+
+    /// Diff state kept OUTSIDE the observation system on purpose: mutating it
+    /// must not trigger a re-render, otherwise the freshly inserted animated
+    /// segments would be swapped for static ones before the keyframes play.
+    @State private var diff = SubtitleDiff()
 
     enum Direction {
         case top, bottom
@@ -25,29 +30,106 @@ struct SubtitleBlurText: View {
 
     /// Words when the text contains spaces, otherwise individual characters
     /// (Chinese/Japanese subtitles have no spaces).
+    private var usesWords: Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).contains(" ")
+    }
+
     private var segments: [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
-        if trimmed.contains(" ") {
+        if usesWords {
             return trimmed.split(separator: " ").map(String.init)
         }
         return trimmed.map(String.init)
     }
 
+    /// Apple-spec spacing: gaps match the font's own metrics — words separated
+    /// by the natural space width, CJK glyphs by 0 (glyph-to-glyph), and lines
+    /// packed at the font's line height.
+    private var spacingMetrics: (wordSpacing: CGFloat, lineHeight: CGFloat) {
+        let font = NSFont.systemFont(ofSize: fontSize, weight: nsFontWeight(fontWeight))
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        let lineHeight = font.ascender - font.descender + font.leading
+        return (
+            wordSpacing: usesWords ? spaceWidth : 0,
+            lineHeight: lineHeight
+        )
+    }
+
     var body: some View {
-        SubtitleFlowLayout(horizontalSpacing: 5, lineSpacing: 6) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-                BlurSegmentView(
-                    segment: segment,
-                    delay: Double(index) * staggerDelay,
-                    stepDuration: stepDuration,
-                    direction: direction,
-                    fontSize: fontSize,
-                    fontWeight: fontWeight,
-                    foregroundStyle: foregroundStyle
-                )
+        let metrics = spacingMetrics
+        let current = segments
+        let commonPrefixCount = updatedPrefix(current: current)
+
+        SubtitleFlowLayout(horizontalSpacing: metrics.wordSpacing, lineSpacing: 0) {
+            ForEach(Array(current.enumerated()), id: \.offset) { index, segment in
+                if index < commonPrefixCount {
+                    StaticSegmentView(
+                        segment: segment,
+                        fontSize: fontSize,
+                        fontWeight: fontWeight,
+                        foregroundStyle: foregroundStyle
+                    )
+                } else {
+                    BlurSegmentView(
+                        segment: segment,
+                        delay: Double(index - commonPrefixCount) * staggerDelay,
+                        stepDuration: stepDuration,
+                        direction: direction,
+                        fontSize: fontSize,
+                        fontWeight: fontWeight,
+                        foregroundStyle: foregroundStyle
+                    )
+                }
             }
         }
+    }
+
+    /// Classify animated vs static once per text value; later re-renders with
+    /// the same text keep the same classification so in-flight entrance
+    /// animations are never cancelled.
+    private func updatedPrefix(current: [String]) -> Int {
+        if diff.lastText != text {
+            diff.prefix = Self.commonPrefixCount(diff.segments, current)
+            diff.lastText = text
+            diff.segments = current
+        }
+        return diff.prefix
+    }
+
+    /// Number of leading segments that were already displayed and should stay
+    /// static instead of replaying the entrance animation.
+    private static func commonPrefixCount(_ previous: [String], _ current: [String]) -> Int {
+        var count = 0
+        while count < previous.count, count < current.count, previous[count] == current[count] {
+            count += 1
+        }
+        return count
+    }
+}
+
+/// Non-observable box holding the last text and its diff classification.
+private final class SubtitleDiff {
+    var lastText = ""
+    var segments: [String] = []
+    var prefix = 0
+}
+
+// MARK: - Static segment (already displayed, no entrance animation)
+
+private struct StaticSegmentView: View {
+    let segment: String
+    let fontSize: CGFloat
+    let fontWeight: Font.Weight
+    let foregroundStyle: Color
+
+    var body: some View {
+        let size = subtitleSegmentSize(segment: segment, fontSize: fontSize, fontWeight: fontWeight)
+        Text(segment)
+            .font(.system(size: fontSize, weight: fontWeight))
+            .foregroundStyle(foregroundStyle)
+            .fixedSize()
+            .frame(width: size.width, height: size.height, alignment: .center)
     }
 }
 
@@ -63,16 +145,6 @@ private struct BlurSegmentView: View {
     let foregroundStyle: Color
 
     @State private var animate = false
-
-    /// Exact rendered size of the segment, measured with AppKit so the flow
-    /// layout always sees stable, finite dimensions (animated views can report
-    /// unreliable intrinsic sizes, which previously stacked every word/character
-    /// vertically instead of flowing horizontally).
-    private var segmentSize: CGSize {
-        let font = NSFont.systemFont(ofSize: fontSize, weight: nsFontWeight(fontWeight))
-        let size = (segment as NSString).size(withAttributes: [.font: font])
-        return CGSize(width: ceil(size.width) + 2, height: ceil(size.height) + 2)
-    }
 
     private struct BlurState {
         var blur: CGFloat = 10
@@ -106,7 +178,11 @@ private struct BlurSegmentView: View {
                 CubicKeyframe(0, duration: stepDuration)
             }
         }
-        .frame(width: segmentSize.width, height: segmentSize.height, alignment: .center)
+        .frame(
+            width: subtitleSegmentSize(segment: segment, fontSize: fontSize, fontWeight: fontWeight).width,
+            height: subtitleSegmentSize(segment: segment, fontSize: fontSize, fontWeight: fontWeight).height,
+            alignment: .center
+        )
         .onAppear {
             guard delay > 0 else {
                 animate = true
@@ -119,6 +195,16 @@ private struct BlurSegmentView: View {
             }
         }
     }
+}
+
+/// Exact rendered size of a segment, measured with AppKit so the flow layout
+/// always sees stable, finite dimensions (animated views can report unreliable
+/// intrinsic sizes, which previously stacked every word/character vertically).
+private func subtitleSegmentSize(segment: String, fontSize: CGFloat, fontWeight: Font.Weight) -> CGSize {
+    let font = NSFont.systemFont(ofSize: fontSize, weight: nsFontWeight(fontWeight))
+    let size = (segment as NSString).size(withAttributes: [.font: font])
+    let lineHeight = font.ascender - font.descender + font.leading
+    return CGSize(width: ceil(size.width) + 1, height: ceil(lineHeight))
 }
 
 private func nsFontWeight(_ weight: Font.Weight) -> NSFont.Weight {

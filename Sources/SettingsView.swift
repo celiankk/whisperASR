@@ -58,15 +58,54 @@ struct SettingsView: View {
                     get: { appState.subtitleOverlayVisible },
                     set: { appState.setSubtitleOverlayVisible($0) }
                 ))
-                Picker("字幕大小", selection: Binding(
-                    get: { appState.subtitleOverlayFontSize },
-                    set: { appState.setSubtitleOverlayFontSize($0) }
-                )) {
-                    ForEach(SubtitleOverlayFontSize.allCases, id: \.rawValue) { size in
-                        Text(size.label).tag(size.rawValue)
-                    }
+                HStack {
+                    Text("原文字号")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleOverlaySourceFontSize },
+                            set: { appState.setSubtitleOverlaySourceFontSize($0) }
+                        ),
+                        in: 14...40
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleOverlaySourceFontSize))")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, alignment: .trailing)
                 }
-                .pickerStyle(.segmented)
+                HStack {
+                    Text("翻译字号")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleOverlayTranslationFontSize },
+                            set: { appState.setSubtitleOverlayTranslationFontSize($0) }
+                        ),
+                        in: 12...32
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleOverlayTranslationFontSize))")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, alignment: .trailing)
+                }
+                HStack {
+                    Text("边框透明度")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleOverlayBorderOpacity },
+                            set: { appState.setSubtitleOverlayBorderOpacity($0) }
+                        ),
+                        in: 0...0.3
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleOverlayBorderOpacity * 100))%")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
                 Button("浮层回到默认位置") {
                     appState.resetSubtitleOverlayPosition()
                 }

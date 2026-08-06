@@ -6,8 +6,6 @@ struct RecordingView: View {
     @Environment(AudioRecorder.self) var recorder
     @Environment(\.dismiss) var dismiss
     @State private var shouldAutoScroll = true
-    @State private var isAlwaysOnTop = false
-    @State private var translationOnly = false
     @AppStorage("transcriptFontSize") private var transcriptFontSizeRaw = TranscriptFontSize.normal.rawValue
     private var fontSize: TranscriptFontSize { TranscriptFontSize(rawValue: transcriptFontSizeRaw) ?? .normal }
 
@@ -41,96 +39,28 @@ struct RecordingView: View {
                 liveTranscriptView
                 Divider()
             }
-
-            // Bottom bar: indicator + action buttons + window controls
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 8, height: 8)
-                        .shadow(color: .red.opacity(0.6), radius: 4)
-                        .modifier(PulsingModifier())
-                    Text(formatDuration(recorder.recordingDuration))
-                        .font(.system(size: 13, weight: .light, design: .monospaced))
-                }
-
-                Spacer()
-
-                Button("取消") {
-                    appState.stopLiveTranscription()
-                    recorder.cancelRecording()
-                    dismiss()
-                }
-
-                Button("结束录制") {
-                    stopAndDismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-
-                Divider()
-                    .frame(height: 16)
-
-                if appState.enableLiveTranslation {
-                    Button {
-                        appState.setLiveTranslationPaused(!appState.liveTranslationPaused)
-                    } label: {
-                        Image(systemName: appState.liveTranslationPaused ? "character.bubble" : "character.bubble.fill")
-                            .foregroundStyle(appState.liveTranslationPaused ? Color.secondary : Color.blue)
-                    }
-                    .buttonStyle(.plain)
-                    .help(appState.liveTranslationPaused ? "继续翻译" : "暂停翻译（例如：说话人切换到你的语言）")
-
-                    Button {
-                        translationOnly.toggle()
-                    } label: {
-                        Image(systemName: translationOnly ? "eye.fill" : "eye")
-                            .foregroundStyle(translationOnly ? .blue : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(translationOnly ? "显示原文和翻译" : "仅显示翻译")
-                }
-
-                Button {
-                    appState.setSubtitleOverlayVisible(!appState.subtitleOverlayVisible)
-                } label: {
-                    Image(systemName: appState.subtitleOverlayVisible ? "text.bubble.fill" : "text.bubble")
-                        .foregroundStyle(appState.subtitleOverlayVisible ? .blue : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help(appState.subtitleOverlayVisible ? "隐藏字幕浮层" : "显示字幕浮层")
-
-                Button {
-                    isAlwaysOnTop.toggle()
-                    setWindowAlwaysOnTop(isAlwaysOnTop)
-                } label: {
-                    Image(systemName: isAlwaysOnTop ? "pin.fill" : "pin")
-                        .foregroundStyle(isAlwaysOnTop ? .orange : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help(isAlwaysOnTop ? "取消窗口置顶" : "保持在所有窗口顶部")
-
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            // 一体化字幕浮层：录制开始时展示（字幕 + 工具栏 + 录制控制）。
+            // 结束/取消录制后通过 onMinimize 收起录制窗口，浮层保持展示。
+            FloatingLetterOverlayHost.shared.present(
+                appState: appState,
+                recorder: recorder
+            ) {
+                dismiss()
+            }
             if appState.enableLiveTranscription, !appState.isLiveTranscribing {
                 appState.startLiveTranscription(recorder: recorder)
             }
             if recorder.pinWindow {
                 recorder.pinWindow = false
-                isAlwaysOnTop = true
-                setWindowAlwaysOnTop(true)
+                appState.setRecordingAlwaysOnTop(true)
             }
+        }
+        .onDisappear {
+            // 录制窗口关闭 → 一体化浮层随之隐藏（启停由录制流程驱动）。
+            FloatingLetterOverlayHost.shared.dismiss()
         }
     }
 
@@ -165,7 +95,7 @@ struct RecordingView: View {
                                 translation: index < appState.liveTranslatedSegments.count
                                     ? appState.liveTranslatedSegments[index] : "",
                                 fontSize: fontSize,
-                                translationOnly: translationOnly
+                                translationOnly: appState.liveTranslationOnly
                             )
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
@@ -242,25 +172,6 @@ struct RecordingView: View {
             guard shouldAutoScroll else { return }
             proxy.scrollTo("bottomAnchor", anchor: .bottom)
         }
-    }
-
-    private func stopAndDismiss() {
-        Task {
-            await appState.finishRecording(recorder: recorder)
-            dismiss()
-        }
-    }
-
-    private func setWindowAlwaysOnTop(_ alwaysOnTop: Bool) {
-        NSApplication.shared.windows
-            .first { $0.title == "Recording" }?
-            .level = alwaysOnTop ? .floating : .normal
-    }
-
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let minutes = Int(duration) / 60
-        let seconds = Int(duration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
     }
 
 }

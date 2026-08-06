@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Observation
 
 @Observable
@@ -38,14 +39,24 @@ class AppState {
     private var liveTranslatedSealCount: [Int] = []
     private static let sealThreshold = 3
 
-    // Floating subtitle overlay (adapted from v2s): shows the live caption in a
-    // borderless always-on-top panel. The preference persists across launches;
-    // the panel itself appears while live transcription is running.
-    var subtitleOverlayVisible = UserDefaults.standard.bool(forKey: SubtitleOverlayKeys.visible)
+    // 一体化字幕浮层（newdme.md）：字幕 + 工具栏 + 录制控制同在一个长条浮层。
+    // 浮层启停由录制流程驱动（点击“开始录制”自动显示），这里只保留样式偏好，
+    // 不再有“显示/隐藏”开关（调试菜单仅用于样式预览，不控制浮层启停）。
+    private enum SubtitleOverlayKeys {
+        static let sourceFontSize = "subtitleOverlaySourceFontSize"
+        static let translationFontSize = "subtitleOverlayTranslationFontSize"
+        static let borderOpacity = "subtitleOverlayBorderOpacity"
+    }
+
     var subtitleOverlaySourceFontSize = AppState.storedDouble(SubtitleOverlayKeys.sourceFontSize, default: 26)
     var subtitleOverlayTranslationFontSize = AppState.storedDouble(SubtitleOverlayKeys.translationFontSize, default: 19)
     var subtitleOverlayBorderOpacity = AppState.storedDouble(SubtitleOverlayKeys.borderOpacity, default: 0.08)
-    private var subtitleOverlayController: SubtitleOverlayController?
+    /// Allow the floating overlay to auto-hide when the mouse stays outside it.
+    var floatingOverlayAutoHide = UserDefaults.standard.bool(forKey: "floatingOverlayAutoHide")
+    /// Live transcript display mode (only translation vs original + translation).
+    var liveTranslationOnly = false
+    /// Keep the recording window floating above other apps.
+    var recordingAlwaysOnTop = false
 
     /// Read a Double from UserDefaults, falling back when the key is absent.
     private static func storedDouble(_ key: String, default defaultValue: Double) -> Double {
@@ -362,7 +373,6 @@ class AppState {
         translationAuthPaused = false
         liveTranslationPaused = false
         isLiveTranscribing = true
-        syncSubtitleOverlayVisibility()
 
         liveTranscriptionTask = Task { [weak self] in
             guard let self else { return }
@@ -575,19 +585,9 @@ class AppState {
         enableLiveTranslation = false
         liveTranslationPaused = false
         removeLiveRecoveryFile()
-        syncSubtitleOverlayVisibility()
     }
 
-    // MARK: - Subtitle Overlay
-
-    /// Toggle the floating subtitle overlay. When live transcription isn't
-    /// running the preference is stored and the panel appears on the next session.
-    func setSubtitleOverlayVisible(_ visible: Bool) {
-        guard subtitleOverlayVisible != visible else { return }
-        subtitleOverlayVisible = visible
-        UserDefaults.standard.set(visible, forKey: SubtitleOverlayKeys.visible)
-        syncSubtitleOverlayVisibility()
-    }
+    // MARK: - Floating Letter Overlay
 
     func setSubtitleOverlaySourceFontSize(_ value: Double) {
         subtitleOverlaySourceFontSize = value
@@ -604,25 +604,25 @@ class AppState {
         UserDefaults.standard.set(value, forKey: SubtitleOverlayKeys.borderOpacity)
     }
 
-    func resetSubtitleOverlayPosition() {
-        Task { @MainActor in
-            subtitleOverlayController?.resetPosition()
-        }
+    func setFloatingOverlayAutoHide(_ enabled: Bool) {
+        floatingOverlayAutoHide = enabled
+        UserDefaults.standard.set(enabled, forKey: "floatingOverlayAutoHide")
     }
 
-    /// Show the panel whenever the feature is enabled (even before recording,
-    /// so the top subtitle bar displays its welcome message right away).
-    /// Runs its UI work on the main actor since it touches AppKit windows.
-    private func syncSubtitleOverlayVisibility() {
-        let shouldShow = subtitleOverlayVisible
+    func setLiveTranslationOnly(_ onlyTranslation: Bool) {
+        liveTranslationOnly = onlyTranslation
+    }
+
+    func setRecordingAlwaysOnTop(_ alwaysOnTop: Bool) {
+        recordingAlwaysOnTop = alwaysOnTop
+        NSApplication.shared.windows
+            .first { $0.title == "Recording" }?
+            .level = alwaysOnTop ? .floating : .normal
+    }
+
+    func resetFloatingOverlayPosition() {
         Task { @MainActor in
-            if shouldShow {
-                let controller = subtitleOverlayController ?? SubtitleOverlayController()
-                subtitleOverlayController = controller
-                controller.show(appState: self)
-            } else {
-                subtitleOverlayController?.hide()
-            }
+            FloatingLetterOverlayController.shared.resetPosition()
         }
     }
 

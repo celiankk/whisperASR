@@ -8,7 +8,7 @@ import SwiftUI
 // recording or live transcription needed.
 //
 // This feature is intentionally isolated:
-//   * It does not touch AppState, the recording pipeline, or SubtitleOverlay.
+//   * It does not touch AppState, the recording pipeline, or the floating overlay.
 //   * To remove it: delete this file and the "debug-subtitle" Window scene +
 //     "调试" CommandMenu in WhisperASRApp.swift.
 

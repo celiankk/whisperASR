@@ -54,9 +54,11 @@ struct SettingsView: View {
             }
 
             Section("字幕浮层") {
-                Toggle("显示实时字幕浮层", isOn: Binding(
-                    get: { appState.subtitleOverlayVisible },
-                    set: { appState.setSubtitleOverlayVisible($0) }
+                // 浮层启停由录制流程驱动（点击“开始录制”自动显示），
+                // 这里只保留样式与交互偏好，不再提供显隐开关。
+                Toggle("5 秒未点击自动隐藏控件", isOn: Binding(
+                    get: { appState.floatingOverlayAutoHide },
+                    set: { appState.setFloatingOverlayAutoHide($0) }
                 ))
                 HStack {
                     Text("原文字号")
@@ -107,7 +109,7 @@ struct SettingsView: View {
                         .frame(width: 40, alignment: .trailing)
                 }
                 Button("浮层回到默认位置") {
-                    appState.resetSubtitleOverlayPosition()
+                    appState.resetFloatingOverlayPosition()
                 }
             }
 

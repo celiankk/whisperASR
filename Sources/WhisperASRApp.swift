@@ -35,9 +35,15 @@ struct WhisperASRApp: App {
         .defaultSize(width: 1000, height: 650)
         .commands {
             CommandMenu("调试") {
-                Button("字幕浮层调试…") {
+                // 仅用于预览字幕浮层样式，不控制浮层启停。
+                Button("字幕浮层样式预览…") {
                     openWindow(id: "debug-subtitle")
                 }
+#if DEBUG
+                Button("浮层内存自检") {
+                    FloatingLetterLeakTest.runAfterLaunch(appDelegate: appDelegate)
+                }
+#endif
             }
         }
 
@@ -95,6 +101,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.dockTile.display()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+#if DEBUG
+        // 一体化浮层内存自检：命令行带 --overlay-leak-test 启动即自动执行。
+        if CommandLine.arguments.contains("--overlay-leak-test") {
+            FloatingLetterLeakTest.runAfterLaunch(appDelegate: self)
+        }
+        // 旧浮层替换自检：命令行带 --overlay-replace-test 启动即自动执行。
+        if CommandLine.arguments.contains("--overlay-replace-test") {
+            FloatingLetterLeakTest.runReplaceTest(appDelegate: self)
+        }
+#endif
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

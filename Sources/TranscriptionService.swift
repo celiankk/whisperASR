@@ -49,6 +49,11 @@ final class TranscriptionService: @unchecked Sendable {
            catalogModel.engine == .qwen3asr {
             return .qwen3asr(path: path)
         }
+        // 自定义路径/非标准文件名：读取 GGUF 头部 general.architecture 判定。
+        if let arch = GGUFInspector.architecture(atPath: path)?.lowercased(),
+           arch.contains("qwen3_asr") || arch.contains("qwen3-asr") {
+            return .qwen3asr(path: path)
+        }
         return .whisper(path: path)
     }
 
@@ -443,6 +448,13 @@ final class TranscriptionService: @unchecked Sendable {
     }
 
     private func resolveModelPath() -> String {
+        // 自定义模型路径优先（用户在“自定义模型”中上传/填写的文件立即生效）。
+        if let custom = UserDefaults.standard.string(forKey: "modelPath"),
+           !custom.isEmpty,
+           FileManager.default.fileExists(atPath: custom) {
+            return custom
+        }
+
         // Explicitly selected downloaded model (set via Settings or the toolbar picker)
         if let selected = UserDefaults.standard.string(forKey: "selectedModelFile"),
            !selected.isEmpty {
@@ -450,12 +462,6 @@ final class TranscriptionService: @unchecked Sendable {
             if FileManager.default.fileExists(atPath: selectedPath) {
                 return selectedPath
             }
-        }
-
-        if let custom = UserDefaults.standard.string(forKey: "modelPath"),
-           !custom.isEmpty,
-           FileManager.default.fileExists(atPath: custom) {
-            return custom
         }
 
         // Check App Support path (where auto-download saves the model)
@@ -488,6 +494,18 @@ final class TranscriptionService: @unchecked Sendable {
         let sourcesDir = (thisFile as NSString).deletingLastPathComponent
         return (sourcesDir as NSString).deletingLastPathComponent
     }
+
+#if DEBUG
+    /// 调试：打印指定路径的 GGUF 架构与解析出的引擎。
+    static func debugEngineDescription(forPath path: String) -> String {
+        let arch = GGUFInspector.architecture(atPath: path) ?? "unknown"
+        switch engine(forPath: path) {
+        case .whisper: return "arch=\(arch) engine=whisper"
+        case .nemotron: return "arch=\(arch) engine=nemotron"
+        case .qwen3asr: return "arch=\(arch) engine=qwen3asr"
+        }
+    }
+#endif
 }
 
 // Box for passing progress handler through C callback

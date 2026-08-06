@@ -16,10 +16,15 @@ let package = Package(
             name: "CWhisper",
             path: "Frameworks/CWhisper.xcframework"
         ),
+        .binaryTarget(
+            name: "CTranscribe",
+            path: "Frameworks/CTranscribe.xcframework"
+        ),
         .executableTarget(
             name: "WhisperASR",
             dependencies: [
                 "CWhisper",
+                "CTranscribe",
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "FlyingFox", package: "FlyingFox"),
                 .product(name: "FlyingSocks", package: "FlyingFox"),
@@ -33,6 +38,11 @@ let package = Package(
                 .linkedLibrary("c++"),
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("WebKit"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
+                .linkedFramework("Accelerate"),
+                .linkedFramework("Foundation"),
+                .linkedLibrary("c++"),
             ]
         )
     ]

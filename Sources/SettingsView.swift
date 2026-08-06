@@ -306,7 +306,7 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                     Button("浏览…") { browseModel() }
                 }
-                Text("仅在上方未选择模型时使用。否则请留空。")
+                Text("填写有效路径后优先使用该模型（支持按 GGUF 架构自动识别引擎）；留空则使用上方选择的模型。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

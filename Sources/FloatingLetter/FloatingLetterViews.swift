@@ -268,17 +268,10 @@ struct FloatingLetterContainerView: View {
 
     /// 半透明圆角背景 + 细边框（长条浮层观感）。
     private var panelBackground: some View {
-        // macOS 原生毛玻璃浮窗层：只负责背景/圆角/材质，不参与任何动画。
-        // - 系统毛玻璃（ultraThinMaterial）+ 半透明白 12%（类似 backdrop blur 20px）；
-        // - 连续圆角 20pt，无粗白描边；
-        // - 窗口阴影由 AppKit 系统绘制（hasShadow），不再叠加 SwiftUI 阴影，
-        //   避免圆角边缘出现白色锯齿/灰边。
+        // 黑色半透明浮窗背景：保证白色字幕/图标在浅色桌面上可读。
+        // 只负责背景/圆角，不参与任何动画；窗口阴影由 AppKit 系统绘制。
         RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .fill(.ultraThinMaterial)
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.white.opacity(0.12))
-            )
+            .fill(Color.black.opacity(0.34))
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .strokeBorder(Color.white.opacity(min(viewModel.borderOpacity, 0.05)), lineWidth: 0.5)

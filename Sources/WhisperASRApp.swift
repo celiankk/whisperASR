@@ -83,6 +83,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
 #if DEBUG
+        // 引擎识别检查：--engine-check <model.gguf>
+        if CommandLine.arguments.contains("--engine-check") {
+            let args = CommandLine.arguments
+            if args.count >= 3 {
+                Qwen3SmokeTest.runEngineCheck(path: args[2])
+            } else {
+                print("usage: --engine-check <model.gguf>")
+                exit(2)
+            }
+        }
+        // Qwen3-ASR 后端冒烟测试：--qwen3-smoke <model.gguf> <audio.wav>
+        if CommandLine.arguments.contains("--qwen3-smoke") {
+            let args = CommandLine.arguments
+            if args.count >= 4 {
+                Qwen3SmokeTest.run(modelPath: args[2], wavPath: args[3])
+            } else {
+                print("usage: --qwen3-smoke <model.gguf> <audio.wav>")
+                exit(2)
+            }
+        }
         // 一体化浮层内存自检：命令行带 --overlay-leak-test 启动即自动执行。
         if CommandLine.arguments.contains("--overlay-leak-test") {
             FloatingLetterLeakTest.runAfterLaunch(appDelegate: self)

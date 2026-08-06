@@ -9,6 +9,10 @@ struct SettingsView: View {
     @AppStorage("translationEndpoint") private var translationEndpoint = ""
     @AppStorage("translationAPIKey") private var translationAPIKey = ""
     @AppStorage("translationModel") private var translationModel = ""
+    @AppStorage(TranslationService.ConfigKeys.timeout) private var translationTimeout = 30.0
+    @AppStorage(TranslationService.ConfigKeys.maxContext) private var translationMaxContext = 16000
+    @AppStorage(TranslationService.ConfigKeys.temperature) private var translationTemperature = 0.3
+    @AppStorage("translationMode") private var translationModeRaw = TranslationMode.off.rawValue
 
     // Local OpenAI-compatible API server
     @AppStorage(APIServer.enabledKey) private var apiServerEnabled = false
@@ -56,6 +60,17 @@ struct SettingsView: View {
             Section("字幕浮层") {
                 // 浮层启停由录制流程驱动（点击“开始录制”自动显示），
                 // 这里只保留样式与交互偏好，不再提供显隐开关。
+                Picker("字幕最大行数", selection: Binding(
+                    get: { appState.maxSubtitleLines },
+                    set: { appState.setMaxSubtitleLines($0) }
+                )) {
+                    Text("1 行").tag(1)
+                    Text("2 行").tag(2)
+                    Text("3 行").tag(3)
+                }
+                Text("1=仅当前字幕；2/3=当前字幕 + 1 条历史字幕（约 1.8 秒后自动淡出消失）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("5 秒未点击自动隐藏控件", isOn: Binding(
                     get: { appState.floatingOverlayAutoHide },
                     set: { appState.setFloatingOverlayAutoHide($0) }
@@ -114,60 +129,113 @@ struct SettingsView: View {
             }
 
             Section("翻译") {
-                Picker("目标语言", selection: $targetLanguage) {
-                    Text("关闭").tag("")
-                    ForEach(TargetLanguage.available) { lang in
-                        Text(lang.nativeName).tag(lang.id)
+                Picker("翻译方式", selection: Binding(
+                    get: { TranslationMode(rawValue: translationModeRaw) ?? .off },
+                    set: { translationModeRaw = $0.rawValue }
+                )) {
+                    ForEach(TranslationMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
                     }
                 }
-                Text("使用下方配置的 OpenAI 兼容 API 将实时转录翻译为此语言。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("OpenAI API") {
-                TextField("API 端点", text: $translationEndpoint,
-                          prompt: Text("https://api.openai.com/v1"))
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: translationEndpoint) { _, _ in verifyResult = nil }
-                SecureField("API 密钥", text: $translationAPIKey,
-                            prompt: Text("sk-..."))
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: translationAPIKey) { _, _ in verifyResult = nil }
-                TextField("模型", text: $translationModel,
-                          prompt: Text("gpt-4o-mini"))
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: translationModel) { _, _ in verifyResult = nil }
-                Text("用于翻译和会议纪要。仅需 API 密钥。端点默认为 OpenAI，模型默认为 gpt-4o-mini。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 10) {
-                    Button {
-                        verifyConnection()
-                    } label: {
-                        if verifyInFlight {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("验证连接")
+                switch TranslationMode(rawValue: translationModeRaw) ?? .off {
+                case .off:
+                    Text("关闭实时字幕翻译。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .localModel:
+                    Text("本地翻译模型尚未安装：请选择「在线 API」，或安装本地翻译模型后使用。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .onlineAPI:
+                    Picker("目标语言", selection: $targetLanguage) {
+                        Text("关闭").tag("")
+                        ForEach(TargetLanguage.available) { lang in
+                            Text(lang.nativeName).tag(lang.id)
                         }
                     }
-                    .disabled(verifyInFlight || translationAPIKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Text("音频 → 本地实时识别 → 原文字幕 → 在线 API 翻译 → 目标语言字幕。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
-                    switch verifyResult {
-                    case .success(let msg):
-                        Label(msg, systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.caption)
-                    case .failure(let msg):
-                        Label(msg, systemImage: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .font(.caption)
-                            .lineLimit(2)
-                    case .none:
-                        EmptyView()
+            if TranslationMode(rawValue: translationModeRaw) ?? .off == .onlineAPI {
+                Section("在线 API 配置") {
+                    TextField("API Base URL", text: $translationEndpoint,
+                              prompt: Text("https://api.openai.com/v1"))
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: translationEndpoint) { _, _ in verifyResult = nil }
+                    SecureField("API Key", text: $translationAPIKey,
+                                prompt: Text("sk-..."))
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: translationAPIKey) { _, _ in verifyResult = nil }
+                    TextField("模型名称", text: $translationModel,
+                              prompt: Text("gpt-4o-mini"))
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: translationModel) { _, _ in verifyResult = nil }
+
+                    HStack {
+                        Text("请求超时时间")
+                        Spacer()
+                        TextField("30", value: $translationTimeout, format: .number.grouping(.never))
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Text("秒")
+                            .foregroundStyle(.secondary)
                     }
-                    Spacer()
+                    HStack {
+                        Text("最大上下文长度")
+                        Spacer()
+                        TextField("16000", value: $translationMaxContext, format: .number.grouping(.never))
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 90)
+                            .textFieldStyle(.roundedBorder)
+                        Text("tokens")
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("温度参数")
+                        Slider(value: $translationTemperature, in: 0...2, step: 0.1)
+                            .frame(width: 160)
+                        Text(translationTemperature, format: .number.precision(.fractionLength(1)))
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 34, alignment: .trailing)
+                    }
+
+                    Text("兼容 OpenAI API 格式（/v1/chat/completions）。示例模型：Qwen3、GPT-5-mini、DeepSeek、Claude。翻译请求异步执行，失败自动重试，不阻塞字幕显示。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 10) {
+                        Button {
+                            verifyConnection()
+                        } label: {
+                            if verifyInFlight {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("检测 API 状态")
+                            }
+                        }
+                        .disabled(verifyInFlight || !TranslationService.isAPIConfigured)
+
+                        switch verifyResult {
+                        case .success(let msg):
+                            Label(msg, systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                        case .failure(let msg):
+                            Label(msg, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                                .lineLimit(2)
+                        case .none:
+                            EmptyView()
+                        }
+                        Spacer()
+                    }
                 }
             }
 

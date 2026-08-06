@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -5,7 +6,6 @@ struct SidebarView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioRecorder.self) var recorder
     @State private var isDropTargeted = false
-    @Environment(\.openWindow) private var openWindow
     @State private var renamingItem: TranscriptionItem?
     @State private var renameText = ""
     @State private var itemPendingRemoval: TranscriptionItem?
@@ -91,14 +91,28 @@ struct SidebarView: View {
             ToolbarItem {
                 if recorder.state == .recording || recorder.state == .saving {
                     Button {
-                        openWindow(id: "recording")
+                        // 旧 Recording 窗口已彻底移除：录制中点击只确保一体化浮层可见。
+                        FloatingLetterOverlayHost.shared.present(
+                            appState: appState,
+                            recorder: recorder
+                        )
                     } label: {
                         Label("录制中", systemImage: "record.circle.fill")
                             .foregroundStyle(.red)
                     }
                 } else {
                     Button {
-                        openWindow(id: "app-picker")
+                        // 一体化浮层：点击“录制”后浮层内选择应用并开始录制。
+                        FloatingLetterOverlayHost.shared.startRecordingFlow(
+                            appState: appState,
+                            recorder: recorder
+                        ) {
+                            // 取消/结束录制：收起浮层，并关闭手动打开的录制窗口。
+                            FloatingLetterOverlayHost.shared.dismiss()
+                            NSApp.windows
+                                .first { $0.title == "Recording" }?
+                                .close()
+                        }
                     } label: {
                         Label("录制", systemImage: "record.circle")
                     }
@@ -350,12 +364,10 @@ struct SidebarView: View {
         panel.level = .screenSaver
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            // Close the recording window
-            NSApplication.shared.windows
-                .first { $0.identifier?.rawValue == "recording" }?
-                .close()
             Task {
                 await appState.finishRecording(recorder: recorder)
+                // 旧 Recording 窗口已移除：录制结束后收起一体化浮层。
+                FloatingLetterOverlayHost.shared.dismiss()
             }
         }
     }

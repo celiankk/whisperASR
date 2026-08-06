@@ -1,5 +1,27 @@
 import Foundation
 
+// MARK: - 翻译方式
+
+/// 实时字幕翻译方式（持久化于 UserDefaults "translationMode"）。
+enum TranslationMode: String, CaseIterable, Codable {
+    case off
+    case localModel
+    case onlineAPI
+
+    var label: String {
+        switch self {
+        case .off: return "不翻译"
+        case .localModel: return "本地模型"
+        case .onlineAPI: return "在线 API"
+        }
+    }
+
+    /// 当前保存的翻译方式。
+    static var current: TranslationMode {
+        TranslationMode(rawValue: UserDefaults.standard.string(forKey: "translationMode") ?? "") ?? .off
+    }
+}
+
 struct TargetLanguage: Identifiable, Hashable {
     let id: String        // locale identifier (e.g. "en", "zh-Hans")
     let name: String      // English name (used in API prompts)
@@ -64,6 +86,23 @@ enum TranslationError: LocalizedError {
 }
 
 enum TranslationService {
+    /// 翻译配置的 UserDefaults 键。
+    enum ConfigKeys {
+        static let endpoint = "translationEndpoint"
+        static let apiKey = "translationAPIKey"
+        static let model = "translationModel"
+        static let timeout = "translationTimeout"
+        static let maxContext = "translationMaxContext"
+        static let temperature = "translationTemperature"
+    }
+
+    /// 是否已配置在线 API（端点/密钥至少其一，模型可为空并回退默认值）。
+    static var isAPIConfigured: Bool {
+        let endpoint = (UserDefaults.standard.string(forKey: ConfigKeys.endpoint) ?? "").trimmingCharacters(in: .whitespaces)
+        let apiKey = UserDefaults.standard.string(forKey: ConfigKeys.apiKey) ?? ""
+        return !endpoint.isEmpty || !apiKey.isEmpty
+    }
+
     static func translateSegmentsWithOpenAI(
         segmentTexts: [String],
         targetLanguage: String,
@@ -71,9 +110,15 @@ enum TranslationService {
     ) async throws -> [String] {
         guard !segmentTexts.isEmpty else { return [] }
 
-        let endpoint = (UserDefaults.standard.string(forKey: "translationEndpoint") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let apiKey = UserDefaults.standard.string(forKey: "translationAPIKey") ?? ""
-        let model = (UserDefaults.standard.string(forKey: "translationModel") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = (UserDefaults.standard.string(forKey: ConfigKeys.endpoint) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = UserDefaults.standard.string(forKey: ConfigKeys.apiKey) ?? ""
+        let model = (UserDefaults.standard.string(forKey: ConfigKeys.model) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let timeout = max(5, UserDefaults.standard.double(forKey: ConfigKeys.timeout) == 0
+                          ? 30 : UserDefaults.standard.double(forKey: ConfigKeys.timeout))
+        let maxContextTokens = max(256, UserDefaults.standard.integer(forKey: ConfigKeys.maxContext) == 0
+                                   ? 16000 : UserDefaults.standard.integer(forKey: ConfigKeys.maxContext))
+        let temperature = max(0, min(2, UserDefaults.standard.double(forKey: ConfigKeys.temperature) == 0
+                                     ? 0.3 : UserDefaults.standard.double(forKey: ConfigKeys.temperature)))
 
         var baseURL = endpoint.isEmpty ? "https://api.openai.com/v1" : endpoint
         if !baseURL.hasSuffix("/chat/completions") {
@@ -88,24 +133,33 @@ enum TranslationService {
 
         let languageName = TargetLanguage.available.first { $0.id == targetLanguage }?.name ?? targetLanguage
 
-        let numberedInput = segmentTexts.enumerated()
+        let numberedInputFull = segmentTexts.enumerated()
             .map { "\($0.offset + 1). \($0.element.trimmingCharacters(in: .whitespaces))" }
             .joined(separator: "\n")
 
-        // Build context section from previous translations
+        // Build context section from previous translations（受最大上下文长度约束）。
         var contextSection = ""
         if !previousTranslations.isEmpty {
-            let pairs = previousTranslations.suffix(2)
+            let maxPairs = max(0, min(8, maxContextTokens / 500))
+            let pairs = previousTranslations.suffix(maxPairs)
                 .map { "\"\($0.original)\" → \"\($0.translated)\"" }
                 .joined(separator: "\n")
-            contextSection = "\n\nPreviously translated segments from this conversation (use as reference for consistent terminology and style):\n\(pairs)"
+            if !pairs.isEmpty {
+                contextSection = "\n\nPreviously translated segments from this conversation (use as reference for consistent terminology and style):\n\(pairs)"
+            }
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
+
+        // 按最大上下文长度（tokens ≈ 4 字符/token）截断输入，防止超长请求。
+        let maxInputCharacters = maxContextTokens * 4
+        let numberedInput = numberedInputFull.count <= maxInputCharacters
+            ? numberedInputFull
+            : String(numberedInputFull.prefix(maxInputCharacters))
 
         let body: [String: Any] = [
             "model": effectiveModel,
@@ -113,7 +167,7 @@ enum TranslationService {
                 ["role": "system", "content": "You are a translator for a live transcription. Translate each numbered line to \(languageName). If a line is already in \(languageName), output it unchanged. Output ONLY the translations in the same numbered format (e.g. \"1. ...\"). Keep exactly \(segmentTexts.count) lines.\(contextSection)"],
                 ["role": "user", "content": numberedInput]
             ],
-            "temperature": 0.3
+            "temperature": temperature
         ]
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

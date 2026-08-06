@@ -12,7 +12,7 @@ class AppState {
     var isLiveTranscribing = false
     var enableLiveTranscription = true
 
-    // Inline error banners surfaced in RecordingView. Nil when no error.
+    // Inline error banners surfaced in the unified floating overlay. Nil when no error.
     var liveError: String?
     var liveTranslationError: String?
 
@@ -26,7 +26,14 @@ class AppState {
 
     // Live translation state (per-segment)
     var liveTranslatedSegments: [String] = []
-    var enableLiveTranslation = false
+    /// 翻译方式：不翻译 / 本地模型 / 在线 API（每次读取 UserDefaults，设置页改动即时生效）。
+    var translationMode: TranslationMode { TranslationMode.current }
+    /// 是否开启实时翻译（由翻译方式派生，保持旧接口兼容）。
+    var enableLiveTranslation: Bool { translationMode != .off }
+
+    func setTranslationMode(_ mode: TranslationMode) {
+        UserDefaults.standard.set(mode.rawValue, forKey: "translationMode")
+    }
     /// User-controlled pause for live translation (e.g. the speaker switched to
     /// the listener's native language). Distinct from `translationAuthPaused`,
     /// which is an error-driven stop. While paused, no API calls are made; on
@@ -51,6 +58,11 @@ class AppState {
     var subtitleOverlaySourceFontSize = AppState.storedDouble(SubtitleOverlayKeys.sourceFontSize, default: 26)
     var subtitleOverlayTranslationFontSize = AppState.storedDouble(SubtitleOverlayKeys.translationFontSize, default: 19)
     var subtitleOverlayBorderOpacity = AppState.storedDouble(SubtitleOverlayKeys.borderOpacity, default: 0.08)
+    /// 字幕最大显示行数（1–3，默认 2）。超过时自动移除最旧一行，新字幕优先。
+    var maxSubtitleLines: Int = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleMaxLines") as? Int
+        return min(max(stored ?? 2, 1), 3)
+    }()
     /// Allow the floating overlay to auto-hide when the mouse stays outside it.
     var floatingOverlayAutoHide = UserDefaults.standard.bool(forKey: "floatingOverlayAutoHide")
     /// Live transcript display mode (only translation vs original + translation).
@@ -244,6 +256,12 @@ class AppState {
 
     func translateItem(_ item: TranscriptionItem, targetLanguage: String) {
         guard !item.segments.isEmpty, !item.isTranslating else { return }
+        if TranslationMode.current == .localModel {
+            Task { @MainActor in
+                self.showToast("本地翻译模型未安装：请先在设置中选择「在线 API」翻译方式。")
+            }
+            return
+        }
         item.isTranslating = true
         item.translatedSegments = Array(repeating: "", count: item.segments.count)
         item.translationLanguage = targetLanguage
@@ -582,7 +600,6 @@ class AppState {
         liveTranslatedSegments = []
         liveTranslatedSourceTexts = []
         liveTranslatedSealCount = []
-        enableLiveTranslation = false
         liveTranslationPaused = false
         removeLiveRecoveryFile()
     }
@@ -602,6 +619,12 @@ class AppState {
     func setSubtitleOverlayBorderOpacity(_ value: Double) {
         subtitleOverlayBorderOpacity = value
         UserDefaults.standard.set(value, forKey: SubtitleOverlayKeys.borderOpacity)
+    }
+
+    func setMaxSubtitleLines(_ lines: Int) {
+        let clamped = min(max(lines, 1), 3)
+        maxSubtitleLines = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleMaxLines")
     }
 
     func setFloatingOverlayAutoHide(_ enabled: Bool) {
@@ -801,6 +824,15 @@ class AppState {
 
     private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String, countsSeals: Bool) async {
         guard !Task.isCancelled else { return }
+
+        // 本地模型翻译尚未内置：给出明确提示，不发起在线请求。
+        if TranslationMode.current == .localModel {
+            await MainActor.run {
+                self.liveTranslationError = "本地翻译模型未安装：请先在设置中选择「在线 API」翻译方式。"
+                self.pendingTranslationSnapshot = nil
+            }
+            return
+        }
 
         // Exponential backoff on repeated failures (500ms, 1s, 2s, ..., capped at 30s).
         let failureCount = await MainActor.run { self.translationFailureCount }

@@ -14,6 +14,8 @@ final class TranscriptionService: @unchecked Sendable {
     private let whisperQueue = DispatchQueue(label: "com.whisperasr.whisper", qos: .userInitiated)
     /// Core ML / ANE engine for Nemotron model bundles (directory models).
     private let nemotron = NemotronEngine()
+    /// Qwen3-ASR GGUF backend (transcribe.cpp / ggml + Metal).
+    private let qwen3asr = Qwen3ASRBackend()
     /// True while a live session runs on the Nemotron engine — blocks the
     /// "unload nemotron when file-transcribing with whisper" eviction below.
     private let liveStateLock = NSLock()
@@ -23,6 +25,7 @@ final class TranscriptionService: @unchecked Sendable {
     private enum ResolvedEngine {
         case whisper(path: String)
         case nemotron(directory: String)
+        case qwen3asr(path: String)
     }
 
     /// Whisper models are single files; Nemotron bundles are directories.
@@ -40,6 +43,12 @@ final class TranscriptionService: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
             return .nemotron(directory: path)
         }
+        // Qwen3-ASR 是单文件 GGUF：按目录中的模型名识别，避免被误当成 whisper 加载。
+        let fileName = (path as NSString).lastPathComponent
+        if let catalogModel = ModelCatalog.model(fileName: fileName),
+           catalogModel.engine == .qwen3asr {
+            return .qwen3asr(path: path)
+        }
         return .whisper(path: path)
     }
 
@@ -52,6 +61,7 @@ final class TranscriptionService: @unchecked Sendable {
         unloadLiveModel()
         unloadWhisper()
         Task { await self.nemotron.unload() }
+        Task { await self.qwen3asr.unload() }
     }
 
     /// Serialize with any in-flight whisper_full; if the process exits before
@@ -87,6 +97,7 @@ final class TranscriptionService: @unchecked Sendable {
         if wasNemotron, case .whisper = resolveEngine() {
             Task { await self.nemotron.unload() }
         }
+        Task { await self.qwen3asr.unload() }
     }
 
     /// Transcribe (or translate-to-English, when `translate` is true) an audio file.
@@ -106,6 +117,15 @@ final class TranscriptionService: @unchecked Sendable {
             unloadWhisper()  // free the main whisper ctx (a live session's context stays)
             try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
             return try await nemotron.transcribe(samples: samples, language: language, onProgress: onProgress)
+        }
+        if case .qwen3asr(let path) = resolveEngine() {
+            let modelURL = URL(fileURLWithPath: path)
+            try await qwen3asr.ensureLoaded(modelURL: modelURL)
+            return try await qwen3asr.transcribe(
+                fileURL: fileURL,
+                language: language,
+                onProgress: onProgress
+            )
         }
         let keepNemotron = liveStateLock.withLock { liveNemotronActive }  // live session is using it
         if !keepNemotron {
@@ -202,6 +222,10 @@ final class TranscriptionService: @unchecked Sendable {
             try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
             return try await nemotron.transcribeChunk(samples: samples)
         }
+        if case .qwen3asr(let path) = resolveLiveEngine() {
+            try await qwen3asr.ensureLoaded(modelURL: URL(fileURLWithPath: path))
+            return try await qwen3asr.transcribe(samples: samples)
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             self.whisperQueue.async {
@@ -276,6 +300,8 @@ final class TranscriptionService: @unchecked Sendable {
         case .nemotron(let directory):
             liveStateLock.withLock { liveNemotronActive = true }
             try await nemotron.ensureLoaded(directory: URL(fileURLWithPath: directory, isDirectory: true))
+        case .qwen3asr(let path):
+            try await qwen3asr.ensureLoaded(modelURL: URL(fileURLWithPath: path))
         }
     }
 

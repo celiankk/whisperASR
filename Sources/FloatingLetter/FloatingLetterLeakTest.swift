@@ -86,7 +86,7 @@ enum FloatingLetterLeakTest {
         }
     }
 
-    /// 录制驱动自检：模拟“点击开始录制”后 RecordingView 的挂载链路，
+    /// 录制驱动自检：模拟“点击开始录制”后浮层宿主的挂载链路，
     /// 断言一体化浮层自动显示；关闭后隐藏。命令行：--overlay-replace-test。
     static func runReplaceTest(appDelegate: AppDelegate) {
         Task { @MainActor in
@@ -107,7 +107,7 @@ enum FloatingLetterLeakTest {
                 exit(1)
             }
 
-            // RecordingView.onAppear 同款调用：点击“开始录制”后自动展示一体化浮层。
+            // 宿主 present 同款调用：点击“开始录制”后自动展示一体化浮层。
             FloatingLetterOverlayHost.shared.present(
                 appState: appState,
                 recorder: recorder
@@ -130,6 +130,60 @@ enum FloatingLetterLeakTest {
                 print("[ReplaceTest] FAIL")
                 exit(1)
             }
+        }
+    }
+
+    /// 首次打开应用列表自检：模拟“点击开始录制 → 浮层内选择应用”，
+    /// 验证首次加载后列表非空（覆盖“首次打开为空、二次打开正常”缺陷）。
+    /// 命令行：--overlay-select-test。权限被拒时输出 SKIP（环境问题，非代码回归）。
+    static func runSelectTest(appDelegate: AppDelegate) {
+        Task { @MainActor in
+            var appState: AppState?
+            var recorder: AudioRecorder?
+            for _ in 0..<40 {
+                if let state = appDelegate.appState,
+                   let audio = appDelegate.audioRecorder {
+                    appState = state
+                    recorder = audio
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard let appState, let recorder else {
+                print("[SelectTest] FAIL: appState / audioRecorder 未就绪")
+                exit(1)
+            }
+
+            FloatingLetterOverlayHost.shared.startRecordingFlow(
+                appState: appState,
+                recorder: recorder
+            )
+
+            var phase = "nil"
+            var appCount = -1
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let vm = FloatingLetterOverlayHost.shared.debugViewModel else { continue }
+                phase = "\(vm.appListPhase)"
+                appCount = vm.availableApps.count
+                if vm.appListPhase == .ready || vm.appListPhase == .permissionDenied {
+                    break
+                }
+            }
+
+            FloatingLetterOverlayHost.shared.dismiss()
+            print("[SelectTest] phase=\(phase) apps=\(appCount)")
+
+            if phase == "permissionDenied" {
+                print("[SelectTest] SKIP：屏幕录制权限未授予，属环境问题")
+                exit(0)
+            }
+            if phase == "ready", appCount > 0 {
+                print("[SelectTest] PASS：首次打开应用列表非空")
+                exit(0)
+            }
+            print("[SelectTest] FAIL")
+            exit(1)
         }
     }
 }

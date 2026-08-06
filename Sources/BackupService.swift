@@ -35,6 +35,10 @@ enum BackupService {
         var translationEndpoint: String?
         var translationModel: String?
         var translationAPIKey: String?
+        var translationMode: String?
+        var translationTimeout: Double?
+        var translationMaxContext: Int?
+        var translationTemperature: Double?
         var liveTranslationPref: Bool?
         var recentRecordingApps: [String]?
         /// Meeting-minutes prompts as their raw JSON (the UserDefaults blob).
@@ -55,6 +59,13 @@ enum BackupService {
             translationEndpoint: d.string(forKey: "translationEndpoint"),
             translationModel: d.string(forKey: "translationModel"),
             translationAPIKey: d.string(forKey: "translationAPIKey"),
+            translationMode: d.string(forKey: "translationMode"),
+            translationTimeout: d.object(forKey: TranslationService.ConfigKeys.timeout) == nil
+                ? nil : d.double(forKey: TranslationService.ConfigKeys.timeout),
+            translationMaxContext: d.object(forKey: TranslationService.ConfigKeys.maxContext) == nil
+                ? nil : d.integer(forKey: TranslationService.ConfigKeys.maxContext),
+            translationTemperature: d.object(forKey: TranslationService.ConfigKeys.temperature) == nil
+                ? nil : d.double(forKey: TranslationService.ConfigKeys.temperature),
             liveTranslationPref: d.object(forKey: "liveTranslationPref") == nil
                 ? nil : d.bool(forKey: "liveTranslationPref"),
             recentRecordingApps: d.stringArray(forKey: "recentRecordingApps"),
@@ -106,6 +117,16 @@ enum BackupService {
         set(c.translationEndpoint, "translationEndpoint")
         set(c.translationModel, "translationModel")
         set(c.translationAPIKey, "translationAPIKey")
+        set(c.translationMode, "translationMode")
+        if let timeout = c.translationTimeout {
+            d.set(timeout, forKey: TranslationService.ConfigKeys.timeout)
+        }
+        if let maxContext = c.translationMaxContext {
+            d.set(maxContext, forKey: TranslationService.ConfigKeys.maxContext)
+        }
+        if let temperature = c.translationTemperature {
+            d.set(temperature, forKey: TranslationService.ConfigKeys.temperature)
+        }
         if let pref = c.liveTranslationPref { d.set(pref, forKey: "liveTranslationPref") }
         if let apps = c.recentRecordingApps { d.set(apps, forKey: "recentRecordingApps") }
         if let prompts = c.minutesPromptsJSON?.data(using: .utf8) {

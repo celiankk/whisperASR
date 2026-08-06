@@ -200,14 +200,14 @@ private struct BlurSegmentView: View {
 /// Exact rendered size of a segment, measured with AppKit so the flow layout
 /// always sees stable, finite dimensions (animated views can report unreliable
 /// intrinsic sizes, which previously stacked every word/character vertically).
-private func subtitleSegmentSize(segment: String, fontSize: CGFloat, fontWeight: Font.Weight) -> CGSize {
+func subtitleSegmentSize(segment: String, fontSize: CGFloat, fontWeight: Font.Weight) -> CGSize {
     let font = NSFont.systemFont(ofSize: fontSize, weight: nsFontWeight(fontWeight))
     let size = (segment as NSString).size(withAttributes: [.font: font])
     let lineHeight = font.ascender - font.descender + font.leading
     return CGSize(width: ceil(size.width) + 1, height: ceil(lineHeight))
 }
 
-private func nsFontWeight(_ weight: Font.Weight) -> NSFont.Weight {
+func nsFontWeight(_ weight: Font.Weight) -> NSFont.Weight {
     switch weight {
     case .ultraLight: return .ultraLight
     case .thin: return .thin
@@ -224,7 +224,7 @@ private func nsFontWeight(_ weight: Font.Weight) -> NSFont.Weight {
 
 // MARK: - Centered wrapping layout for subtitle words
 
-private struct SubtitleFlowLayout: Layout {
+struct SubtitleFlowLayout: Layout {
     var horizontalSpacing: CGFloat = 5
     var lineSpacing: CGFloat = 6
 

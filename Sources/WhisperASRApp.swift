@@ -47,25 +47,6 @@ struct WhisperASRApp: App {
             }
         }
 
-        Window("Select App to Record", id: "app-picker") {
-            AppPickerView()
-                .environment(appState)
-                .environment(audioPlayer)
-                .environment(audioRecorder)
-        }
-        .defaultSize(width: 420, height: 400)
-        .windowResizability(.contentSize)
-
-        Window("Recording", id: "recording") {
-            RecordingView()
-                .environment(appState)
-                .environment(audioPlayer)
-                .environment(audioRecorder)
-        }
-        .defaultSize(width: 420, height: 250)
-        .windowResizability(.contentSize)
-        .windowStyle(.hiddenTitleBar)
-
         Window("Meeting Minutes", id: "minutes") {
             MinutesWindowView()
                 .environment(appState)
@@ -110,14 +91,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--overlay-replace-test") {
             FloatingLetterLeakTest.runReplaceTest(appDelegate: self)
         }
+        // 应用列表首开自检：命令行带 --overlay-select-test 启动即自动执行。
+        if CommandLine.arguments.contains("--overlay-select-test") {
+            FloatingLetterLeakTest.runSelectTest(appDelegate: self)
+        }
 #endif
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first, url.scheme == "whisperasr" else { return }
         launchedViaURL = true
-        // If openWindow is ready, handle immediately; otherwise queue it
-        if openWindow != nil {
+        // If the app state is ready, handle immediately; otherwise queue it
+        // (audioRecorder is injected by the main window's onAppear).
+        if audioRecorder != nil {
             handleURL(url)
         } else {
             pendingURL = url
@@ -126,7 +112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func handleURL(_ url: URL) {
         guard url.scheme == "whisperasr", url.host == "record",
-              let openWindow, let audioRecorder else { return }
+              let audioRecorder else { return }
 
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let queryItems = components?.queryItems ?? []
@@ -152,18 +138,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             appState?.enableLiveTranscription = live
         }
         if let translate = queryBool("translate") {
-            appState?.enableLiveTranslation = translate
+            appState?.setTranslationMode(translate ? .onlineAPI : .off)
             // Translation requires live transcription
             if translate { appState?.enableLiveTranscription = true }
         }
         if let pin = queryBool("pin") {
-            audioRecorder.pinWindow = pin
+            appState?.setRecordingAlwaysOnTop(pin)
         }
 
-        // If already recording, just show the recording window
+        // If already recording, just make sure the unified overlay is visible
         if audioRecorder.state == .recording {
-            openWindow(id: "recording")
-            bringWindowToFront(title: "Recording")
+            if let appState {
+                Task { @MainActor in
+                    FloatingLetterOverlayHost.shared.present(
+                        appState: appState,
+                        recorder: audioRecorder
+                    )
+                }
+            }
             return
         }
 
@@ -173,14 +165,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Otherwise show the app picker
-        openWindow(id: "app-picker")
-        bringWindowToFront(title: "Select App to Record")
+        // Otherwise enter the unified overlay's app-selection flow
+        presentRecordingFlowForURL()
     }
 
     /// Find the named app and start recording automatically, skipping the picker.
     private func autoStartRecording(appName: String) {
-        guard let audioRecorder, let openWindow else { return }
+        guard let audioRecorder, let appState else { return }
 
         Task {
             do {
@@ -201,8 +192,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         audioRecorder.error = "App \"\(appName)\" not found"
                         audioRecorder.availableApps = apps
                         audioRecorder.state = .ready
-                        openWindow(id: "app-picker")
-                        self.bringWindowToFront(title: "Select App to Record")
+                        self.presentRecordingFlowForURL()
                     }
                     return
                 }
@@ -210,33 +200,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     audioRecorder.state = .ready
                     audioRecorder.startRecording(app: matchedApp)
-                    openWindow(id: "recording")
-                    self.bringWindowToFront(title: "Recording")
+                    // 一体化浮层：直接进入录制态。
+                    FloatingLetterOverlayHost.shared.present(
+                        appState: appState,
+                        recorder: audioRecorder
+                    )
                 }
             } catch {
                 await MainActor.run {
                     audioRecorder.error = "Failed to list apps: \(error.localizedDescription)"
-                    openWindow(id: "app-picker")
-                    self.bringWindowToFront(title: "Select App to Record")
+                    self.presentRecordingFlowForURL()
                 }
             }
         }
     }
 
-    private func bringWindowToFront(title: String) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            // Hide the main window if this was a cold launch via URL
-            if self.launchedViaURL {
-                for window in NSApplication.shared.windows where window.title == "WhisperASR" {
-                    window.orderOut(nil)
-                }
+    /// URL 流程进入一体化浮层的“选择应用”模式（替代旧 app-picker 窗口）。
+    private func presentRecordingFlowForURL() {
+        Task { @MainActor in
+            guard let appState, let audioRecorder else { return }
+            FloatingLetterOverlayHost.shared.startRecordingFlow(
+                appState: appState,
+                recorder: audioRecorder
+            ) {
+                FloatingLetterOverlayHost.shared.dismiss()
             }
-            // Bring target window to front
-            for window in NSApplication.shared.windows where window.title == title {
-                window.makeKeyAndOrderFront(nil)
-                break
-            }
-            NSApplication.shared.activate(ignoringOtherApps: true)
         }
     }
 

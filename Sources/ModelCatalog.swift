@@ -10,6 +10,10 @@ enum ModelEngine: Equatable {
     /// NVIDIA Nemotron streaming ASR via FluidAudio (Core ML / ANE) — a
     /// directory bundle (encoder/decoder/joint .mlmodelc + metadata + tokenizer).
     case nemotron
+    /// Alibaba Qwen3-ASR GGUF（30 种语言 + 22 种中文方言，自动语种识别与时间戳）。
+    /// 注意：当前构建的 whisper.cpp 尚不支持该架构，选择后可下载，但推理需要
+    /// 后续集成 ggml/Qwen3-ASR 后端（详见 TranscriptionService 中的明确报错）。
+    case qwen3asr
 }
 
 /// Where a catalog model's bytes come from.
@@ -31,6 +35,9 @@ struct WhisperModelInfo: Identifiable, Equatable {
     let source: DownloadSource
     let approxBytes: Int64
     var engine: ModelEngine = .whisper
+    /// 可选的多模态音频投影文件（llama.cpp mmproj 路线）。
+    /// transcribe.cpp 的 all-in-one Qwen3-ASR GGUF 不需要。
+    var mmprojURL: URL? = nil
 
     var approxSizeText: String {
         ByteCountFormatter.string(fromByteCount: approxBytes, countStyle: .file)
@@ -61,6 +68,15 @@ enum ModelCatalog {
             ),
             approxBytes: 665_000_000,
             engine: .nemotron
+        ),
+        WhisperModelInfo(
+            id: "qwen3-asr-1.7b",
+            displayName: "Qwen3-ASR-1.7B",
+            detail: "Alibaba 多语言 ASR：30 种语言 + 22 种中文方言，自动语种检测。transcribe.cpp all-in-one GGUF（音频编码器内置，无需 mmproj）",
+            fileName: "Qwen3-ASR-1.7B-Q8_0.gguf",
+            source: .file(URL(string: "https://huggingface.co/handy-computer/Qwen3-ASR-1.7B-gguf/resolve/main/Qwen3-ASR-1.7B-Q8_0.gguf")!),
+            approxBytes: 2_185_030_624,
+            engine: .qwen3asr
         ),
         WhisperModelInfo(
             id: "large-v3-turbo",
@@ -126,7 +142,7 @@ enum ModelCatalog {
     static func isComplete(_ model: WhisperModelInfo) -> Bool {
         let base = path(for: model)
         switch model.engine {
-        case .whisper:
+        case .whisper, .qwen3asr:
             return FileManager.default.fileExists(atPath: base.path)
         case .nemotron:
             let required = [

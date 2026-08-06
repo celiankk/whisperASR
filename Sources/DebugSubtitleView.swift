@@ -23,9 +23,18 @@ private enum DebugSubtitleMetrics {
     }
 }
 
+/// 字幕预览样式：原模糊入场 vs 逐字动画（SplitText 效果）。
+private enum SubtitlePreviewMode: String, CaseIterable, Identifiable {
+    case blur = "原样式（模糊入场）"
+    case split = "逐字动画（SplitText）"
+
+    var id: String { rawValue }
+}
+
 private final class DebugSubtitleModel: ObservableObject {
     @Published var text = ""
     @Published var translation = ""
+    @Published var previewMode: SubtitlePreviewMode = .split
 }
 
 /// Borderless, non-activating floating panel that mirrors the typed text
@@ -53,6 +62,10 @@ private final class DebugSubtitleFloatingPanel: NSObject {
     func update(text: String, translation: String) {
         model.text = text
         model.translation = translation
+    }
+
+    func setPreviewMode(_ mode: SubtitlePreviewMode) {
+        model.previewMode = mode
     }
 
     func hide() {
@@ -97,21 +110,11 @@ private struct DebugFloatingSubtitleView: View {
     var body: some View {
         VStack(spacing: 8) {
             if !model.translation.isEmpty {
-                SubtitleBlurText(
-                    text: model.translation,
-                    fontSize: 19,
-                    fontWeight: .semibold,
-                    foregroundStyle: .white.opacity(1.0)
-                )
+                previewSubtitle(text: model.translation, fontSize: 19, opacity: 1.0)
                 .frame(maxWidth: .infinity)
             }
             if !model.text.isEmpty {
-                SubtitleBlurText(
-                    text: model.text,
-                    fontSize: 26,
-                    fontWeight: .semibold,
-                    foregroundStyle: .white.opacity(0.82)
-                )
+                previewSubtitle(text: model.text, fontSize: 26, opacity: 0.82)
                 .frame(maxWidth: .infinity)
             } else {
                 Text("…")
@@ -131,6 +134,30 @@ private struct DebugFloatingSubtitleView: View {
         .animation(DebugSubtitleView.captionFlowAnimation, value: model.text)
         .frame(width: 640)
     }
+
+    /// 按预览模式渲染：逐字动画（SplitText）或原模糊入场样式。
+    @ViewBuilder
+    private func previewSubtitle(text: String, fontSize: CGFloat, opacity: Double) -> some View {
+        if model.previewMode == .split {
+            SplitSubtitleText(
+                text: text,
+                fontSize: fontSize,
+                fontWeight: .semibold,
+                foregroundStyle: .white.opacity(opacity),
+                staggerDelay: 0.06,
+                duration: 0.5,
+                fromOffsetY: 28,
+                fromScale: 0.92
+            )
+        } else {
+            SubtitleBlurText(
+                text: text,
+                fontSize: fontSize,
+                fontWeight: .semibold,
+                foregroundStyle: .white.opacity(opacity)
+            )
+        }
+    }
 }
 
 /// Debug window: text field + styled preview + toggle for the floating panel.
@@ -145,6 +172,7 @@ struct DebugSubtitleView: View {
     @State private var text = ""
     @State private var translation = ""
     @State private var showFloating = false
+    @State private var previewMode = SubtitlePreviewMode.split
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -166,11 +194,22 @@ struct DebugSubtitleView: View {
             Toggle("以浮层显示（置顶，可拖动）", isOn: $showFloating)
                 .onChange(of: showFloating) { _, isOn in
                     if isOn {
+                        DebugSubtitleFloatingPanel.shared.setPreviewMode(previewMode)
                         DebugSubtitleFloatingPanel.shared.show(text: text, translation: translation)
                     } else {
                         DebugSubtitleFloatingPanel.shared.hide()
                     }
                 }
+
+            Picker("预览样式", selection: $previewMode) {
+                ForEach(SubtitlePreviewMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: previewMode) { _, mode in
+                DebugSubtitleFloatingPanel.shared.setPreviewMode(mode)
+            }
 
             Divider()
 
@@ -190,21 +229,11 @@ struct DebugSubtitleView: View {
     private func subtitlePreview(text: String, translation: String) -> some View {
         VStack(alignment: .center, spacing: 8) {
             if !translation.isEmpty {
-                SubtitleBlurText(
-                    text: translation,
-                    fontSize: 19,
-                    fontWeight: .semibold,
-                    foregroundStyle: .white.opacity(1.0)
-                )
+                previewSubtitle(text: translation, fontSize: 19, opacity: 1.0)
                 .frame(maxWidth: .infinity)
             }
             if !text.isEmpty {
-                SubtitleBlurText(
-                    text: text,
-                    fontSize: 26,
-                    fontWeight: .semibold,
-                    foregroundStyle: .white.opacity(0.82)
-                )
+                previewSubtitle(text: text, fontSize: 26, opacity: 0.82)
                 .frame(maxWidth: .infinity)
             } else if translation.isEmpty {
                 Text("在此输入文字，上方预览字幕样式")
@@ -223,5 +252,29 @@ struct DebugSubtitleView: View {
                 )
         )
         .animation(Self.captionFlowAnimation, value: text)
+    }
+
+    /// 按预览模式渲染：逐字动画（SplitText）或原模糊入场样式。
+    @ViewBuilder
+    private func previewSubtitle(text: String, fontSize: CGFloat, opacity: Double) -> some View {
+        if previewMode == .split {
+            SplitSubtitleText(
+                text: text,
+                fontSize: fontSize,
+                fontWeight: .semibold,
+                foregroundStyle: .white.opacity(opacity),
+                staggerDelay: 0.06,
+                duration: 0.5,
+                fromOffsetY: 28,
+                fromScale: 0.92
+            )
+        } else {
+            SubtitleBlurText(
+                text: text,
+                fontSize: fontSize,
+                fontWeight: .semibold,
+                foregroundStyle: .white.opacity(opacity)
+            )
+        }
     }
 }

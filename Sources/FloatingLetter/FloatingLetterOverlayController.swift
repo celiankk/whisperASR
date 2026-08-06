@@ -83,6 +83,8 @@ final class FloatingLetterOverlayController: NSObject {
     private var observationTask: Task<Void, Never>?
 
     var isVisible: Bool { panel.isVisible }
+    /// 字幕浮层当前区域（选择弹窗判断“空白处返回”时排除浮层本身）。
+    var overlayFrame: NSRect? { panel.isVisible ? panel.frame : nil }
 
     private override init() {
         panel = FloatingLetterOverlayPanel(
@@ -146,10 +148,6 @@ final class FloatingLetterOverlayController: NSObject {
         viewModel.onClose = { [weak self] in
             Task { @MainActor in self?.dismiss() }
         }
-        viewModel.onCompactChanged = { [weak self] compact in
-            Task { @MainActor in self?.applyCompact(compact) }
-        }
-
         let root = FloatingLetterContainerView(viewModel: viewModel)
         if let hostingView {
             hostingView.rootView = root
@@ -167,7 +165,7 @@ final class FloatingLetterOverlayController: NSObject {
         }
 
         // 屏幕右上角定位。
-        placeAtTopRight(compact: viewModel.isCompact)
+        placeAtTopRight()
 
         isHidden = false
         panel.alphaValue = 1
@@ -193,23 +191,38 @@ final class FloatingLetterOverlayController: NSObject {
         panel.contentView = nil
         hostingView = nil
         panel.orderOut(nil)
+        // 若选择弹窗还开着（例如通过浮层 X 关闭），一并收起。
+        FloatingAppPickerController.shared.dismiss()
     }
 
     /// 重新定位到屏幕右上角（多显示器/位置漂移时可调用）。
     func resetPosition() {
-        placeAtTopRight(compact: viewModel?.isCompact ?? false)
+        placeAtTopRight()
     }
 
     // MARK: - 定位
 
+    /// 按当前模式返回目标尺寸：展开 > 紧凑。
+    private var targetSize: CGSize {
+        guard let viewModel else { return FloatingLetterMetrics.expandedSize }
+        if viewModel.isCompact {
+            return FloatingLetterMetrics.compactSize
+        }
+        // 高度自适应：固定 UI 区域（顶部行 + 间距 + 底部栏 + 内边距）+
+        // 字幕内容高度（行数 × 行高）。随 maxLines / 行数 / 字号自动变化，
+        // 历史字幕不再被裁切。
+        let chrome: CGFloat = 20 + 4 + 30 + 18
+        let contentHeight = viewModel.requiredSubtitleHeight
+        let height = min(max(chrome + contentHeight, 96), 260)
+        return CGSize(width: FloatingLetterMetrics.expandedSize.width, height: height)
+    }
+
     /// 屏幕右上角定位：距屏幕右缘 20pt、距可见区顶缘 24pt。
-    private func placeAtTopRight(compact: Bool) {
+    private func placeAtTopRight() {
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first
         guard let visible = screen?.visibleFrame else { return }
 
-        let size = compact
-            ? FloatingLetterMetrics.compactSize
-            : FloatingLetterMetrics.expandedSize
+        let size = targetSize
         // 小屏幕兜底：不超出可见区域。
         let width = min(size.width, visible.width - 40)
         let height = min(size.height, visible.height - 40)
@@ -223,10 +236,8 @@ final class FloatingLetterOverlayController: NSObject {
     }
 
     /// 紧凑/展开切换：锚定右上角缩放窗口。
-    private func applyCompact(_ compact: Bool) {
-        let target = compact
-            ? FloatingLetterMetrics.compactSize
-            : FloatingLetterMetrics.expandedSize
+    private func applyPanelSize() {
+        let target = targetSize
         var frame = panel.frame
         let anchor = NSPoint(x: frame.maxX, y: frame.maxY)
         frame.size = target
@@ -234,7 +245,11 @@ final class FloatingLetterOverlayController: NSObject {
             x: anchor.x - target.width,
             y: anchor.y - target.height
         )
-        panel.setFrame(frame, display: true, animate: true)
+        guard abs(frame.width - panel.frame.width) > 1
+            || abs(frame.height - panel.frame.height) > 1 else { return }
+        // 暂停时高度/布局不允许动画（直接跳变），避免抽搐。
+        let shouldAnimate = viewModel?.isPlaying ?? false
+        panel.setFrame(frame, display: true, animate: shouldAnimate)
         lastKnownFrame = frame
     }
 
@@ -295,9 +310,10 @@ final class FloatingLetterOverlayController: NSObject {
     /// 点击浮层范围：立即显示并重置 5 秒倒计时。
     private func handleClick(at point: NSPoint) {
         let region = panel.isVisible ? panel.frame : lastKnownFrame
-        guard region.contains(point) else { return }
-        showPanel()
-        viewModel?.registerInteraction()
+        if region.contains(point) {
+            showPanel()
+            viewModel?.registerInteraction()
+        }
     }
 
     /// 鼠标移入（TrackingArea）：立即显示并重置倒计时。
@@ -352,7 +368,9 @@ final class FloatingLetterOverlayController: NSObject {
 
     // MARK: - ViewModel 观察
     //
-    // 观察 isPinned：置顶开关变化时同步窗口层级（statusBar ↔ screenSaver）。
+    // 观察 isPinned / isCompact：
+    // 置顶开关变化时同步窗口层级（statusBar ↔ screenSaver）；
+    // 紧凑模式变化时同步窗口尺寸。
 
     private func observeViewModel() {
         observationTask?.cancel()
@@ -361,9 +379,13 @@ final class FloatingLetterOverlayController: NSObject {
             guard let self else { return }
             withObservationTracking {
                 _ = self.viewModel?.isPinned
+                _ = self.viewModel?.isCompact
+                _ = self.viewModel?.maxLines
+                _ = self.viewModel?.requiredSubtitleHeight
             } onChange: {
                 Task { @MainActor in
                     self.updateWindowLevel()
+                    self.applyPanelSize()
                     self.observeViewModel()
                 }
             }

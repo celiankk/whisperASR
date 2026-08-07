@@ -214,6 +214,33 @@ final class ModelManager {
         downloaders[model.id]!
     }
 
+    // MARK: - 统一操作门面
+    //
+    // 模型的选择 / 下载 / 取消 / 删除全部经 ModelManager 收口：
+    // UI（设置页）只读状态、调门面方法，不直接驱动 ModelDownloader。
+
+    /// 选择转录模型（仅允许已下载的模型）。
+    func select(_ model: WhisperModelInfo) {
+        guard isDownloaded(model) else { return }
+        guard selectedFileName != model.fileName else { return }
+        selectedFileName = model.fileName
+        AppLogger.shared.log(.model, "Model selected: \(model.fileName)")
+    }
+
+    /// 开始/继续下载（重复调用安全：下载中直接忽略）。
+    func startDownload(for model: WhisperModelInfo) {
+        let downloader = downloader(for: model)
+        guard downloader.state != .downloading else { return }
+        AppLogger.shared.log(.model, "Download start: \(model.fileName)")
+        downloader.startDownload()
+    }
+
+    /// 取消下载。
+    func cancelDownload(for model: WhisperModelInfo) {
+        AppLogger.shared.log(.model, "Download cancel: \(model.fileName)")
+        downloader(for: model).cancelDownload()
+    }
+
     /// Re-scan the Models directory. Catalog directory bundles only count as
     /// downloaded when all their required files are present.
     func refresh() {
@@ -237,6 +264,7 @@ final class ModelManager {
     }
 
     func delete(_ model: WhisperModelInfo) {
+        AppLogger.shared.log(.model, "Model deleted: \(model.fileName)")
         try? FileManager.default.removeItem(at: ModelCatalog.path(for: model))
         try? FileManager.default.removeItem(at: ModelDownloader.stagingDirectory(for: model))
         refresh()
@@ -247,5 +275,6 @@ final class ModelManager {
     private func downloadFinished(_ model: WhisperModelInfo) {
         refresh()
         selectedFileName = model.fileName
+        AppLogger.shared.log(.model, "Download finished: \(model.fileName)")
     }
 }

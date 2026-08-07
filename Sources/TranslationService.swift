@@ -92,6 +92,79 @@ enum TranslationError: LocalizedError {
     }
 }
 
+// MARK: - 源语言检测（翻译前分流）
+
+/// 识别出的源语言。中文（简/繁/港）一律直出原文，禁止进入翻译模型。
+enum SourceLanguage: String {
+    case zhCN
+    case zhTW
+    case zhHK
+    case en
+    case ja
+    case ko
+    case ru
+    case other
+
+    var isChinese: Bool {
+        switch self {
+        case .zhCN, .zhTW, .zhHK: return true
+        default: return false
+        }
+    }
+
+    /// 调试展示用名称。
+    var debugName: String {
+        switch self {
+        case .zhCN: return "zh-CN"
+        case .zhTW: return "zh-TW"
+        case .zhHK: return "zh-HK"
+        case .en: return "en"
+        case .ja: return "ja"
+        case .ko: return "ko"
+        case .ru: return "ru"
+        case .other: return "other"
+        }
+    }
+}
+
+// MARK: - 统一翻译引擎接口（TranslationEngine）
+
+/// 所有翻译提供方（LM Studio / Ollama / llama.cpp / 在线 OpenAI API）统一入口。
+/// 本地 GGUF 翻译模型通过外部 OpenAI 兼容服务加载（LM Studio / llama.cpp server），
+/// 本接口对上层屏蔽本地/在线差异。
+protocol TranslationEngine {
+    func translate(
+        segmentTexts: [String],
+        targetLanguage: String,
+        previousTranslations: [(original: String, translated: String)]
+    ) async throws -> [String]
+}
+
+/// OpenAI 兼容实现：本地（LM Studio / Ollama / llama.cpp）与在线 API 共用。
+struct OpenAICompatibleTranslationEngine: TranslationEngine {
+    let local: Bool
+
+    func translate(
+        segmentTexts: [String],
+        targetLanguage: String,
+        previousTranslations: [(original: String, translated: String)]
+    ) async throws -> [String] {
+        try await TranslationService.translateSegmentsWithOpenAI(
+            segmentTexts: segmentTexts,
+            targetLanguage: targetLanguage,
+            previousTranslations: previousTranslations,
+            local: local
+        )
+    }
+}
+
+/// 按当前翻译方式返回对应引擎。
+enum TranslationEngineFactory {
+    static func engine(local: Bool) -> TranslationEngine {
+        OpenAICompatibleTranslationEngine(local: local)
+    }
+}
+
 enum TranslationService {
     /// 翻译配置的 UserDefaults 键。
     enum ConfigKeys {
@@ -108,6 +181,49 @@ enum TranslationService {
         let endpoint = (UserDefaults.standard.string(forKey: ConfigKeys.endpoint) ?? "").trimmingCharacters(in: .whitespaces)
         let apiKey = UserDefaults.standard.string(forKey: ConfigKeys.apiKey) ?? ""
         return !endpoint.isEmpty || !apiKey.isEmpty
+    }
+
+    /// 简体标记字（出现即倾向于 zh-CN）。
+    private static let simplifiedMarkers = Set<Character>("们吗里为这个说时候后来对没从还让学问题发现进过开关点觉务处于国区体现识议车间长来")
+    /// 繁体标记字（出现即倾向于 zh-TW/zh-HK）。
+    private static let traditionalMarkers = Set<Character>("們嗎裡為這個說時後來對沒從還讓學問題發現進過開關點覺務處於國區體見識議車間長來")
+    /// 粤语（zh-HK）标记字。
+    private static let hkMarkers = Set<Character>("嘅咗嚟喺唔係乜嘢啲")
+
+    /// 检测一批字幕文本的源语言（按字符区间统计，不依赖翻译模型）。
+    static func detectSourceLanguage(_ texts: [String]) -> SourceLanguage {
+        let joined = texts.joined(separator: " ")
+        var han = 0, kana = 0, hangul = 0, cyrillic = 0, latin = 0
+        for scalar in joined.unicodeScalars {
+            let v = scalar.value
+            if (0x4E00...0x9FFF).contains(v) || (0x3400...0x4DBF).contains(v) {
+                han += 1
+            } else if (0x3040...0x30FF).contains(v) || (0x31F0...0x31FF).contains(v) {
+                kana += 1
+            } else if (0xAC00...0xD7AF).contains(v) || (0x1100...0x11FF).contains(v) {
+                hangul += 1
+            } else if (0x0400...0x04FF).contains(v) || (0x0500...0x052F).contains(v) {
+                cyrillic += 1
+            } else if (0x0041...0x007A).contains(v) {
+                latin += 1
+            }
+        }
+        if kana > 0 { return .ja }
+        if hangul > 0 { return .ko }
+        if cyrillic > 0 { return .ru }
+        if han > 0 { return chineseVariant(joined) }
+        if latin > 0 { return .en }
+        return .other
+    }
+
+    /// 中文变体：粤语标记优先（zh-HK），繁体次之（zh-TW），否则简体（zh-CN）。
+    private static func chineseVariant(_ text: String) -> SourceLanguage {
+        let chars = Set(text)
+        let hkCount = chars.intersection(hkMarkers).count
+        if hkCount > 0 { return .zhHK }
+        let traditionalCount = chars.intersection(traditionalMarkers).count
+        let simplifiedCount = chars.intersection(simplifiedMarkers).count
+        return traditionalCount > simplifiedCount ? .zhTW : .zhCN
     }
 
     /// 本地模型服务候选（LM Studio / Ollama / llama.cpp 服务器 / 本应用 API 服务器）。
@@ -323,9 +439,16 @@ enum TranslationService {
             do {
                 return try await performRequest(request)
             } catch let err as TranslationError where err.isRetriable && attempt < backoffs.count {
+                AppLogger.shared.log(
+                    .translation,
+                    "Request failed (attempt \(attempt + 1), retrying): \(err.localizedDescription)"
+                )
                 try? await Task.sleep(for: backoffs[attempt])
                 attempt += 1
                 continue
+            } catch {
+                AppLogger.shared.log(.translation, "Request failed (no retry): \(error.localizedDescription)")
+                throw error
             }
         }
     }

@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
@@ -12,7 +13,9 @@ struct SettingsView: View {
     @AppStorage(TranslationService.ConfigKeys.timeout) private var translationTimeout = 30.0
     @AppStorage(TranslationService.ConfigKeys.maxContext) private var translationMaxContext = 16000
     @AppStorage(TranslationService.ConfigKeys.temperature) private var translationTemperature = 0.3
-    @AppStorage("translationMode") private var translationModeRaw = TranslationMode.off.rawValue
+    /// 翻译方式统一由 AppState 管理（@Observable 单一数据源）；
+    /// 这里只保留只读代理，写入一律走 appState.setTranslationMode。
+    private var translationModeRaw: String { appState.translationMode.rawValue }
 
     // Local OpenAI-compatible API server
     @AppStorage(APIServer.enabledKey) private var apiServerEnabled = false
@@ -21,6 +24,12 @@ struct SettingsView: View {
     @AppStorage(APIServer.allowLANKey) private var apiServerAllowLAN = false
     @AppStorage(APIServer.verboseLogKey) private var apiServerVerboseLog = false
     @State private var apiServer = APIServer.shared
+    @State private var localModelManager = LocalModelManager.shared
+    @State private var screenCaptureMonitor = ScreenCaptureMonitor.shared
+    @State private var asrStatus = "检测中…"
+    @State private var asrStatusOK = false
+    @State private var translationStatus = "检测中…"
+    @State private var translationStatusOK = false
 
     @State private var verifyInFlight = false
     @State private var verifyResult: VerifyResult? = nil
@@ -57,24 +66,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
             }
 
-            Section("字幕浮层") {
-                // 浮层启停由录制流程驱动（点击“开始录制”自动显示），
-                // 这里只保留样式与交互偏好，不再提供显隐开关。
-                Picker("字幕最大行数", selection: Binding(
-                    get: { appState.maxSubtitleLines },
-                    set: { appState.setMaxSubtitleLines($0) }
-                )) {
-                    Text("1 行").tag(1)
-                    Text("2 行").tag(2)
-                    Text("3 行").tag(3)
-                }
-                Text("1=仅当前字幕；2/3=当前字幕 + 1 条历史字幕（约 1.8 秒后自动淡出消失）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("5 秒未点击自动隐藏控件", isOn: Binding(
-                    get: { appState.floatingOverlayAutoHide },
-                    set: { appState.setFloatingOverlayAutoHide($0) }
-                ))
+            Section("字幕文字") {
                 HStack {
                     Text("原文字号")
                     Spacer()
@@ -83,7 +75,7 @@ struct SettingsView: View {
                             get: { appState.subtitleOverlaySourceFontSize },
                             set: { appState.setSubtitleOverlaySourceFontSize($0) }
                         ),
-                        in: 14...40
+                        in: 20...72
                     )
                     .frame(width: 180)
                     Text("\(Int(appState.subtitleOverlaySourceFontSize))")
@@ -99,13 +91,108 @@ struct SettingsView: View {
                             get: { appState.subtitleOverlayTranslationFontSize },
                             set: { appState.setSubtitleOverlayTranslationFontSize($0) }
                         ),
-                        in: 12...32
+                        in: 20...72
                     )
                     .frame(width: 180)
                     Text("\(Int(appState.subtitleOverlayTranslationFontSize))")
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .frame(width: 28, alignment: .trailing)
+                }
+                Picker("字体粗细", selection: Binding(
+                    get: { appState.subtitleFontWeight },
+                    set: { appState.setSubtitleFontWeight($0) }
+                )) {
+                    Text("常规").tag("regular")
+                    Text("中等").tag("medium")
+                    Text("粗体").tag("bold")
+                }
+                .pickerStyle(.segmented)
+                HStack {
+                    Text("行间距")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleLineSpacing },
+                            set: { appState.setSubtitleLineSpacing($0) }
+                        ),
+                        in: 0...12
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleLineSpacing))")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, alignment: .trailing)
+                }
+                Picker("文字对齐", selection: Binding(
+                    get: { appState.subtitleHorizontalAlignment },
+                    set: { appState.setSubtitleHorizontalAlignment($0) }
+                )) {
+                    Text("左对齐").tag("left")
+                    Text("居中").tag("center")
+                }
+                .pickerStyle(.segmented)
+                Picker("字幕最大行数", selection: Binding(
+                    get: { appState.maxSubtitleLines },
+                    set: { appState.setMaxSubtitleLines($0) }
+                )) {
+                    Text("1 行").tag(1)
+                    Text("2 行").tag(2)
+                    Text("3 行").tag(3)
+                }
+                Text("字号只影响字幕文字，不影响字幕框与窗口大小。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("字幕区域") {
+                HStack {
+                    Text("字幕宽度")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleContainerWidth },
+                            set: { appState.setSubtitleContainerWidth($0) }
+                        ),
+                        in: 400...1200
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleContainerWidth))")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                HStack {
+                    Text("字幕高度")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleContainerHeight },
+                            set: { appState.setSubtitleContainerHeight($0) }
+                        ),
+                        in: 100...400
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleContainerHeight))")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                HStack {
+                    Text("背景透明度")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleBackgroundOpacity },
+                            set: { appState.setSubtitleBackgroundOpacity($0) }
+                        ),
+                        in: 0.1...0.8
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleBackgroundOpacity * 100))%")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
                 }
                 HStack {
                     Text("边框透明度")
@@ -123,6 +210,131 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 40, alignment: .trailing)
                 }
+                Text("字幕框填满浮窗内容区：拖动任意空白处移动窗口，左上角 40×40 区域缩放。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("字幕编辑边框") {
+                Toggle("显示编辑边框", isOn: Binding(
+                    get: { appState.subtitleEditBorderVisible },
+                    set: { appState.setSubtitleEditBorderVisible($0) }
+                ))
+                HStack {
+                    Text("边框颜色")
+                    Spacer()
+                    ColorPicker("", selection: Binding(
+                        get: {
+                            SettingsView.color(fromHex: appState.subtitleEditBorderColorHex) ?? .white
+                        },
+                        set: { color in
+                            appState.setSubtitleEditBorderColorHex(SettingsView.hex(from: color))
+                        }
+                    ))
+                    .labelsHidden()
+                }
+                HStack {
+                    Text("边框透明度")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleEditBorderOpacity },
+                            set: { appState.setSubtitleEditBorderOpacity($0) }
+                        ),
+                        in: 0...1
+                    )
+                    .frame(width: 180)
+                    Text("\(Int(appState.subtitleEditBorderOpacity * 100))%")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                Text("只影响边框显示；关闭后窗口仍可移动与缩放。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("字幕浮层行为") {
+                HStack {
+                    Text("字幕空闲清除")
+                    Spacer()
+                    TextField("3", value: Binding(
+                        get: { appState.subtitleClearDelay },
+                        set: { appState.setSubtitleClearDelay($0) }
+                    ), format: .number.grouping(.never))
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 50)
+                        .textFieldStyle(.roundedBorder)
+                    Text("秒")
+                        .foregroundStyle(.secondary)
+                }
+                Text("3 秒没有新的识别输入时自动清空浮窗字幕（1–10 秒）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("最短识别时长")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleMinSpeechDuration },
+                            set: { appState.setSubtitleMinSpeechDuration($0) }
+                        ),
+                        in: 0.5...3,
+                        step: 0.1
+                    )
+                    .frame(width: 180)
+                    Text(String(format: "%.1fs", appState.subtitleMinSpeechDuration))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+                Text("讲话不足该时长不显示字幕（避免嗯/啊等单字触发）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("最长单句时长")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleMaxSentenceDuration },
+                            set: { appState.setSubtitleMaxSentenceDuration($0) }
+                        ),
+                        in: 2...15,
+                        step: 0.5
+                    )
+                    .frame(width: 180)
+                    Text(String(format: "%.1fs", appState.subtitleMaxSentenceDuration))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+                Text("一句话超过该时长强制截断，内容移到下一句显示。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("停顿判定阈值")
+                    Spacer()
+                    Slider(
+                        value: Binding(
+                            get: { appState.subtitleSilencePause },
+                            set: { appState.setSubtitleSilencePause($0) }
+                        ),
+                        in: 0.5...3,
+                        step: 0.1
+                    )
+                    .frame(width: 180)
+                    Text(String(format: "%.1fs", appState.subtitleSilencePause))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+                Text("停顿超过该时长判定一句结束并发送翻译。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("5 秒未点击自动隐藏控件", isOn: Binding(
+                    get: { appState.floatingOverlayAutoHide },
+                    set: { appState.setFloatingOverlayAutoHide($0) }
+                ))
                 Button("浮层回到默认位置") {
                     appState.resetFloatingOverlayPosition()
                 }
@@ -130,8 +342,8 @@ struct SettingsView: View {
 
             Section("翻译") {
                 Picker("翻译方式", selection: Binding(
-                    get: { TranslationMode(rawValue: translationModeRaw) ?? .off },
-                    set: { translationModeRaw = $0.rawValue }
+                    get: { appState.translationMode },
+                    set: { appState.setTranslationMode($0) }
                 )) {
                     ForEach(TranslationMode.allCases, id: \.self) { mode in
                         Text(mode.label).tag(mode)
@@ -317,6 +529,74 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("本地模型管理") {
+                HStack {
+                    TextField("模型目录", text: Binding(
+                        get: { localModelManager.directoryPath },
+                        set: { localModelManager.directoryPath = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    Button("浏览…") { browseLocalModelDirectory() }
+                    if !localModelManager.directoryPath.isEmpty {
+                        Button("清空") { localModelManager.clearDirectory() }
+                    }
+                }
+                if localModelManager.models.isEmpty {
+                    Text(localModelManager.directoryPath.isEmpty
+                         ? "选择包含 .gguf / .bin / .whisper 文件的目录后自动扫描。"
+                         : "目录中未找到模型文件。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(localModelManager.models) { model in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(model.name)
+                                Text(model.path)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer()
+                            Text(model.sizeText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(model.status)
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+                    }
+                }
+                Text("本地扫描不联网；在线下载与 LM Studio 探测仍由模型管理器负责。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("系统状态") {
+                statusRow(
+                    "屏幕捕获",
+                    screenCaptureMonitor.screenCaptureGranted
+                        ? "✓ 正常"
+                        : "✗ 未授权（系统设置 → 隐私与安全性 → 屏幕录制）",
+                    ok: screenCaptureMonitor.screenCaptureGranted
+                )
+                statusRow(
+                    "麦克风",
+                    screenCaptureMonitor.microphoneGranted
+                        ? "✓ 正常"
+                        : "✗ 未授权（系统设置 → 隐私与安全性 → 麦克风）",
+                    ok: screenCaptureMonitor.microphoneGranted
+                )
+                statusRow("ASR", asrStatus, ok: asrStatusOK)
+                statusRow("翻译", translationStatus, ok: translationStatusOK)
+                Button("重新检测") { refreshSystemStatus() }
+            }
+            .onAppear {
+                screenCaptureMonitor.refresh()
+                refreshSystemStatus()
+            }
+
             Section("本地 API 服务器（兼容 OpenAI）") {
                 Toggle("运行转录 API 服务器", isOn: $apiServerEnabled)
                     .onChange(of: apiServerEnabled) { _, on in
@@ -478,6 +758,107 @@ struct SettingsView: View {
         }
     }
 
+    private func browseLocalModelDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                localModelManager.directoryPath = url.path
+            }
+        }
+    }
+
+    /// 系统状态行：✓ 正常 / ✗ 异常原因。
+    private func statusRow(_ title: String, _ value: String, ok: Bool) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(ok ? .green : .red)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    /// 重新检测：屏幕捕获 / 麦克风 / ASR 模型 / 翻译服务。
+    private func refreshSystemStatus() {
+        screenCaptureMonitor.refresh()
+
+        // ASR 状态与 TranscriptionService.resolveModelPath 同一优先级：
+        // 自定义本地模型路径 > 显式选择的下载模型 > 自动（默认路径存在即可用）。
+        let customPath = UserDefaults.standard.string(forKey: "modelPath") ?? ""
+        if !customPath.isEmpty, FileManager.default.fileExists(atPath: customPath) {
+            let name = (customPath as NSString).lastPathComponent
+            asrStatus = "✓ 本地模型：\(name)"
+            asrStatusOK = true
+        } else {
+            let modelName = ModelManager.shared.liveFileName.isEmpty
+                ? ModelManager.shared.selectedFileName
+                : ModelManager.shared.liveFileName
+            if !modelName.isEmpty {
+                asrStatus = "✓ \(modelName)"
+                asrStatusOK = true
+            } else if TranscriptionService.modelExists() {
+                asrStatus = "✓ 自动（默认模型）"
+                asrStatusOK = true
+            } else {
+                asrStatus = "✗ 未选择模型"
+                asrStatusOK = false
+            }
+        }
+
+        translationStatus = "检测中…"
+        translationStatusOK = false
+        let mode = TranslationMode(rawValue: translationModeRaw) ?? .off
+        Task { @MainActor in
+            if mode == .off {
+                translationStatus = "关闭"
+                translationStatusOK = true
+            } else if mode == .localModel {
+                let endpoint = await TranslationService.resolveLocalEndpoint()
+                if let model = await TranslationService.fetchFirstLocalModel(baseURL: endpoint) {
+                    translationStatus = "✓ \(model)（\(endpoint)）"
+                    translationStatusOK = true
+                } else {
+                    translationStatus = "✗ 本地服务未连接（LM Studio / Ollama 未启动）"
+                    translationStatusOK = false
+                }
+            } else if TranslationService.isAPIConfigured {
+                translationStatus = "✓ 已配置"
+                translationStatusOK = true
+            } else {
+                translationStatus = "✗ 未配置 API 端点 / Key"
+                translationStatusOK = false
+            }
+        }
+    }
+
+    /// hex string → Color（ColorPicker 绑定）。
+    static func color(fromHex hex: String) -> Color? {
+        var value: UInt64 = 0
+        let cleaned = hex.trimmingCharacters(in: .whitespaces)
+        guard Scanner(string: cleaned).scanHexInt64(&value) else { return nil }
+        return Color(
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255
+        )
+    }
+
+    /// Color → hex string（持久化）。
+    static func hex(from color: Color) -> String {
+        let nsColor = NSColor(color)
+        guard let rgb = nsColor.usingColorSpace(.sRGB) else { return "FFFFFF" }
+        return String(
+            format: "%02X%02X%02X",
+            Int((rgb.redComponent * 255).rounded()),
+            Int((rgb.greenComponent * 255).rounded()),
+            Int((rgb.blueComponent * 255).rounded())
+        )
+    }
+
     // MARK: - Backup & Restore
 
     private static func backupDateString() -> String {
@@ -600,7 +981,7 @@ private struct ModelRowView: View {
     var body: some View {
         HStack(spacing: 10) {
             Button {
-                manager.selectedFileName = model.fileName
+                manager.select(model)
             } label: {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
@@ -635,7 +1016,7 @@ private struct ModelRowView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                 Button {
-                    downloader.cancelDownload()
+                    manager.cancelDownload(for: model)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -649,7 +1030,7 @@ private struct ModelRowView: View {
                         .help("下载失败 — 点击下载重试")
                 }
                 Button(downloader.hasResumeData ? "继续" : "下载") {
-                    downloader.startDownload()
+                    manager.startDownload(for: model)
                 }
             }
         }

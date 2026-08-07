@@ -1,0 +1,40 @@
+import Foundation
+import Observation
+import AVFoundation
+import CoreGraphics
+import AppKit
+
+// MARK: - 屏幕捕获 / 麦克风状态检测（ScreenCaptureMonitor）
+//
+// 检测 macOS 屏幕录制权限、麦克风权限与捕获源进程生命周期。
+// 录制期间 AppState 健康检查用它判断“屏幕共享软件是否被关闭”，
+// 一旦源消失自动结束录制并释放全部资源（Audio / ASR / 字幕 / Task）。
+
+@Observable
+final class ScreenCaptureMonitor {
+    static let shared = ScreenCaptureMonitor()
+
+    private(set) var screenCaptureGranted = false
+    private(set) var microphoneGranted = false
+
+    private init() {
+        refresh()
+    }
+
+    func refresh() {
+        // 屏幕录制权限（CGPreflightScreenCaptureAccess，macOS 10.15+）。
+        screenCaptureGranted = CGPreflightScreenCaptureAccess()
+        // 麦克风权限。
+        microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
+    /// 指定应用进程是否仍在运行（用于屏幕共享/捕获源被关闭的检测）。
+    func isProcessRunning(processIdentifier: pid_t?, bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return true }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+        if let pid = processIdentifier {
+            return running.contains { $0.processIdentifier == pid }
+        }
+        return !running.isEmpty
+    }
+}

@@ -11,6 +11,13 @@ struct WhisperASRApp: App {
 
     @Environment(\.openWindow) private var openWindow
 
+    init() {
+        // macOS SwiftUI 已知崩溃防护：NSHostingView 在窗口缩放/显示周期内重入
+        // 约束更新会触发 AppKit "Update Constraints in Window pass" 断言 abort。
+        // 关闭该断言：AppKit 退化为日志记录，不再崩溃（见 newdme 第十三节）。
+        UserDefaults.standard.set(false, forKey: "NSWindowAssertWhenDisplayCycleLimitReached")
+    }
+
     var body: some Scene {
         Window("WhisperASR", id: "main") {
             ContentView()

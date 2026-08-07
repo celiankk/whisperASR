@@ -4,7 +4,10 @@ import Observation
 
 @Observable
 class AppState {
-    var items: [TranscriptionItem] = []
+    /// 转录历史由 TranscriptionHistoryManager 统一持有（保存/删除/批量删除/
+    /// 查询/上限裁剪）；items 为只读转发，任何增删必须走 history 管理器。
+    let history = TranscriptionHistoryManager()
+    var items: [TranscriptionItem] { history.items }
     var selectedItemID: UUID?
 
     // Live transcription state
@@ -26,12 +29,16 @@ class AppState {
 
     // Live translation state (per-segment)
     var liveTranslatedSegments: [String] = []
-    /// 翻译方式：不翻译 / 本地模型 / 在线 API（每次读取 UserDefaults，设置页改动即时生效）。
-    var translationMode: TranslationMode { TranslationMode.current }
+    /// 翻译方式：不翻译 / 本地模型 / 在线 API。
+    /// 统一状态管理：存储属性（@Observable 可跟踪），setTranslationMode 为唯一写入口，
+    /// UserDefaults 只做持久化镜像。禁止 View 各自保存副本。
+    private(set) var translationMode: TranslationMode = TranslationMode.current
     /// 是否开启实时翻译（由翻译方式派生，保持旧接口兼容）。
     var enableLiveTranslation: Bool { translationMode != .off }
 
     func setTranslationMode(_ mode: TranslationMode) {
+        guard translationMode != mode else { return }
+        translationMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "translationMode")
     }
     /// User-controlled pause for live translation (e.g. the speaker switched to
@@ -40,11 +47,6 @@ class AppState {
     /// resume, segments spoken during the pause are skipped so only new speech
     /// is translated.
     var liveTranslationPaused = false
-    private var liveTranslatedSourceTexts: [String] = []  // tracks what text each translation was for
-    /// Parallel to liveTranslatedSegments: number of consecutive chunks a segment's
-    /// source text has been stable. Sealed (>= sealThreshold) segments are never retranslated.
-    private var liveTranslatedSealCount: [Int] = []
-    private static let sealThreshold = 3
 
     // 一体化字幕浮层（newdme.md）：字幕 + 工具栏 + 录制控制同在一个长条浮层。
     // 浮层启停由录制流程驱动（点击“开始录制”自动显示），这里只保留样式偏好，
@@ -55,14 +57,77 @@ class AppState {
         static let borderOpacity = "subtitleOverlayBorderOpacity"
     }
 
-    var subtitleOverlaySourceFontSize = AppState.storedDouble(SubtitleOverlayKeys.sourceFontSize, default: 26)
-    var subtitleOverlayTranslationFontSize = AppState.storedDouble(SubtitleOverlayKeys.translationFontSize, default: 19)
+    var subtitleOverlaySourceFontSize = AppState.storedDouble(SubtitleOverlayKeys.sourceFontSize, default: 32)
+    var subtitleOverlayTranslationFontSize = AppState.storedDouble(SubtitleOverlayKeys.translationFontSize, default: 24)
     var subtitleOverlayBorderOpacity = AppState.storedDouble(SubtitleOverlayKeys.borderOpacity, default: 0.08)
-    /// 字幕最大显示行数（1–3，默认 2）。超过时自动移除最旧一行，新字幕优先。
+    /// 字幕最大显示行数（1–3，默认 3）。超过时滚动显示，不省略内容。
     var maxSubtitleLines: Int = {
         let stored = UserDefaults.standard.object(forKey: "subtitleMaxLines") as? Int
-        return min(max(stored ?? 2, 1), 3)
+        return min(max(stored ?? 3, 1), 3)
     }()
+    /// 字幕水平对齐（"left" / "center"，默认居中；只影响文本对齐，不移动窗口）。
+    var subtitleHorizontalAlignment: String = {
+        UserDefaults.standard.string(forKey: "subtitleHorizontalAlignment") ?? "center"
+    }()
+    /// 字幕空闲自动清除延迟（秒，默认 3；3 秒无新 ASR 输入清空浮窗）。
+    var subtitleClearDelay: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleClearDelay") as? NSNumber
+        return min(max(stored?.doubleValue ?? 3, 1), 10)
+    }()
+    /// 句子端点：最短识别时长（秒，默认 1；讲话不足不显示，避免嗯/啊）。
+    var subtitleMinSpeechDuration: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleMinSpeechDuration") as? NSNumber
+        return min(max(stored?.doubleValue ?? 1, 0.5), 3)
+    }()
+    /// 句子端点：最长单句时长（秒，默认 5；超过强制截断换下一句）。
+    var subtitleMaxSentenceDuration: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleMaxSentenceDuration") as? NSNumber
+        return min(max(stored?.doubleValue ?? 5, 2), 15)
+    }()
+    /// 句子端点：停顿判定阈值（秒，默认 1；停顿超过即一句结束）。
+    var subtitleSilencePause: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleSilencePause") as? NSNumber
+        return min(max(stored?.doubleValue ?? 1, 0.5), 3)
+    }()
+    // MARK: 字幕容器（SubtitleContainerLayer）——与字体解耦
+
+    var subtitleContainerWidth: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleFrameWidth") as? NSNumber
+        return min(max(stored?.doubleValue ?? 800, 400), 4000)
+    }()
+    var subtitleContainerHeight: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleFrameHeight") as? NSNumber
+        return min(max(stored?.doubleValue ?? 240, 100), 2160)
+    }()
+    var subtitleBackgroundOpacity: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleBackgroundOpacity") as? NSNumber
+        return min(max(stored?.doubleValue ?? 0.34, 0.1), 0.8)
+    }()
+    // MARK: 字幕编辑边框（默认显示，可配置颜色/透明度；只影响视觉）
+
+    var subtitleEditBorderVisible: Bool = {
+        UserDefaults.standard.object(forKey: "subtitleEditBorderVisible") as? Bool ?? true
+    }()
+    var subtitleEditBorderColorHex: String = {
+        UserDefaults.standard.string(forKey: "subtitleEditBorderColorHex") ?? "FFFFFF"
+    }()
+    var subtitleEditBorderOpacity: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleEditBorderOpacity") as? NSNumber
+        return min(max(stored?.doubleValue ?? 0.8, 0), 1)
+    }()
+    // MARK: 字幕文字（SubtitleTextLayer）
+
+    var subtitleFontWeight: String = {
+        let stored = UserDefaults.standard.string(forKey: "subtitleFontWeight") ?? "medium"
+        return ["regular", "medium", "bold"].contains(stored) ? stored : "medium"
+    }()
+    var subtitleLineSpacing: Double = {
+        let stored = UserDefaults.standard.object(forKey: "subtitleLineSpacing") as? NSNumber
+        return min(max(stored?.doubleValue ?? 2, 0), 12)
+    }()
+    /// 本地翻译服务不可用（LM Studio 断开等）：自动降级为“仅识别模式”，
+    /// 保留原文显示，不崩溃、不无限重试。
+    private(set) var translationUnavailable = false
     /// Allow the floating overlay to auto-hide when the mouse stays outside it.
     var floatingOverlayAutoHide = UserDefaults.standard.bool(forKey: "floatingOverlayAutoHide")
     /// Live transcript display mode (only translation vs original + translation).
@@ -81,17 +146,20 @@ class AppState {
     private let service = TranscriptionService()
     private var isTranscribing = false
     private var liveTranscriptionTask: Task<Void, Never>?
-    private var liveTranslationTask: Task<Void, Never>?
-    /// Single-slot queue: each snapshot supersedes the previous one (they are cumulative),
-    /// so keeping a queue of old snapshots was pure wasted work. `countsSeals` is
-    /// true for seal-anchored snapshots — only those advance the translation seal
-    /// counts, so the faster interim passes can't prematurely lock a segment.
-    private var pendingTranslationSnapshot: (segments: [TranscriptionSegment], countsSeals: Bool)?
-    private var isTranslationWorkerRunning = false
+    /// 文件转录队列任务句柄（shutdown 时统一取消，避免后台任务残留）。
+    private var transcriptionQueueTask: Task<Void, Never>?
+    /// 整段翻译任务句柄（shutdown 时统一取消）。
+    private var translateItemTask: Task<Void, Never>?
     private var translationFailureCount = 0
     /// Set when translation is paused due to an auth error; cleared on next start.
     private var translationAuthPaused = false
     private var lastAutoSaveTime: Date = .distantPast
+    /// 字幕引擎：统一生命周期 / 刷新节流 / 性能监控 / 日志 / 异常恢复。
+    let subtitleEngine = SubtitleEngine.shared
+    /// 每 5 秒一次的健康检查任务（资源快照 + 自动恢复）。
+    private var healthCheckTask: Task<Void, Never>?
+    /// 当前录制使用的音频源（自动恢复重启 ASR 会话时使用）。
+    private weak var liveRecorder: AudioRecorder?
 
     /// Maximum chunk duration sent to whisper (30 seconds at 16kHz).
     /// Caps processing time so the loop never snowballs.
@@ -100,15 +168,18 @@ class AppState {
     /// the live tail rather than waiting longer. Kept well under `maxChunkSamples` so the live tail
     /// is always transcribed and no audio is silently dropped.
     private static let forceChunkSamples = 16000 * 12
-    /// Minimum spacing between interim (mid-utterance) live-translation passes.
-    /// Seal-anchored passes are not throttled. Streaming engines like Nemotron
-    /// finish transcription passes in well under a second, so this is what sets
-    /// the effective translation cadence; whisper's slower passes self-limit.
-    private static let interimTranslationInterval: TimeInterval = 2.0
+    /// 实时显示分段上限：超过丢弃最旧（环形窗口），防止数小时录制内存无限增长。
+    private static let maxLiveSegments = 100
+    /// sealed 分段上限：只保留近期（用于 overlap/显示），旧段不再需要。
+    private static let maxSealedSegments = 200
 
     init() {
-        items = TranscriptionStore.loadAll()
+        history.load()
         selectedItemID = items.first?.id
+        // 统一错误管理：非致命错误（模型/API/网络/ASR）→ 分类日志 + toast，不退出。
+        ErrorManager.shared.toastHandler = { [weak self] message in
+            self?.showToast(message)
+        }
         // Auto-resume any pending items restored from disk
         if items.contains(where: { $0.status == .pending }) {
             startNextTranscription()
@@ -134,9 +205,8 @@ class AppState {
         }
 
         let item = TranscriptionItem(fileURL: url)
-        items.insert(item, at: 0)
+        history.add(item)
         selectedItemID = item.id
-        TranscriptionStore.save(item)
         enqueueTranscription(for: item)
     }
 
@@ -174,7 +244,7 @@ class AppState {
             item.fileURL = newURL
         }
         item.fileName = nameWithExt
-        TranscriptionStore.save(item)
+        history.save(item)
     }
 
     /// Add a file with pre-existing live transcription results (skip re-transcription).
@@ -187,9 +257,8 @@ class AppState {
         item.translatedSegments = translatedSegments
         item.translationLanguage = translationLanguage
         item.status = .completed
-        items.insert(item, at: 0)
+        history.add(item)
         selectedItemID = item.id
-        TranscriptionStore.save(item)
         return item
     }
 
@@ -229,7 +298,7 @@ class AppState {
                 segments: segments, fullText: fullText,
                 translatedSegments: translations, translationLanguage: lang)
             item.fileName = "Recording \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short)) (audio not saved)"
-            TranscriptionStore.save(item)
+            history.save(item)
         }
         recorder.state = .idle
     }
@@ -262,8 +331,10 @@ class AppState {
 
         // @MainActor: `item` is observed by SwiftUI, so every mutation below must
         // land on the main actor; only the translation API calls suspend off it.
-        Task { @MainActor in
+        translateItemTask?.cancel()
+        translateItemTask = Task { @MainActor in
             let texts = item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
+
             let batchSize = 20
             var transientFailures = 0
 
@@ -277,12 +348,14 @@ class AppState {
                     return (original: texts[i], translated: item.translatedSegments[i])
                 }
 
+                let engine = TranslationEngineFactory.engine(
+                    local: TranslationMode.current == .localModel
+                )
                 do {
-                    let translations = try await TranslationService.translateSegmentsWithOpenAI(
+                    let translations = try await engine.translate(
                         segmentTexts: batch,
                         targetLanguage: targetLanguage,
-                        previousTranslations: contextPairs,
-                        local: TranslationMode.current == .localModel
+                        previousTranslations: contextPairs
                     )
                     for (offset, translation) in translations.enumerated() {
                         item.translatedSegments[batchStart + offset] = translation
@@ -310,26 +383,54 @@ class AppState {
             }
 
             item.isTranslating = false
-            TranscriptionStore.save(item)
+            history.save(item)
         }
     }
 
     func clearTranslation(_ item: TranscriptionItem) {
         item.translatedSegments = []
         item.translationLanguage = nil
-        TranscriptionStore.save(item)
+        history.save(item)
     }
 
+    /// 应用退出：取消全部后台任务（ASR / 翻译 / 健康检查 / toast / 转录队列），
+    /// 释放模型与推理资源。任何一步失败都不影响退出流程。
     func shutdown() {
+        liveTranscriptionTask?.cancel()
+        liveTranscriptionTask = nil
+        healthCheckTask?.cancel()
+        healthCheckTask = nil
+        toastDismissTask?.cancel()
+        toastDismissTask = nil
+        translateItemTask?.cancel()
+        translateItemTask = nil
+        transcriptionQueueTask?.cancel()
+        transcriptionQueueTask = nil
+        sentenceTranslationChain?.cancel()
+        sentenceTranslationChain = nil
+        sentenceTranslationPending = 0
+        subtitleEngine.stop()
         service.shutdown()
     }
 
     func removeItem(_ item: TranscriptionItem) {
-        items.removeAll { $0.id == item.id }
-        TranscriptionStore.delete(item)
+        history.remove(item)
         if selectedItemID == item.id {
             selectedItemID = items.first?.id
         }
+    }
+
+    /// 批量删除：返回实际删除数量（进行中的转录自动跳过）。
+    /// 录音文件移废纸篓（可恢复），导入文件只移除记录。
+    @discardableResult
+    func removeItems(ids: Set<UUID>) -> Int {
+        let removed = history.remove(ids: ids)
+        if let selected = selectedItemID,
+           ids.contains(selected),
+           !items.contains(where: { $0.id == selected }) {
+            selectedItemID = items.first?.id
+        }
+        return removed
     }
 
     private func enqueueTranscription(for item: TranscriptionItem) {
@@ -340,7 +441,7 @@ class AppState {
     }
 
     private func startNextTranscription() {
-        guard let item = items.first(where: { $0.status == .pending }) else {
+        guard let item = history.firstPending() else {
             isTranscribing = false
             return
         }
@@ -349,7 +450,7 @@ class AppState {
         item.progress = 0
         item.transcriptionStartTime = Date()
 
-        Task.detached { [service] in
+        transcriptionQueueTask = Task.detached { [service, history] in
             do {
                 let result = try await service.transcribe(fileURL: item.fileURL) { progress in
                     Task { @MainActor in
@@ -360,12 +461,12 @@ class AppState {
                     item.segments = result.segments
                     item.fullText = result.text
                     item.status = .completed
-                    TranscriptionStore.save(item)
+                    history.save(item)
                 }
             } catch {
                 await MainActor.run {
                     item.status = .failed(error.localizedDescription)
-                    TranscriptionStore.save(item)
+                    history.save(item)
                 }
             }
             await MainActor.run { [weak self] in
@@ -381,11 +482,15 @@ class AppState {
         liveSegments = []
         liveError = nil
         liveTranslationError = nil
-        liveTranslatedSealCount = []
         translationFailureCount = 0
         translationAuthPaused = false
         liveTranslationPaused = false
         isLiveTranscribing = true
+        subtitleEngine.start()
+        SubtitleHistoryManager.shared.clear()
+        liveRecorder = recorder
+        startHealthCheck()
+        AppLogger.shared.log(.asr, "Live transcription started")
 
         liveTranscriptionTask = Task { [weak self] in
             guard let self else { return }
@@ -395,6 +500,11 @@ class AppState {
             do {
                 try await self.service.preloadLiveModel()
             } catch {
+                ErrorManager.shared.report(
+                    .model, error,
+                    context: "preloadLiveModel",
+                    userFacing: "Couldn't load transcription model: \(error.localizedDescription)"
+                )
                 await MainActor.run {
                     self.liveError = "Couldn't load transcription model: \(error.localizedDescription)"
                     self.isLiveTranscribing = false
@@ -415,10 +525,6 @@ class AppState {
             var sealedClean = true
             var consecutiveSilenceCount = 0
             var lastTranscribedTotal = 0
-            // Interim-translation debounce (see interimTranslationInterval).
-            var lastInterimTranslation = Date.distantPast
-            var lastTranslatedSnapshotText = ""
-
             // Silence-scan tuning (16kHz): 100ms frames; a run of >=3 (~300ms) counts as a pause.
             let frameSamples = 1600
             let minSilenceFrames = 3
@@ -447,7 +553,7 @@ class AppState {
                     consecutiveSilenceCount += 1
                     let snapshot = sealedSegments
                     await MainActor.run {
-                        self.liveSegments = snapshot
+                        self.liveSegments = Array(snapshot.suffix(Self.maxLiveSegments))
                         self.throttledAutoSave()
                     }
                     try? await Task.sleep(for: .milliseconds(consecutiveSilenceCount >= 2 ? 1000 : 500))
@@ -526,47 +632,36 @@ class AppState {
                         newSeal = totalSamples; newSealClean = false
                     }
 
-                    var sealAdvanced = false
                     if newSeal > sealedSampleCount {
                         let sealTime = Double(newSeal) / 16000.0
                         sealedSegments = combined.filter { $0.start < sealTime }
                         sealedSampleCount = newSeal
                         sealedClean = newSealClean
-                        sealAdvanced = true
                         // Nothing behind a clean (silence) seal is needed again; keep 1s behind a
                         // forced seal for the next pass's overlap.
                         recorder.trimSamples(upTo: max(0, newSeal - (newSealClean ? 0 : contextSamples)))
                     }
 
-                    let snapshot = combined
+                    // 环形窗口：只保留近期段，防止数小时运行内存无限增长。
+                    if sealedSegments.count > Self.maxSealedSegments {
+                        sealedSegments.removeFirst(sealedSegments.count - Self.maxSealedSegments)
+                    }
+                    let snapshot = Array(combined.suffix(Self.maxLiveSegments))
                     await MainActor.run {
                         self.liveSegments = snapshot
                         self.throttledAutoSave()
                     }
-                    // Seal-anchored passes always translate. Between seals, also translate the
-                    // in-progress tail on a debounce so translations keep up with fast streaming
-                    // engines — the worker is single-flight/latest-wins and the dirty-scan skips
-                    // unchanged text, so this stays cheap and flicker is bounded to the tail.
-                    if self.enableLiveTranslation && !snapshot.isEmpty {
-                        let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
-                        let snapshotText = snapshot.map(\.text).joined(separator: "\n")
-                        let interimDue = Date().timeIntervalSince(lastInterimTranslation) >= Self.interimTranslationInterval
-                            && snapshotText != lastTranslatedSnapshotText
-                        if !targetLang.isEmpty && (sealAdvanced || interimDue) {
-                            lastInterimTranslation = Date()
-                            lastTranslatedSnapshotText = snapshotText
-                            await MainActor.run {
-                                self.enqueueLiveTranslation(snapshot, countsSeals: sealAdvanced)
-                            }
-                        }
-                    }
+                    // 翻译不再按每个快照触发：由字幕层检测到“一句结束”后，
+                    // 通过 translateSentence 整句单飞发送（见 Live Translation）。
                 } catch is TimeoutError {
-                    print("[AppState] live transcription chunk timed out after \(timeoutSeconds)s")
+                    ErrorManager.shared.report(
+                        .asr, context: "chunk timed out after \(timeoutSeconds)s"
+                    )
                     await MainActor.run {
                         self.liveError = "Transcription is slow — the model or GPU may be stuck. Continuing with next chunk."
                     }
                 } catch {
-                    print("[AppState] live transcription chunk error: \(error)")
+                    ErrorManager.shared.report(.asr, error, context: "live transcription chunk")
                 }
 
                 try? await Task.sleep(for: .milliseconds(250))
@@ -581,10 +676,13 @@ class AppState {
         // Free the dedicated live model (if one was loaded) — the final file
         // transcription uses the main model.
         service.unloadLiveModel()
-        liveTranslationTask?.cancel()
-        liveTranslationTask = nil
-        pendingTranslationSnapshot = nil
-        isTranslationWorkerRunning = false
+        sentenceTranslationChain?.cancel()
+        sentenceTranslationChain = nil
+        sentenceTranslationPending = 0
+        healthCheckTask?.cancel()
+        healthCheckTask = nil
+        liveRecorder = nil
+        subtitleEngine.stop()
         translationFailureCount = 0
         translationAuthPaused = false
         isLiveTranscribing = false
@@ -593,10 +691,67 @@ class AppState {
         // Clear live results (the final file transcription will replace them)
         liveSegments = []
         liveTranslatedSegments = []
-        liveTranslatedSourceTexts = []
-        liveTranslatedSealCount = []
         liveTranslationPaused = false
         removeLiveRecoveryFile()
+        AppLogger.shared.log(.asr, "Live transcription stopped")
+    }
+
+    // MARK: - 健康检查与自动恢复
+
+    /// 每 5 秒一次：资源快照；发现异常（内存持续增长/队列过长）自动恢复。
+    private func startHealthCheck() {
+        healthCheckTask?.cancel()
+        healthCheckTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, !Task.isCancelled, self.isLiveTranscribing else { return }
+                self.performHealthCheck()
+            }
+        }
+    }
+
+    @MainActor
+    private func performHealthCheck() {
+        // 屏幕共享/捕获源被关闭：自动结束录制并释放全部资源。
+        if let recorder = liveRecorder,
+           recorder.state == .recording,
+           !recorder.isCaptureSourceRunning() {
+            subtitleEngine.logger.log("Capture source stopped — auto ending recording")
+            Task { await self.finishRecording(recorder: recorder) }
+            return
+        }
+
+        let model = ModelManager.shared.liveFileName.isEmpty
+            ? ModelManager.shared.selectedFileName
+            : ModelManager.shared.liveFileName
+        let anomaly = subtitleEngine.tick(
+            asr: liveTranscriptionTask == nil ? 0 : 1,
+            translationQueue: sentenceTranslationPending,
+            subtitleBuffers: liveSegments.count + liveTranslatedSegments.count,
+            model: model.isEmpty ? "none" : model
+        )
+        if anomaly {
+            recoverFromAnomaly()
+        }
+    }
+
+    /// 自动恢复：清理字幕缓存、取消旧任务、必要时重启 ASR 循环；不崩溃。
+    @MainActor
+    private func recoverFromAnomaly() {
+        subtitleEngine.logger.log("Auto-recovery: cleaning caches and stale tasks")
+        translationFailureCount = 0
+
+        // 收紧环形窗口（正常路径已按上限裁剪，这里兜底）。
+        let cap = Self.maxLiveSegments
+        if liveSegments.count > cap { liveSegments = Array(liveSegments.suffix(cap)) }
+        if liveTranslatedSegments.count > cap { liveTranslatedSegments = Array(liveTranslatedSegments.suffix(cap)) }
+
+        // ASR 循环意外死亡时重启一次（由 isLiveTranscribing + 任务存在性保护，避免递归）。
+        if liveTranscriptionTask == nil, isLiveTranscribing, let recorder = liveRecorder {
+            subtitleEngine.logger.log("Auto-recovery: restarting ASR session")
+            startLiveTranscription(recorder: recorder)
+        }
+        showToast("检测到资源异常，已自动清理并继续运行")
     }
 
     // MARK: - Floating Letter Overlay
@@ -622,6 +777,85 @@ class AppState {
         UserDefaults.standard.set(clamped, forKey: "subtitleMaxLines")
     }
 
+    func setSubtitleHorizontalAlignment(_ value: String) {
+        let normalized = value == "left" ? "left" : "center"
+        subtitleHorizontalAlignment = normalized
+        UserDefaults.standard.set(normalized, forKey: "subtitleHorizontalAlignment")
+    }
+
+    func setSubtitleClearDelay(_ seconds: Double) {
+        let clamped = min(max(seconds, 1), 10)
+        subtitleClearDelay = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleClearDelay")
+    }
+
+    func setSubtitleMinSpeechDuration(_ seconds: Double) {
+        let clamped = min(max(seconds, 0.5), 3)
+        subtitleMinSpeechDuration = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleMinSpeechDuration")
+    }
+
+    func setSubtitleMaxSentenceDuration(_ seconds: Double) {
+        let clamped = min(max(seconds, 2), 15)
+        subtitleMaxSentenceDuration = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleMaxSentenceDuration")
+    }
+
+    func setSubtitleSilencePause(_ seconds: Double) {
+        let clamped = min(max(seconds, 0.5), 3)
+        subtitleSilencePause = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleSilencePause")
+    }
+
+    func setSubtitleContainerWidth(_ value: Double) {
+        let clamped = min(max(value, 400), 4000)
+        // 无变化直接返回：窗口移动也会触发容器同步，避免每次拖动都写盘 +
+        // 触发 @Observable 变更（防 Window→状态→UI→Window 反馈环）。
+        guard clamped != subtitleContainerWidth else { return }
+        subtitleContainerWidth = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleFrameWidth")
+    }
+
+    func setSubtitleContainerHeight(_ value: Double) {
+        let clamped = min(max(value, 100), 2160)
+        guard clamped != subtitleContainerHeight else { return }
+        subtitleContainerHeight = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleFrameHeight")
+    }
+
+    func setSubtitleBackgroundOpacity(_ value: Double) {
+        let clamped = min(max(value, 0.1), 0.8)
+        subtitleBackgroundOpacity = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleBackgroundOpacity")
+    }
+
+    func setSubtitleEditBorderVisible(_ visible: Bool) {
+        subtitleEditBorderVisible = visible
+        UserDefaults.standard.set(visible, forKey: "subtitleEditBorderVisible")
+    }
+
+    func setSubtitleEditBorderColorHex(_ hex: String) {
+        subtitleEditBorderColorHex = hex
+        UserDefaults.standard.set(hex, forKey: "subtitleEditBorderColorHex")
+    }
+
+    func setSubtitleEditBorderOpacity(_ opacity: Double) {
+        let clamped = min(max(opacity, 0), 1)
+        subtitleEditBorderOpacity = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleEditBorderOpacity")
+    }
+
+    func setSubtitleFontWeight(_ value: String) {
+        subtitleFontWeight = ["regular", "medium", "bold"].contains(value) ? value : "medium"
+        UserDefaults.standard.set(subtitleFontWeight, forKey: "subtitleFontWeight")
+    }
+
+    func setSubtitleLineSpacing(_ value: Double) {
+        let clamped = min(max(value, 0), 12)
+        subtitleLineSpacing = clamped
+        UserDefaults.standard.set(clamped, forKey: "subtitleLineSpacing")
+    }
+
     func setFloatingOverlayAutoHide(_ enabled: Bool) {
         floatingOverlayAutoHide = enabled
         UserDefaults.standard.set(enabled, forKey: "floatingOverlayAutoHide")
@@ -632,10 +866,9 @@ class AppState {
     }
 
     func setRecordingAlwaysOnTop(_ alwaysOnTop: Bool) {
+        // 窗口层级由窗口层（FloatingLetterOverlayController）观察
+        // recordingAlwaysOnTop 单向同步，状态层不再直接触碰 NSWindow。
         recordingAlwaysOnTop = alwaysOnTop
-        NSApplication.shared.windows
-            .first { $0.title == "Recording" }?
-            .level = alwaysOnTop ? .floating : .normal
     }
 
     func resetFloatingOverlayPosition() {
@@ -747,191 +980,106 @@ class AppState {
         item.translationLanguage = recovery.translationLanguage
         item.status = .completed
         item.fileName = "Recovered \(DateFormatter.localizedString(from: recovery.savedAt, dateStyle: .short, timeStyle: .short))"
-        items.insert(item, at: 0)
+        history.add(item)
         selectedItemID = item.id
-        TranscriptionStore.save(item)
         removeLiveRecoveryFile()
     }
 
     // MARK: - Live Translation
 
-    /// Queue the latest translation snapshot. Since each snapshot is cumulative
-    /// (contains all segments so far), a newer one always supersedes an older one,
-    /// so we keep only the most recent. A single worker drains this slot.
-    /// Pause or resume live translation on demand. When resuming, everything
-    /// spoken during the pause is marked as already handled (sealed) so the
-    /// dirty-scan won't retroactively translate the skipped (native-language)
-    /// portion — only segments transcribed from here on get translated.
+    /// Pause or resume live translation on demand. While paused no API calls are
+    /// made; on resume only newly completed sentences are translated.
     @MainActor
     func setLiveTranslationPaused(_ paused: Bool) {
         guard liveTranslationPaused != paused else { return }
         liveTranslationPaused = paused
         if paused {
-            // Stop calling the API immediately by dropping any queued snapshot.
-            pendingTranslationSnapshot = nil
-        } else {
-            // Seal the current segments so they're not retranslated on resume.
-            let texts = liveSegments.map { $0.text.trimmingCharacters(in: .whitespaces) }
-            let n = texts.count
-            if liveTranslatedSegments.count < n {
-                liveTranslatedSegments += Array(repeating: "", count: n - liveTranslatedSegments.count)
-            }
-            liveTranslatedSourceTexts = texts
-            liveTranslatedSealCount = Array(repeating: Self.sealThreshold, count: n)
-            // Kick the worker so subsequent segments resume translating.
-            if isLiveTranscribing { enqueueLiveTranslation(liveSegments, countsSeals: true) }
+            // 暂停：立即取消排队/进行中的整句翻译，不再发新请求。
+            sentenceTranslationChain?.cancel()
+            sentenceTranslationChain = nil
+            sentenceTranslationPending = 0
         }
     }
 
+    /// 整句翻译（字幕层检测到一句结束后调用，一次一句、单飞）：
+    /// 所有语言统一进入 TranslationEngine；失败返回 nil（显示原文），
+    /// 连续失败 3 次自动降级为“仅识别模式”。
     @MainActor
-    private func enqueueLiveTranslation(_ segments: [TranscriptionSegment], countsSeals: Bool) {
-        guard !translationAuthPaused, !liveTranslationPaused else { return }
-        // A superseded seal-anchored snapshot keeps its seal-counting duty: the
-        // newer segments are cumulative, so counting seals on them is equivalent.
-        let carrySeals = countsSeals || (pendingTranslationSnapshot?.countsSeals ?? false)
-        pendingTranslationSnapshot = (segments: segments, countsSeals: carrySeals)
-        guard !isTranslationWorkerRunning else { return }
-        isTranslationWorkerRunning = true
-        liveTranslationTask = Task { [weak self] in
-            await self?.drainTranslationQueue()
+    func translateSentence(_ text: String) async -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard translationMode != .off, !liveTranslationPaused, !translationAuthPaused else {
+            return nil
         }
-    }
+        let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
+        guard !targetLang.isEmpty else { return nil }
 
-    private func drainTranslationQueue() async {
-        while !Task.isCancelled {
-            let next: (segments: [TranscriptionSegment], countsSeals: Bool)? = await MainActor.run { [weak self] in
-                guard let self else { return nil }
-                if let snapshot = self.pendingTranslationSnapshot {
-                    self.pendingTranslationSnapshot = nil
-                    return snapshot
-                }
-                self.isTranslationWorkerRunning = false
-                return nil
-            }
-            guard let (segments, countsSeals) = next else { return }
-            if segments.isEmpty { continue }
-            let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
-            guard !targetLang.isEmpty else { continue }
-            await translateLiveSegments(segments, targetLang: targetLang, countsSeals: countsSeals)
-        }
-        await MainActor.run { self.isTranslationWorkerRunning = false }
-    }
-
-    private func translateLiveSegments(_ segments: [TranscriptionSegment], targetLang: String, countsSeals: Bool) async {
-        guard !Task.isCancelled else { return }
-
-        // Exponential backoff on repeated failures (500ms, 1s, 2s, ..., capped at 30s).
-        let failureCount = await MainActor.run { self.translationFailureCount }
-        if failureCount > 0 {
-            let delayMs = min(30_000, 500 * Int(pow(2.0, Double(failureCount - 1))))
-            try? await Task.sleep(for: .milliseconds(delayMs))
-            guard !Task.isCancelled else { return }
-        }
-
-        let texts = segments.map { $0.text.trimmingCharacters(in: .whitespaces) }
-        let (existing, existingSourceTexts, sealCounts) = await MainActor.run {
-            (self.liveTranslatedSegments, self.liveTranslatedSourceTexts, self.liveTranslatedSealCount)
-        }
-
-        // Find the first index where the segment text changed or has no translation.
-        // Segments in the overlap zone may be re-transcribed with different text,
-        // so we need to re-translate from the first divergent segment onward.
-        var firstDirtyIndex = min(existing.count, texts.count)
-        for i in 0..<min(existing.count, existingSourceTexts.count, texts.count) {
-            if texts[i] != existingSourceTexts[i] || existing[i].isEmpty {
-                firstDirtyIndex = i
-                break
-            }
-        }
-
-        // Sealed segments are never retranslated — bounds the cascade when whisper's
-        // overlap zone shifts an early segment's text yet again after it has stabilized.
-        let firstUnsealedIndex: Int = {
-            for i in 0..<sealCounts.count {
-                if sealCounts[i] < Self.sealThreshold { return i }
-            }
-            return sealCounts.count
-        }()
-        let dirtyIndex = max(firstDirtyIndex, firstUnsealedIndex)
-
-        let textsToTranslate = Array(texts.dropFirst(dirtyIndex))
-        guard !textsToTranslate.isEmpty else {
-            // Nothing to translate, but still need to update seal counts for stable suffix.
-            if countsSeals {
-                await MainActor.run { self.updateSealCounts(newSourceTexts: texts) }
-            }
-            return
-        }
-
-        // Use up to 2 clean translations before the dirty range as context
-        let contextStart = max(0, dirtyIndex - 2)
-        let contextPairs: [(original: String, translated: String)] = (contextStart..<dirtyIndex).compactMap { i in
-            guard i < texts.count, i < existing.count,
-                  !texts[i].isEmpty, !existing[i].isEmpty else { return nil }
-            return (original: texts[i], translated: existing[i])
-        }
-
+        let engine = TranslationEngineFactory.engine(local: translationMode == .localModel)
         do {
-            let newTranslations = try await TranslationService.translateSegmentsWithOpenAI(
-                segmentTexts: textsToTranslate, targetLanguage: targetLang,
-                previousTranslations: contextPairs,
-                local: TranslationMode.current == .localModel)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self.liveTranslatedSegments = Array(existing.prefix(dirtyIndex)) + newTranslations
-                self.liveTranslatedSourceTexts = Array(texts.prefix(dirtyIndex)) + textsToTranslate
-                if countsSeals {
-                    self.updateSealCounts(newSourceTexts: texts)
-                }
-                self.translationFailureCount = 0
-                self.liveTranslationError = nil
-            }
-        } catch let err as TranslationError {
-            print("[Translation] OpenAI error: \(err)")
-            await MainActor.run {
-                switch err {
-                case .authFailed, .invalidEndpoint, .localModelNotDetected:
-                    // Pause translation entirely — retrying only wastes quota.
-                    self.translationAuthPaused = true
-                    self.liveTranslationError = err.errorDescription
-                    self.pendingTranslationSnapshot = nil
-                default:
-                    self.translationFailureCount += 1
-                    if self.translationFailureCount >= 3 {
-                        self.liveTranslationError = err.errorDescription
-                    }
-                }
-                // Pad source-text tracking so next cycle can detect segments still needing translation.
-                if self.liveTranslatedSegments.count < texts.count {
-                    self.liveTranslatedSegments += Array(repeating: "", count: texts.count - self.liveTranslatedSegments.count)
-                    self.liveTranslatedSourceTexts += texts.suffix(texts.count - self.liveTranslatedSourceTexts.count)
-                }
-            }
+            let result = try await engine.translate(
+                segmentTexts: [trimmed],
+                targetLanguage: targetLang,
+                previousTranslations: []
+            )
+            translationFailureCount = 0
+            translationUnavailable = false
+            return result.first
         } catch {
-            print("[Translation] error: \(error)")
-            await MainActor.run {
-                self.translationFailureCount += 1
-                if self.translationFailureCount >= 3 {
-                    self.liveTranslationError = error.localizedDescription
-                }
+            ErrorManager.shared.report(.api, error, context: "translateSentence")
+            translationFailureCount += 1
+            if translationFailureCount >= 3 {
+                translationUnavailable = true
+                translationAuthPaused = true
+                showToast("本地翻译服务不可用，已切换到仅识别模式")
             }
+            return nil
         }
     }
 
-    /// Increment seal count for each segment whose source text matches last cycle; reset on change.
+    // MARK: - 整句翻译串行队列（TranslationQueue）
+
+    /// 串行链：多句连续完成时按顺序执行，避免并发请求乱序 / 请求堆积。
+    /// 每个请求挂在前一个之后（不阻塞 ASR，纯 await 链）。
+    private var sentenceTranslationChain: Task<String?, Never>?
+    /// 排队中的句数（含执行中），超上限直接丢弃最新（显示原文兜底）。
+    private(set) var sentenceTranslationPending = 0
+    private static let maxPendingSentenceTranslations = 8
+
+    /// 整句翻译统一入口（桥接层调用）：串行 + 10s 超时兜底 + 队列上限。
+    /// 历史记录（时间/原文/翻译/语言）在此单一收口。
     @MainActor
-    private func updateSealCounts(newSourceTexts: [String]) {
-        var updated: [Int] = []
-        updated.reserveCapacity(newSourceTexts.count)
-        for i in 0..<newSourceTexts.count {
-            if i < liveTranslatedSealCount.count, i < liveTranslatedSourceTexts.count,
-               liveTranslatedSourceTexts[i] == newSourceTexts[i] {
-                updated.append(min(Self.sealThreshold, liveTranslatedSealCount[i] + 1))
-            } else {
-                updated.append(1)
-            }
+    func requestSentenceTranslation(_ text: String) async -> String? {
+        guard sentenceTranslationPending < Self.maxPendingSentenceTranslations else {
+            AppLogger.shared.log(.translation, "Sentence queue full, drop: \(text.prefix(24))…")
+            SubtitleHistoryManager.shared.record(
+                original: text, translation: nil, language: LanguageDetector.detect(text).rawValue
+            )
+            return nil
         }
-        liveTranslatedSealCount = updated
+        sentenceTranslationPending += 1
+        let previous = sentenceTranslationChain
+        let task = Task { @MainActor [weak self] () -> String? in
+            // 等前一句完成（串行）；前一句被取消/超时也不阻塞本句。
+            _ = await previous?.value
+            guard let self, !Task.isCancelled else { return nil }
+            defer { self.sentenceTranslationPending -= 1 }
+            let result: String?
+            do {
+                result = try await Self.withTimeout(seconds: 10) {
+                    await self.translateSentence(text)
+                }
+            } catch {
+                ErrorManager.shared.report(.api, error, context: "sentence translation timeout")
+                result = nil
+            }
+            // 历史记录独立存储（容量上限 200），与实时字幕状态分离。
+            SubtitleHistoryManager.shared.record(
+                original: text, translation: result, language: LanguageDetector.detect(text).rawValue
+            )
+            return result
+        }
+        sentenceTranslationChain = task
+        return await task.value
     }
 
     // MARK: - Timeout helper

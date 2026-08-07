@@ -135,6 +135,31 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    /// 当前音频电平（最近 1 秒 RMS，供调试显示 Audio Level）。
+    var currentAudioLevel: Float {
+        pcmState.withLock { state in
+            let count = min(state.buffer.count, 16000)
+            guard count > 0 else { return 0 }
+            var sum: Float = 0
+            for s in state.buffer.suffix(count) {
+                sum += s * s
+            }
+            return sqrt(sum / Float(count))
+        }
+    }
+
+    /// 捕获源应用是否仍在运行（SCStream 音频源）。
+    /// 用户关闭屏幕共享软件/退出应用时返回 false，用于自动结束录制。
+    func isCaptureSourceRunning() -> Bool {
+        guard let app = recordingApp else { return true }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.bundleIdentifier)
+        let pid = app.processID
+        if pid != 0 {
+            return running.contains { $0.processIdentifier == pid }
+        }
+        return !running.isEmpty
+    }
+
     /// Scan the absolute range `[searchFrom, searchTo)` in fixed `frameSamples`-sized frames and
     /// return the absolute sample index at the START of the rightmost silence run of at least
     /// `minSilenceFrames` frames, provided at least one speech frame precedes it. A frame is

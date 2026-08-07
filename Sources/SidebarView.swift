@@ -10,6 +10,10 @@ struct SidebarView: View {
     @State private var renameText = ""
     @State private var itemPendingRemoval: TranscriptionItem?
     @State private var searchText = ""
+    // 批量删除：编辑模式 + 多选集合 + 确认提示。
+    @State private var isEditMode = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var showBatchDeleteConfirm = false
     // Search results are computed once per debounced query (not per keystroke,
     // not per row per render) — scanning every transcript's full text on each
     // keystroke made typing janky with a large library.
@@ -89,6 +93,17 @@ struct SidebarView: View {
                 }
             }
             ToolbarItem {
+                // 多选编辑入口（编辑态操作在列表底部操作栏：全选/删除/完成）。
+                Button {
+                    isEditMode.toggle()
+                    if !isEditMode { selectedIDs = [] }
+                } label: {
+                    Label(isEditMode ? "完成" : "选择",
+                          systemImage: isEditMode ? "checkmark.circle.fill" : "checkmark.circle")
+                }
+                .disabled(appState.items.isEmpty)
+            }
+            ToolbarItem {
                 if recorder.state == .recording || recorder.state == .saving {
                     Button {
                         // 旧 Recording 窗口已彻底移除：录制中点击只确保一体化浮层可见。
@@ -107,11 +122,8 @@ struct SidebarView: View {
                             appState: appState,
                             recorder: recorder
                         ) {
-                            // 取消/结束录制：收起浮层，并关闭手动打开的录制窗口。
+                            // 取消/结束录制：收起浮层（旧 Recording 窗口已彻底移除）。
                             FloatingLetterOverlayHost.shared.dismiss()
-                            NSApp.windows
-                                .first { $0.title == "Recording" }?
-                                .close()
                         }
                     } label: {
                         Label("录制", systemImage: "record.circle")
@@ -180,6 +192,19 @@ struct SidebarView: View {
                 ? "「\(item.fileURL.lastPathComponent)」将被移除，其录音将移至废纸篓。"
                 : "「\(item.fileURL.lastPathComponent)」的转录将被移除。原始音频文件保留在磁盘上。")
         }
+        .confirmationDialog(
+            "批量删除 \(selectedIDs.count) 条转录？",
+            isPresented: $showBatchDeleteConfirm
+        ) {
+            Button("删除 \(selectedIDs.count) 条", role: .destructive) {
+                appState.removeItems(ids: selectedIDs)
+                selectedIDs = []
+                isEditMode = false
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("所选转录将被移除；应用录制的音频将移至废纸篓（可恢复），导入的原始文件保留在磁盘上。进行中的转录会自动跳过。")
+        }
     }
 
     // MARK: - Empty State
@@ -230,63 +255,144 @@ struct SidebarView: View {
             .padding(.top, 6)
             .padding(.bottom, 4)
 
-            List(selection: $state.selectedItemID) {
-                ForEach(filteredItems) { item in
-                    HStack(spacing: 8) {
-                        statusIcon(item)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.fileURL.deletingPathExtension().lastPathComponent)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            HStack(spacing: 4) {
-                                Text(statusLabel(item))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                if !committedQuery.isEmpty {
-                                    let count = matchCounts[item.id] ?? 0
-                                    if count > 0 {
-                                        Text("\(count) 个匹配")
-                                            .font(.caption2)
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 1)
-                                            .background(Color.accentColor.opacity(0.8))
-                                            .clipShape(Capsule())
-                                    }
-                                }
+            if isEditMode {
+                // 编辑模式：显式勾选圈（macOS List 的 Set 多选要 ⌘/⇧ 点按，
+                // 无可见勾选 UI），点行任意位置即切换勾选。
+                List {
+                    editModeRows
+                }
+
+                // 底部操作栏：全选 / 批量删除（带确认）/ 完成。
+                HStack(spacing: 12) {
+                    Button(selectedIDs.count == filteredItems.count && !filteredItems.isEmpty
+                           ? "全不选" : "全选") {
+                        if selectedIDs.count == filteredItems.count {
+                            selectedIDs = []
+                        } else {
+                            selectedIDs = Set(filteredItems.map(\.id))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+
+                    Spacer()
+
+                    Button(role: .destructive) {
+                        showBatchDeleteConfirm = true
+                    } label: {
+                        Label("删除(\(selectedIDs.count))", systemImage: "trash")
+                    }
+                    .disabled(selectedIDs.isEmpty)
+
+                    Button("完成") {
+                        isEditMode = false
+                        selectedIDs = []
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                }
+                .font(.callout)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+            } else {
+                List(selection: $state.selectedItemID) {
+                    itemRows
+                }
+            }
+        }
+    }
+
+    /// 编辑模式行：前置勾选圈 + 点行切换（不改动 selectedItemID，不跳详情）。
+    @ViewBuilder
+    private var editModeRows: some View {
+        ForEach(filteredItems) { item in
+            HStack(spacing: 8) {
+                Image(systemName: selectedIDs.contains(item.id)
+                      ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selectedIDs.contains(item.id)
+                                     ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+                statusIcon(item)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.fileURL.deletingPathExtension().lastPathComponent)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(statusLabel(item))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if selectedIDs.contains(item.id) {
+                    selectedIDs.remove(item.id)
+                } else {
+                    selectedIDs.insert(item.id)
+                }
+            }
+            .tag(item.id)
+        }
+    }
+
+    /// 历史列表行（普通/编辑两种 List 共用，避免两份实现漂移）。
+    @ViewBuilder
+    private var itemRows: some View {
+        ForEach(filteredItems) { item in
+            HStack(spacing: 8) {
+                statusIcon(item)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.fileURL.deletingPathExtension().lastPathComponent)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    HStack(spacing: 4) {
+                        Text(statusLabel(item))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if !committedQuery.isEmpty {
+                            let count = matchCounts[item.id] ?? 0
+                            if count > 0 {
+                                Text("\(count) 个匹配")
+                                    .font(.caption2)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.8))
+                                    .clipShape(Capsule())
                             }
                         }
                     }
-                    .tag(item.id)
-                    .contextMenu {
-                        Button("重命名") {
-                            renameText = item.fileURL.deletingPathExtension().lastPathComponent
-                            renamingItem = item
-                        }
-                        Button("复制文件") {
-                            let pasteboard = NSPasteboard.general
-                            pasteboard.clearContents()
-                            pasteboard.writeObjects([item.fileURL as NSURL])
-                        }
-                        Button("在访达中显示") {
-                            NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
-                        }
-                        Divider()
-                        if item.status != .transcribing {
-                            Button("重新转录") {
-                                appState.retranscribe(item)
-                            }
-                        }
-                        // Buffer rows to push Remove well away from Re-transcribe,
-                        // so it can't be triggered by an accidental click.
-                        Divider()
-                        Button(" ") {}.disabled(true)
-                        Button(" ") {}.disabled(true)
-                        Divider()
-                        Button("移除", role: .destructive) {
-                            itemPendingRemoval = item
-                        }
+                }
+            }
+            .tag(item.id)
+            .contextMenu {
+                Button("重命名") {
+                    renameText = item.fileURL.deletingPathExtension().lastPathComponent
+                    renamingItem = item
+                }
+                Button("复制文件") {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.writeObjects([item.fileURL as NSURL])
+                }
+                Button("在访达中显示") {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
+                }
+                Divider()
+                if item.status != .transcribing {
+                    Button("重新转录") {
+                        appState.retranscribe(item)
                     }
+                }
+                // Buffer rows to push Remove well away from Re-transcribe,
+                // so it can't be triggered by an accidental click.
+                Divider()
+                Button(" ") {}.disabled(true)
+                Button(" ") {}.disabled(true)
+                Divider()
+                Button("移除", role: .destructive) {
+                    itemPendingRemoval = item
                 }
             }
         }
@@ -388,19 +494,68 @@ struct SidebarView: View {
 
 // MARK: - Model Picker
 
-/// Toolbar menu for choosing which downloaded model transcribes new audio.
+/// Toolbar menu for choosing which model transcribes new audio.
+/// 融合两类来源：ModelManager 下载目录（catalog）+ LocalModelManager 扫描到的
+/// 本地自定义模型（如 LM Studio 模型目录），与 resolveModelPath 同一优先级：
+/// 选中本地模型写入 modelPath（最高优先级）；选回 catalog/自动时清除 modelPath。
 struct ModelPickerMenu: View {
     @State private var manager = ModelManager.shared
+    @State private var localModels = LocalModelManager.shared
+
+    /// 本地模型在 Picker 中的 tag 前缀（与 catalog fileName 区分）。
+    private static let localTagPrefix = "local:"
+
+    /// 当前生效的自定义模型路径（文件必须存在，否则视为未设置）。
+    private var activeCustomPath: String {
+        let path = UserDefaults.standard.string(forKey: "modelPath") ?? ""
+        return (!path.isEmpty && FileManager.default.fileExists(atPath: path)) ? path : ""
+    }
+
+    /// 转录模型选择绑定：本地模型 tag = "local:<完整路径>"。
+    private var mainModelSelection: Binding<String> {
+        Binding(
+            get: {
+                let custom = activeCustomPath
+                return custom.isEmpty ? manager.selectedFileName : Self.localTagPrefix + custom
+            },
+            set: { value in
+                if value.hasPrefix(Self.localTagPrefix) {
+                    let path = String(value.dropFirst(Self.localTagPrefix.count))
+                    UserDefaults.standard.set(path, forKey: "modelPath")
+                    AppLogger.shared.log(.model, "Quick switch to local model: \(path)")
+                } else {
+                    // 选回下载模型/自动：清除自定义路径（否则它优先级最高，选择不生效）。
+                    UserDefaults.standard.set("", forKey: "modelPath")
+                    manager.selectedFileName = value
+                    AppLogger.shared.log(.model, "Quick switch to catalog model: \(value.isEmpty ? "自动" : value)")
+                }
+            }
+        )
+    }
+
+    /// 菜单按钮标题：当前模型显示名。
+    private var currentModelLabel: String {
+        let custom = activeCustomPath
+        if !custom.isEmpty {
+            return (custom as NSString).deletingPathExtension
+                .components(separatedBy: "/").last ?? "本地模型"
+        }
+        return manager.selectedModel?.displayName ?? "模型"
+    }
 
     var body: some View {
         Menu {
-            Picker("转录模型", selection: Binding(
-                get: { manager.selectedFileName },
-                set: { manager.selectedFileName = $0 }
-            )) {
+            Picker("转录模型", selection: mainModelSelection) {
                 Text("自动").tag("")
                 ForEach(manager.downloadedModels) { model in
                     Text(model.displayName).tag(model.fileName)
+                }
+                if !localModels.models.isEmpty {
+                    Divider()
+                    ForEach(localModels.models) { model in
+                        Text("\(model.name)（本地 \(model.sizeText)）")
+                            .tag(Self.localTagPrefix + model.path)
+                    }
                 }
             }
             .pickerStyle(.inline)
@@ -419,10 +574,13 @@ struct ModelPickerMenu: View {
                 Text("管理模型…")
             }
         } label: {
-            Label(manager.selectedModel?.displayName ?? "模型", systemImage: "cpu")
+            Label(currentModelLabel, systemImage: "cpu")
         }
-        .help("用于转录的模型：\(manager.selectedModel?.displayName ?? "自动")")
-        .onAppear { manager.refresh() }
+        .help("用于转录的模型：\(currentModelLabel)")
+        .onAppear {
+            manager.refresh()
+            localModels.scan()
+        }
     }
 }
 

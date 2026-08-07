@@ -27,9 +27,9 @@ struct FloatingAppPickerView: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.55))
+                        .foregroundStyle(.secondary)
                         .frame(width: 18, height: 18)
-                        .background(Circle().fill(.black.opacity(0.07)))
+                        .background(Circle().fill(Color.primary.opacity(0.08)))
                 }
                 .buttonStyle(.plain)
                 .help("返回")
@@ -40,10 +40,10 @@ struct FloatingAppPickerView: View {
         }
         .padding(EdgeInsets(top: 8, leading: 12, bottom: 10, trailing: 12))
         .background(
-            // 纯白圆角面板。窗口阴影由系统绘制（hasShadow = true），
+            // 系统动态背景（跟随深色/浅色模式），窗口阴影由系统绘制（hasShadow = true），
             // 与主界面使用同一套 AppKit 窗口阴影，观感完全一致。
             RoundedRectangle(cornerRadius: FloatingAppPickerMetrics.cornerRadius, style: .continuous)
-                .fill(Color.white)
+                .fill(Color(nsColor: .windowBackgroundColor))
         )
     }
 
@@ -100,7 +100,7 @@ struct FloatingAppPickerView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
 
             // 应用列表
             ScrollView {

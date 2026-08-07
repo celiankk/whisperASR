@@ -15,6 +15,8 @@ final class FloatingLetterOverlayBinder {
     /// 结束/取消录制后收起关联窗口（如录制窗口）的闭包。
     private let onMinimize: (() -> Void)?
     private var observationTask: Task<Void, Never>?
+    /// UI 刷新节流：150ms 批量合并，避免 token 级刷新抬高 CPU。
+    private let updateScheduler = SubtitleUpdateScheduler(interval: 0.15)
     /// 应用列表首次加载为空时的自动重试次数（上限 2 次，防死循环）。
     private var appListRetryCount = 0
     private var appListRetryTask: Task<Void, Never>?
@@ -49,6 +51,7 @@ final class FloatingLetterOverlayBinder {
     func stop() {
         observationTask?.cancel()
         observationTask = nil
+        updateScheduler.cancel()
         appListRetryTask?.cancel()
         appListRetryTask = nil
         viewModel.teardown()
@@ -60,6 +63,7 @@ final class FloatingLetterOverlayBinder {
     func detach() {
         observationTask?.cancel()
         observationTask = nil
+        updateScheduler.cancel()
         appListRetryTask?.cancel()
         appListRetryTask = nil
     }
@@ -70,6 +74,20 @@ final class FloatingLetterOverlayBinder {
         viewModel.onToggleTranslationPause = { [weak self] in
             guard let self else { return }
             self.appState.setLiveTranslationPaused(!self.appState.liveTranslationPaused)
+        }
+        // 一句结束 → 整句翻译（串行队列：多句按序执行，不并发堆积）；
+        // 失败回退原文显示；历史记录由 AppState 统一收口。
+        viewModel.onSentenceCompleted = { [weak self] text in
+            guard let self else { return }
+            Task { @MainActor in
+                let translation = await self.appState.requestSentenceTranslation(text)
+                self.viewModel.setTranslationResult(for: text, translation: translation)
+            }
+        }
+        // 字幕编辑模式：容器变化 → AppState 持久化。
+        viewModel.onContainerResized = { [weak self] width, height in
+            self?.appState.setSubtitleContainerWidth(Double(width))
+            self?.appState.setSubtitleContainerHeight(Double(height))
         }
 
         viewModel.onToggleTranslationOnly = { [weak self] in
@@ -166,6 +184,20 @@ final class FloatingLetterOverlayBinder {
                 _ = self.appState.subtitleOverlaySourceFontSize
                 _ = self.appState.subtitleOverlayTranslationFontSize
                 _ = self.appState.subtitleOverlayBorderOpacity
+                _ = self.appState.subtitleHorizontalAlignment
+                _ = self.appState.subtitleClearDelay
+                _ = self.appState.subtitleMinSpeechDuration
+                _ = self.appState.subtitleMaxSentenceDuration
+                _ = self.appState.subtitleSilencePause
+                _ = self.appState.subtitleContainerWidth
+                _ = self.appState.subtitleContainerHeight
+                _ = self.appState.subtitleBackgroundOpacity
+                _ = self.appState.subtitleEditBorderVisible
+                _ = self.appState.subtitleEditBorderColorHex
+                _ = self.appState.subtitleEditBorderOpacity
+                _ = self.appState.subtitleFontWeight
+                _ = self.appState.subtitleLineSpacing
+                _ = self.appState.translationUnavailable
                 _ = self.appState.floatingOverlayAutoHide
                 _ = self.appState.maxSubtitleLines
                 _ = self.appState.isLiveTranscribing
@@ -182,7 +214,10 @@ final class FloatingLetterOverlayBinder {
             } onChange: { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
-                    self.pushState()
+                    // 节流合并：同一窗口内多次状态变化只提交最后一次。
+                    self.updateScheduler.schedule { [weak self] in
+                        self?.pushState()
+                    }
                     self.observeState()
                 }
             }
@@ -218,6 +253,25 @@ final class FloatingLetterOverlayBinder {
             return FloatingLetterViewModel.SubtitleLine(id: "seg-\(index)", text: text, translation: translation)
         }
         viewModel.maxLines = appState.maxSubtitleLines
+        viewModel.subtitleClearDelay = appState.subtitleClearDelay
+        viewModel.speechConfig = SpeechEndpointConfig(
+            minimumSpeechDuration: appState.subtitleMinSpeechDuration,
+            maximumSentenceDuration: appState.subtitleMaxSentenceDuration,
+            silencePause: appState.subtitleSilencePause
+        )
+        // 字幕容器（独立于字体）。
+        viewModel.subtitleContainerWidth = CGFloat(appState.subtitleContainerWidth)
+        viewModel.subtitleContainerHeight = CGFloat(appState.subtitleContainerHeight)
+        viewModel.subtitleBackgroundOpacity = appState.subtitleBackgroundOpacity
+        // 字幕编辑边框（仅视觉）。
+        viewModel.subtitleEditBorderVisible = appState.subtitleEditBorderVisible
+        viewModel.subtitleEditBorderColorHex = appState.subtitleEditBorderColorHex
+        viewModel.subtitleEditBorderOpacity = appState.subtitleEditBorderOpacity
+        // 字幕文字（独立于容器）。
+        viewModel.subtitleFontWeight = appState.subtitleFontWeight
+        viewModel.subtitleLineSpacing = CGFloat(appState.subtitleLineSpacing)
+        viewModel.subtitleTextAlignment =
+            appState.subtitleHorizontalAlignment == "left" ? .leading : .center
         let isPlaying = (recorder.state == .recording || recorder.state == .saving)
             && appState.isLiveTranscribing
         viewModel.updateSubtitleState(
@@ -225,6 +279,32 @@ final class FloatingLetterOverlayBinder {
             interimText: interimSegmentText,
             interimTranslation: interimTranslation,
             isPlaying: isPlaying
+        )
+
+        // 调试信息：ASR 文本 / 检测语言 / 翻译状态 / 展示字幕。
+        let currentText = interimSegmentText.isEmpty
+            ? (finalLines.last?.text ?? "")
+            : interimSegmentText
+        let detected = LanguageDetector.detect(currentText)
+        let translationStatus: String
+        if appState.translationUnavailable {
+            translationStatus = "Unavailable"
+        } else if !appState.enableLiveTranslation {
+            translationStatus = "Off"
+        } else {
+            translationStatus = "Translated"
+        }
+        let monitor = appState.subtitleEngine.monitor
+        viewModel.debugInfo = FloatingLetterViewModel.SubtitleDebugInfo(
+            asrText: currentText,
+            detectedLanguage: detected.rawValue,
+            translationStatus: translationStatus,
+            audioLevelText: String(format: "%.4f", recorder.currentAudioLevel),
+            subtitle: viewModel.renderer.lines.joined(separator: " / "),
+            latencyMs: viewModel.latencyManager.lastTotalMs,
+            engineInfo: "mem=\(Int(monitor.residentMemoryMB))MB asr=\(monitor.asrTaskCount) "
+                + "trq=\(monitor.translationQueueDepth) buf=\(monitor.subtitleBufferCount) "
+                + "model=\(monitor.modelStatus)"
         )
 
         // 工具栏状态。

@@ -8,7 +8,7 @@ enum FloatingLetterMetrics {
     /// 浮层圆角（长条半透明圆角浮层）。
     static let cornerRadius: CGFloat = 16
     /// 展开态尺寸（长条）。
-    static let expandedSize = CGSize(width: 760, height: 118)
+    static let expandedSize = CGSize(width: 1080, height: 150)
     /// 紧凑态尺寸（缩放箭头收起后的小药丸）。
     static let compactSize = CGSize(width: 300, height: 46)
     /// 淡入淡出动画时长。
@@ -115,97 +115,120 @@ struct FloatingLetterContainerView: View {
         .help("关闭字幕浮层")
     }
 
-    /// 字幕区：底部对齐的固定高度区域。
-    /// 行数由 maxLines 决定，浮框高度随内容自适应（见控制器 targetSize）。
+    /// 字幕区：SubtitleContainerLayer（背景/圆角/位置）→ SubtitleTextLayer（文字）。
+    /// 容器尺寸来自 SubtitleContainerConfig，与字号完全解耦（字号不改变窗口大小）。
     private var subtitleArea: some View {
         Group {
             if !viewModel.translationOnly, viewModel.subtitleTextVisible {
-                subtitleStackView
+                subtitleContainerLayer
             } else {
                 // 仅译文模式 / 字幕隐藏：保持原单行渲染逻辑。
                 sourceSubtitleView
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            debugOverlay
+        }
+        #endif
     }
 
-    /// 字幕层级：
-    ///   SubtitleContainer（本容器）→ SubtitleLine（行级状态）→ SplitSubtitleText（字符级）
-    /// - 历史行：opacity 0.3 / y -20，超出 maxLines 时从最旧开始逐行退出并移除；
-    /// - 当前行（最多 2 条）：opacity 1 / y 0，SplitText 字符动画；interim 普通文本直出；
-    /// - 动画分层：SubtitleContainer（本容器）负责行级位移/透明度，
-    ///   SplitSubtitleText 只负责字符级入场，互不冲突；
-    /// - 底部对齐；容器高度由内容撑开，不裁剪历史字幕。
-    private var subtitleStackView: some View {
-        VStack(spacing: 3) {
-            Spacer(minLength: 0)
-
-            // 历史字幕（灰 30%）：位于主字幕上方，只占剩余空间。
-            ForEach(viewModel.historyLines) { history in
-                SubtitleLineView(
-                    text: history.text,
-                    translation: history.translation,
-                    isCurrent: false,
-                    isExiting: history.status == .exiting,
-                    isPlaying: viewModel.isPlaying,
-                    sourceFontSize: viewModel.sourceFontSize,
-                    translationFontSize: viewModel.translationFontSize
+    /// SubtitleContainerLayer：圆角容器 + 背景 + 文字层 + 可配置编辑边框。
+    /// 唯一默认模式：容器始终填满窗口内容区（窗口移动/左上角缩放由
+    /// NSWindow 原生驱动，不做 SwiftUI offset/frame 模拟）。
+    private var subtitleContainerLayer: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.black.opacity(viewModel.subtitleBackgroundOpacity))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.white.opacity(min(viewModel.borderOpacity, 0.12)), lineWidth: 0.5)
                 )
-                .id(history.id)
-                .transition(.opacity)
-            }
 
-            // 当前主字幕行（白 100%，最多 2 条，SplitText 字符动画）。
-            ForEach(viewModel.currentLines) { current in
-                SubtitleLineView(
-                    text: current.text,
-                    translation: current.translation,
-                    isCurrent: true,
-                    isExiting: false,
-                    isPlaying: viewModel.isPlaying,
-                    sourceFontSize: viewModel.sourceFontSize,
-                    translationFontSize: viewModel.translationFontSize
-                )
-                .id(current.id)
-                .transition(.opacity)
-            }
+            subtitleTextLayer
 
-            // 流式临时句（普通文本，不触发动画）。
-            if !viewModel.interimText.isEmpty {
-                interimLineView
-                .id("interim")
-                .transition(.opacity)
-            } else if viewModel.currentLines.isEmpty, viewModel.historyLines.isEmpty {
-                Text("字幕浮层已就绪")
-                    .font(.system(size: viewModel.sourceFontSize * 0.7, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.55))
+            // 字幕编辑边框（可设置隐藏/颜色/透明度；只影响视觉，不影响移动缩放）。
+            if viewModel.subtitleEditBorderVisible {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(
+                        borderColor.opacity(viewModel.subtitleEditBorderOpacity),
+                        lineWidth: 1.5
+                    )
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        // 独立渲染层：只承载字幕内容动画（行移动/透明度/逐字入场），
-        // 与浮窗背景层分离，避免同一元素同时控制 transform/opacity/背景。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // 内容裁剪：字幕文字只能显示在容器内部，禁止溢出。
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // 容器不接收 SwiftUI 事件：移动/缩放全部交给 NSWindow 原生处理。
+        .allowsHitTesting(false)
+        .help("拖动任意空白处移动窗口；左上角缩放")
         .compositingGroup()
-        // 暂停时完全禁用行级动画，保持布局静止。
-        .animation(viewModel.isPlaying ? .easeOut(duration: 0.35) : nil, value: viewModel.historyLines)
-        .animation(viewModel.isPlaying ? .easeOut(duration: 0.35) : nil, value: viewModel.currentLines)
-        .animation(viewModel.isPlaying ? .easeOut(duration: 0.35) : nil, value: viewModel.interimText.isEmpty)
     }
 
-    /// 流式临时句：普通文本直出，不进入历史、不触发 SplitText。
-    private var interimLineView: some View {
-        VStack(spacing: 1) {
-            if let translation = viewModel.interimTranslation, !translation.isEmpty {
-                Text(translation)
-                    .font(.system(size: viewModel.translationFontSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(1)
-                    .multilineTextAlignment(.center)
+    /// 编辑边框颜色（hex → Color；解析失败回退白色）。
+    private var borderColor: Color {
+        let hex = viewModel.subtitleEditBorderColorHex.trimmingCharacters(in: .whitespaces)
+        var value: UInt64 = 0
+        guard Scanner(string: hex).scanHexInt64(&value) else { return .white }
+        let r = Double((value >> 16) & 0xFF) / 255
+        let g = Double((value >> 8) & 0xFF) / 255
+        let b = Double(value & 0xFF) / 255
+        return Color(red: r, green: g, blue: b)
+    }
+
+    /// SubtitleTextLayer：原文/译文 + 字体大小/粗细/行间距/对齐。
+    /// 文字在容器内部自动换行；字号只影响本层，不影响容器/窗口尺寸。
+    private var subtitleTextLayer: some View {
+        let horizontal: HorizontalAlignment =
+            viewModel.subtitleTextAlignment == .leading ? .leading : .center
+        let size = viewModel.showingTranslation
+            ? viewModel.translationFontSize
+            : viewModel.sourceFontSize
+        return VStack(alignment: horizontal, spacing: viewModel.subtitleLineSpacing) {
+            Spacer(minLength: 0)
+            ForEach(Array(viewModel.renderer.lines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: size, weight: subtitleFontWeight))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(viewModel.subtitleTextAlignment)
+                    .lineLimit(nil) // 逻辑层控制内容，禁止 "..." 截断
+                    .frame(maxWidth: .infinity, alignment: .init(horizontal: horizontal, vertical: .center))
             }
-            Text(viewModel.interimText)
-                .font(.system(size: viewModel.sourceFontSize, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeOut(duration: 0.18), value: viewModel.renderer.text)
+    }
+
+    /// 字体粗细映射（regular / medium→semibold 保持当前风格 / bold）。
+    private var subtitleFontWeight: Font.Weight {
+        switch viewModel.subtitleFontWeight {
+        case "regular": return .regular
+        case "bold": return .bold
+        default: return .semibold
+        }
+    }
+
+    /// 调试信息（开发模式）：状态机 / ASR / 语言 / 翻译 / 字幕 / 耗时 / 引擎。
+    @ViewBuilder
+    private var debugOverlay: some View {
+        if let debug = viewModel.debugInfo {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("State: \(viewModel.subtitleState.rawValue)")
+                Text("ASR: \(debug.asrText)")
+                Text("Language: \(debug.detectedLanguage)")
+                Text("Audio Level: \(debug.audioLevelText)")
+                Text("Translation: \(debug.translationStatus)")
+                Text("Subtitle: \(debug.subtitle)")
+                Text("耗时: \(debug.latencyMs) ms")
+                Text(debug.engineInfo)
+            }
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.35))
+            .lineLimit(1)
         }
     }
 
@@ -231,13 +254,13 @@ struct FloatingLetterContainerView: View {
             Text(viewModel.displayedSubtitleText)
                 .font(.system(size: viewModel.sourceFontSize, weight: .semibold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .minimumScaleFactor(0.75)
+                .lineLimit(nil)
+                .multilineTextAlignment(viewModel.subtitleTextAlignment)
         }
     }
 
-    /// 底部栏：左下工具栏 + 中部录制按钮 + 右下录制指示器。
+    /// 控制层（ControlLayer）：半透明悬浮控制条（macOS 浮动控制栏观感），
+    /// 位于字幕区下方，不遮挡字幕；5 秒无操作自动隐藏（字幕层不受影响）。
     private var bottomBar: some View {
         HStack(spacing: 12) {
             FloatingLetterToolbarView(viewModel: viewModel)
@@ -264,6 +287,17 @@ struct FloatingLetterContainerView: View {
                     .foregroundStyle(.white.opacity(0.45))
             }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            Capsule().fill(.ultraThinMaterial).opacity(0.45)
+        )
+        .overlay(
+            Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .opacity(viewModel.controlsVisible ? 1 : 0)
+        .allowsHitTesting(viewModel.controlsVisible)
+        .animation(.easeOut(duration: 0.2), value: viewModel.controlsVisible)
     }
 
     /// 半透明圆角背景 + 细边框（长条浮层观感）。
@@ -277,64 +311,6 @@ struct FloatingLetterContainerView: View {
                     .strokeBorder(Color.white.opacity(min(viewModel.borderOpacity, 0.05)), lineWidth: 0.5)
             )
             .compositingGroup()
-    }
-}
-
-// MARK: - 字幕行（行级容器动画）
-//
-// 分层职责：
-// - 行容器（本视图）：整体 opacity / translateY —— 当前行 1.0 / 0，
-//   历史行 0.3 / -20；行状态变化时只动画这两个属性；
-// - SplitSubtitleText（内部）：只做字符级入场（chars opacity/y/scale）。
-// 两层控制不同视图的相同属性，互不冲突；历史行不重播字符动画。
-
-private struct SubtitleLineView: View {
-    let text: String
-    let translation: String?
-    /// 当前行（最新字幕）：完全显示；历史行：压暗并上移。
-    let isCurrent: Bool
-    /// 历史行是否已进入退出动画（0.3 → 0 / -20 → -50，只执行一次）。
-    let isExiting: Bool
-    /// 播放状态：暂停时冻结本行动画（透明度/位移不重算）。
-    let isPlaying: Bool
-    let sourceFontSize: CGFloat
-    let translationFontSize: CGFloat
-
-    var body: some View {
-        VStack(spacing: 1) {
-            if let translation, !translation.isEmpty {
-                Text(translation)
-                    .font(.system(size: translationFontSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(1)
-                    .multilineTextAlignment(.center)
-            }
-            if isCurrent {
-                // 当前行：SplitText 只做字符级入场。
-                SplitSubtitleText(
-                    text: text,
-                    fontSize: sourceFontSize,
-                    fontWeight: .semibold,
-                    foregroundStyle: .white,
-                    staggerDelay: 0.05,
-                    duration: 0.5,
-                    fromOffsetY: 26,
-                    fromScale: 0.93
-                )
-                .frame(maxWidth: .infinity, alignment: .center)
-            } else {
-                // 历史行：字符已播放过，用普通文本，禁止重播。
-                Text(text)
-                    .font(.system(size: sourceFontSize, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .opacity(isExiting ? 0 : (isCurrent ? 1 : 0.3))
-        .offset(y: isExiting ? -50 : (isCurrent ? 0 : -20))
-        .animation(isPlaying ? .easeOut(duration: 0.4) : nil, value: isExiting)
-        .animation(isPlaying ? .easeOut(duration: 0.4) : nil, value: isCurrent)
     }
 }
 
@@ -385,6 +361,18 @@ struct FloatingLetterToolbarView: View {
                 viewModel.togglePin()
             }
 
+            // 鼠标穿透：开启后点击直接穿过字幕窗口（只显示字幕）。
+            toolButton(
+                icon: "arrow.up.right",
+                active: viewModel.mousePassthrough,
+                activeColor: .blue,
+                help: viewModel.mousePassthrough
+                    ? "关闭鼠标穿透（恢复窗口交互）"
+                    : "开启鼠标穿透（点击穿过字幕窗口）",
+            ) {
+                viewModel.toggleMousePassthrough()
+            }
+
             // 缩放箭头：展开/收起浮层
             toolButton(
                 icon: viewModel.isCompact
@@ -404,6 +392,7 @@ struct FloatingLetterToolbarView: View {
         active: Bool,
         activeColor: Color,
         help: String,
+        disabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -417,6 +406,8 @@ struct FloatingLetterToolbarView: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1)
     }
 }
 

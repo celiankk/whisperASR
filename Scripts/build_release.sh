@@ -10,7 +10,10 @@ APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 
 echo "==> Building release binary..."
 cd "$PROJECT_DIR"
-swift build -c release
+# SWIFTPM_EXTRA_ARGS 可选透传（例如 --disable-sandbox，用于被 sandbox-exec
+# 嵌套拦截的环境）；默认空，行为不变。
+# shellcheck disable=SC2086
+swift build -c release ${SWIFTPM_EXTRA_ARGS:-}
 
 echo "==> Generating app icon..."
 # Create a small Swift script to generate the .icns from AppIconGenerator

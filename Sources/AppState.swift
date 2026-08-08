@@ -10,6 +10,10 @@ class AppState {
     var items: [TranscriptionItem] { history.items }
     var selectedItemID: UUID?
 
+    /// 主窗口内嵌设置页开关：工具栏设置按钮在主窗口内部切换 SettingsView，
+    /// 不新建窗口；再次点击返回主界面。
+    var showingSettingsPage = false
+
     // Live transcription state
     var liveSegments: [TranscriptionSegment] = []
     var isLiveTranscribing = false

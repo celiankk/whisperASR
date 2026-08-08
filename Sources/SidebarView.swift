@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @Environment(AppState.self) var appState
-    @Environment(AudioRecorder.self) var recorder
     @State private var isDropTargeted = false
     @State private var renamingItem: TranscriptionItem?
     @State private var renameText = ""
@@ -103,33 +102,7 @@ struct SidebarView: View {
                 }
                 .disabled(appState.items.isEmpty)
             }
-            ToolbarItem {
-                if recorder.state == .recording || recorder.state == .saving {
-                    Button {
-                        // 旧 Recording 窗口已彻底移除：录制中点击只确保一体化浮层可见。
-                        FloatingLetterOverlayHost.shared.present(
-                            appState: appState,
-                            recorder: recorder
-                        )
-                    } label: {
-                        Label("录制中", systemImage: "record.circle.fill")
-                            .foregroundStyle(.red)
-                    }
-                } else {
-                    Button {
-                        // 一体化浮层：点击“录制”后浮层内选择应用并开始录制。
-                        FloatingLetterOverlayHost.shared.startRecordingFlow(
-                            appState: appState,
-                            recorder: recorder
-                        ) {
-                            // 取消/结束录制：收起浮层（旧 Recording 窗口已彻底移除）。
-                            FloatingLetterOverlayHost.shared.dismiss()
-                        }
-                    } label: {
-                        Label("录制", systemImage: "record.circle")
-                    }
-                }
-            }
+            // 录制按钮已移至主窗口顶部工具栏（ContentView，与设置按钮同组）。
         }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
@@ -147,17 +120,6 @@ struct SidebarView: View {
         .onChange(of: appState.items.count) { _, _ in
             // Keep active search results in sync when items are added/removed.
             if !committedQuery.isEmpty { recomputeSearch(for: committedQuery) }
-        }
-        .onChange(of: recorder.state) { old, new in
-            if new == .recording {
-                let appState = appState
-                let recorder = recorder
-                recorder.onMeetingEnded = {
-                    handleMeetingEnded(appState: appState, recorder: recorder)
-                }
-            } else if old == .recording {
-                recorder.onMeetingEnded = nil
-            }
         }
         .alert("重命名", isPresented: Binding(
             get: { renamingItem != nil },
@@ -453,30 +415,6 @@ struct SidebarView: View {
     }
 
     // MARK: - File Picker
-
-    private func handleMeetingEnded(appState: AppState, recorder: AudioRecorder) {
-        NSApp.requestUserAttention(.criticalRequest)
-
-        let alert = NSAlert()
-        alert.messageText = "会议已结束"
-        alert.informativeText = "Zoom 会议似乎已结束。你想停止录制吗？"
-        alert.addButton(withTitle: "停止录制")
-        alert.addButton(withTitle: "继续录制")
-        alert.alertStyle = .informational
-        alert.icon = AppIconGenerator.generate()
-
-        // Show the alert window above all other windows (including Zoom)
-        let panel = alert.window
-        panel.level = .screenSaver
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            Task {
-                await appState.finishRecording(recorder: recorder)
-                // 旧 Recording 窗口已移除：录制结束后收起一体化浮层。
-                FloatingLetterOverlayHost.shared.dismiss()
-            }
-        }
-    }
 
     private func openFilePicker() {
         let panel = NSOpenPanel()

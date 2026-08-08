@@ -126,7 +126,8 @@ final class FloatingLetterViewModel {
     var appListError: String?
 
     // 录制选项（与原选择窗口保持一致，不丢功能）。
-    var includeMicrophone = false
+    // 麦克风初值读「音频」设置的默认包含麦克风。
+    var includeMicrophone = UserDefaults.standard.bool(forKey: AudioSettings.includeMicrophoneKey)
     var enableLiveTranscription = true
     var enableLiveTranslation = false
     var liveModelOptions: [FloatingModelOption] = []

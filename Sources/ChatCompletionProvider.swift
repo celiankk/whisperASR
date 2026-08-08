@@ -1,26 +1,28 @@
 import Foundation
 
-/// OnlineAPIProvider：在线 OpenAI 兼容 API 适配层。
+/// ChatCompletionProvider：在线 OpenAI 兼容 API 适配层
+///（POST {base}/chat/completions）。
 ///
 /// 包装 TranslationService 的在线模式（`local: false`）：
 /// - 端点：用户配置的 translationEndpoint，为空时默认 api.openai.com；
 /// - 密钥：translationAPIKey（空则不发送 Authorization 头）；
 /// - 模型：translationModel，为空回退 "gpt-4o-mini"。
 /// 内部实现未改动，仅收敛到统一 TranslationProvider 接口。
-struct OnlineAPIProvider: TranslationProvider {
+struct ChatCompletionProvider: TranslationProvider {
     var kind: TranslationProviderKind { .onlineAPI }
 
     func translate(
         segmentTexts: [String],
         targetLanguage: String,
         previousTranslations: [(original: String, translated: String)]
-    ) async throws -> [String] {
-        try await TranslationService.translateSegmentsWithOpenAI(
+    ) async throws -> TranslationResult {
+        let texts = try await TranslationService.translateSegmentsWithOpenAI(
             segmentTexts: segmentTexts,
             targetLanguage: targetLanguage,
             previousTranslations: previousTranslations,
             local: false
         )
+        return TranslationResult(texts: texts)
     }
 
     /// 与设置页「重新连接」一致：先检查配置，再发一条真实翻译请求验证
@@ -37,7 +39,7 @@ struct OnlineAPIProvider: TranslationProvider {
                 targetLanguage: lang,
                 previousTranslations: []
             )
-            let sample = translations.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sample = translations.texts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if sample.isEmpty {
                 return .failed("空响应")
             }

@@ -21,6 +21,8 @@ final class TranscriptionService: @unchecked Sendable {
     private let qwenProvider = QwenProvider()
     /// 在线 OpenAI 兼容 Whisper API（无本地模型，需在设置中启用并配置）。
     private let onlineProvider = OnlineASRProvider()
+    /// Apple Speech（系统 Speech 框架，macOS 10.15+）。
+    private let appleProvider = AppleSpeechProvider()
 
     /// True while a live session runs on the Nemotron engine — blocks the
     /// "unload nemotron when file-transcribing with whisper" eviction below.
@@ -35,6 +37,7 @@ final class TranscriptionService: @unchecked Sendable {
         case nemotron(directory: String)
         case qwen3asr(path: String)
         case online
+        case apple
     }
 
     /// Engine resolution: the user's ASR Engine selection takes precedence
@@ -54,6 +57,8 @@ final class TranscriptionService: @unchecked Sendable {
             return .qwen3asr(path: ModelPathResolver.resolveModelPath())
         case .nemotron:
             return .nemotron(directory: ModelPathResolver.resolveModelPath())
+        case .apple:
+            return .apple
         case .auto:
             return Self.engine(forPath: ModelPathResolver.resolveModelPath())
         }
@@ -76,6 +81,8 @@ final class TranscriptionService: @unchecked Sendable {
             return .qwen3asr(path: ModelPathResolver.resolveLiveModelPath())
         case .nemotron:
             return .nemotron(directory: ModelPathResolver.resolveLiveModelPath())
+        case .apple:
+            return .apple
         case .auto:
             return Self.engine(forPath: ModelPathResolver.resolveLiveModelPath())
         }
@@ -106,6 +113,7 @@ final class TranscriptionService: @unchecked Sendable {
         Task { await nemotronProvider.unloadModel() }
         Task { await qwenProvider.unloadModel() }
         Task { await onlineProvider.unloadModel() }
+        Task { await appleProvider.unloadModel() }
     }
 
     /// Free the live session's resources when recording ends: the dedicated
@@ -125,6 +133,7 @@ final class TranscriptionService: @unchecked Sendable {
         }
         Task { await qwenProvider.unloadModel() }
         onlineProvider.cancelPending()
+        Task { await appleProvider.unloadModel() }
         chunkManager.clear()  // 丢弃未发送的聚合残留
     }
 
@@ -165,6 +174,15 @@ final class TranscriptionService: @unchecked Sendable {
                 )
             }
             return try await onlineProvider.transcribeFile(
+                fileURL: fileURL, language: language, translate: translate, onProgress: onProgress
+            )
+        case .apple:
+            guard !translate else {
+                throw TranscriptionError.processFailed(
+                    "Translation to English is not supported by Apple Speech. Select a Whisper model instead."
+                )
+            }
+            return try await appleProvider.transcribeFile(
                 fileURL: fileURL, language: language, translate: translate, onProgress: onProgress
             )
         }
@@ -208,10 +226,15 @@ final class TranscriptionService: @unchecked Sendable {
             return try await whisperProvider.transcribeChunk(samples: samples)
         case .online:
             return try await onlineProvider.transcribeChunk(samples: samples)
+        case .apple:
+            return try await appleProvider.transcribeChunk(samples: samples)
         }
     }
 
     /// 音频分片判定：按「音频分片模式」+ 引擎类型。
+    /// - Online API 恒不参与（句子模式由 Provider 内 OnlineASRBuffer 负责，
+    ///   避免双重聚合）；
+    /// - Apple Speech 不参与分片（系统流式识别按块直接发送）。
     private func shouldChunk(engine: ResolvedEngine) -> Bool {
         switch AudioChunkingMode.current {
         case .off:
@@ -219,12 +242,12 @@ final class TranscriptionService: @unchecked Sendable {
         case .localOnly:
             switch engine {
             case .whisper, .nemotron, .qwen3asr: return true
-            case .online: return false
+            case .online, .apple: return false
             }
         case .onlineOnly:
             switch engine {
-            case .online: return true
-            case .whisper, .nemotron, .qwen3asr: return false
+            case .online: return false
+            case .whisper, .nemotron, .qwen3asr, .apple: return false
             }
         }
     }
@@ -244,6 +267,9 @@ final class TranscriptionService: @unchecked Sendable {
         case .online:
             // 在线模式：校验配置（失败时由调用方提示，不影响本地引擎）。
             try await onlineProvider.prepare()
+        case .apple:
+            // Apple Speech：请求授权并校验语言资源。
+            try await appleProvider.prepare()
         }
     }
 
@@ -292,6 +318,7 @@ final class TranscriptionService: @unchecked Sendable {
         case .nemotron: return "arch=\(arch) engine=nemotron"
         case .qwen3asr: return "arch=\(arch) engine=qwen3asr"
         case .online: return "arch=\(arch) engine=online"
+        case .apple: return "arch=\(arch) engine=apple"
         }
     }
 #endif

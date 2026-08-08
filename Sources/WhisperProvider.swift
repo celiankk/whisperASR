@@ -121,8 +121,11 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
                     return
                 }
 
-                var (params, langCStr) = self.makeBaseParams(language: language, translate: translate)
-                defer { free(langCStr) }
+                var (params, langCStr, promptCStr) = self.makeBaseParams(language: language, translate: translate)
+                defer {
+                    free(langCStr)
+                    if let promptCStr { free(promptCStr) }
+                }
 
                 // Progress callback
                 let progressPtr = Unmanaged.passRetained(ProgressBox(handler: onProgress)).toOpaque()
@@ -205,8 +208,11 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
                 }
 
                 let liveThreads = min(4, max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 4)))
-                let (params, langCStr) = self.makeBaseParams(threadCount: liveThreads)
-                defer { free(langCStr) }
+                let (params, langCStr, promptCStr) = self.makeBaseParams(threadCount: liveThreads)
+                defer {
+                    free(langCStr)
+                    if let promptCStr { free(promptCStr) }
+                }
 
                 let result = samples.withUnsafeBufferPointer { buf in
                     whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
@@ -251,10 +257,11 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
 
     /// Create base whisper params. `language` nil/empty means auto-detect; when
     /// `translate` is true whisper translates the audio to English.
-    /// Caller must free the returned C string pointer after whisper_full completes.
+    /// Caller must free the returned C string pointers after whisper_full completes.
+    /// ASR Prompt（热词）经 ASRPromptManager 注入 initial_prompt（无 Prompt 时为空）。
     private func makeBaseParams(threadCount: Int32? = nil,
                                 language: String? = nil,
-                                translate: Bool = false) -> (whisper_full_params, UnsafeMutablePointer<CChar>?) {
+                                translate: Bool = false) -> (whisper_full_params, UnsafeMutablePointer<CChar>?, UnsafeMutablePointer<CChar>?) {
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         params.print_progress = false
         params.print_realtime = false
@@ -266,7 +273,14 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
         let langCStr = strdup(lang)
         params.language = UnsafePointer(langCStr)
 
-        return (params, langCStr)
+        // ASR Prompt 注入（关闭/无内容时为 nil，行为与 1.4 完全一致）。
+        var promptCStr: UnsafeMutablePointer<CChar>? = nil
+        if let prompt = ASRPromptManager.shared.currentPrompt, !prompt.isEmpty {
+            promptCStr = strdup(prompt)
+            params.initial_prompt = UnsafePointer(promptCStr)
+        }
+
+        return (params, langCStr, promptCStr)
     }
 
     /// Returns all languages supported by the loaded whisper.cpp library.

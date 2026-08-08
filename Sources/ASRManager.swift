@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - 识别管理器（RecognitionManager）
+// MARK: - 识别管理器（ASRManager）
 //
 // AppState 拆分的一部分：实时识别链路——
 // - ASR 启动 / 停止（实时转录循环：静音检测、尾部重转录、封口、去重）；
@@ -12,7 +12,7 @@ import Foundation
 // UI 状态（liveSegments / liveError / isLiveTranscribing 等）仍由
 // AppState 持有（UI 绑定不变），本管理器通过弱引用回写。
 
-final class RecognitionManager: @unchecked Sendable {
+final class ASRManager: @unchecked Sendable {
     private let service: TranscriptionService
     private let subtitleManager: SubtitleManager
     private let translationManager: TranslationManager
@@ -60,6 +60,8 @@ final class RecognitionManager: @unchecked Sendable {
         SubtitleHistoryManager.shared.clear()
         liveRecorder = recorder
         startHealthCheck()
+        // ASR Prompt（热词）：启动识别时生成/刷新（不每句话调用）。
+        ASRPromptManager.shared.refresh()
         AppLogger.shared.log(.asr, "Live transcription started")
 
         liveTranscriptionTask = Task { [weak self] in
@@ -161,6 +163,7 @@ final class RecognitionManager: @unchecked Sendable {
                 }
 
                 let chunk = recorder.getSamples(from: tailStart, upTo: totalSamples)
+                print("[Audio] chunk generated size=\(chunk.count) duration=\(String(format: "%.2f", Double(chunk.count) / 16000.0))s tailStart=\(tailStart)")
                 guard !chunk.isEmpty else {
                     try? await Task.sleep(for: .milliseconds(250))
                     continue
@@ -173,9 +176,13 @@ final class RecognitionManager: @unchecked Sendable {
                 let chunkSeconds = Double(chunk.count) / 16000.0
                 let timeoutSeconds = max(60.0, chunkSeconds * 4.0)
                 do {
+                    print("[ASR] request start chunk=\(chunk.count)")
                     let result = try await Self.withTimeout(seconds: timeoutSeconds) {
                         try await self.service.transcribeChunk(samples: chunk)
                     }
+                    let asrText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    print("[ASR] response received text=\(asrText.debugDescription) segments=\(result.segments.count) isFinal=n/a language=\(result.detectedLanguage ?? "nil")"
+                        + (asrText.isEmpty ? " REASON=empty-or-still-aggregating" : ""))
 
                     // Offset timestamps to match position in the full stream.
                     let tailSegments = result.segments.map { seg in
@@ -219,6 +226,7 @@ final class RecognitionManager: @unchecked Sendable {
                     let snapshot = self.subtitleManager.snapshot(combined)
                     await MainActor.run {
                         self.appState?.liveSegments = snapshot
+                        print("[Subtitle Input] liveSegments count=\(snapshot.count) last=\(snapshot.last?.text.debugDescription ?? "nil")")
                         self.throttledAutoSave()
                     }
                     // 翻译不再按每个快照触发：由字幕层检测到“一句结束”后，

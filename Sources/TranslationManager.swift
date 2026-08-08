@@ -13,7 +13,7 @@ import Foundation
 // - 停止/退出：resetForStop() / cancelAll() 取消全部在途请求。
 //
 // 保持 1.4 行为：句尾翻译逻辑、超时回退、降级规则完全不变。
-// 隔离策略：类本身非隔离（便于 AppRuntimeManager / RecognitionManager
+// 隔离策略：类本身非隔离（便于 AppRuntimeManager / ASRManager
 // 同步调用 reset/cancel），涉及 UI 状态的方法单独标注 @MainActor。
 
 final class TranslationManager {
@@ -22,8 +22,9 @@ final class TranslationManager {
 
     // MARK: - Provider 分发（无状态，原 enum 接口保留）
 
-    private static let lmStudio = LMStudioProvider()
-    private static let onlineAPI = OnlineAPIProvider()
+    private static let local = LocalTranslationProvider()
+    private static let online = ChatCompletionProvider()
+    private static let apple = AppleTranslationProvider()
 
     /// 按翻译方式返回对应 Provider。
     /// 注意：`.off` 时返回在线 Provider，与原 TranslationEngineFactory
@@ -32,9 +33,11 @@ final class TranslationManager {
     static func provider(for mode: TranslationMode) -> TranslationProvider {
         switch mode {
         case .off, .onlineAPI:
-            return onlineAPI
+            return online
         case .localModel:
-            return lmStudio
+            return local
+        case .apple:
+            return apple
         }
     }
 
@@ -43,7 +46,7 @@ final class TranslationManager {
         segmentTexts: [String],
         targetLanguage: String,
         previousTranslations: [(original: String, translated: String)] = []
-    ) async throws -> [String] {
+    ) async throws -> TranslationResult {
         try await provider(for: TranslationMode.current).translate(
             segmentTexts: segmentTexts,
             targetLanguage: targetLanguage,
@@ -105,7 +108,7 @@ final class TranslationManager {
             )
             translationFailureCount = 0
             appState.setTranslationUnavailable(false)
-            return result.first
+            return result.texts.first
         } catch is CancellationError {
             // 取消（超时兜底 / 暂停 / 停止）不是服务故障：不计入三连失败。
             return nil
@@ -196,7 +199,7 @@ final class TranslationManager {
                         targetLanguage: targetLanguage,
                         previousTranslations: contextPairs
                     )
-                    for (offset, translation) in translations.enumerated() {
+                    for (offset, translation) in translations.texts.enumerated() {
                         item.translatedSegments[batchStart + offset] = translation
                     }
                 } catch let err as TranslationError {

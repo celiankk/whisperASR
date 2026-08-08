@@ -7,12 +7,14 @@ enum TranslationMode: String, CaseIterable, Codable {
     case off
     case localModel
     case onlineAPI
+    case apple
 
     var label: String {
         switch self {
         case .off: return "不翻译"
         case .localModel: return "本地模型"
         case .onlineAPI: return "在线 API"
+        case .apple: return "Apple"
         }
     }
 
@@ -148,6 +150,8 @@ enum TranslationService {
         static let timeout = "translationTimeout"
         static let maxContext = "translationMaxContext"
         static let temperature = "translationTemperature"
+        /// 自定义翻译系统提示词（空 = 使用默认翻译指令）。
+        static let systemPrompt = "translationSystemPrompt"
     }
 
     /// 是否已配置在线 API（端点/密钥至少其一，模型可为空并回退默认值）。
@@ -362,13 +366,25 @@ enum TranslationService {
             ? numberedInputFull
             : String(numberedInputFull.prefix(maxInputCharacters))
 
+        // 自定义翻译系统提示词（设置 → 翻译 → 系统提示词）；
+        // 为空时使用默认翻译指令。无论哪种都追加编号输出格式要求，
+        // 保证响应可解析。
+        let customPrompt = (UserDefaults.standard.string(forKey: ConfigKeys.systemPrompt) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let systemContent: String
+        if customPrompt.isEmpty {
+            systemContent = "You are a translator for a live transcription. Translate each numbered line to \(languageName). If a line is already in \(languageName), output it unchanged. Output ONLY the translations in the same numbered format (e.g. \"1. ...\"). Keep exactly \(segmentTexts.count) lines.\(contextSection)"
+        } else {
+            systemContent = customPrompt + "\n\nOutput ONLY the translations in the same numbered format (e.g. \"1. ...\"). Keep exactly \(segmentTexts.count) lines."
+        }
         let body: [String: Any] = [
             "model": effectiveModel,
             "messages": [
-                ["role": "system", "content": "You are a translator for a live transcription. Translate each numbered line to \(languageName). If a line is already in \(languageName), output it unchanged. Output ONLY the translations in the same numbered format (e.g. \"1. ...\"). Keep exactly \(segmentTexts.count) lines.\(contextSection)"],
+                ["role": "system", "content": systemContent],
                 ["role": "user", "content": numberedInput]
             ],
-            "temperature": temperature
+            "temperature": temperature,
+            "stream": false
         ]
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -443,16 +459,22 @@ enum TranslationService {
             return data
         }
 
+        // 错误增强：URL / 状态码 / 模型 / 服务器返回内容。
+        let bodyPreview = String(data: data, encoding: .utf8)?.prefix(300) ?? ""
         let message = parseErrorMessage(data) ?? "HTTP \(httpResponse.statusCode)"
+        let requestURL = request.url?.absoluteString ?? "unknown"
+        let modelName = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())
+            as? [String: Any])?["model"] as? String ?? "unknown"
+        let detail = "\(message)（URL: \(requestURL)，模型: \(modelName)，响应: \(bodyPreview)）"
         switch httpResponse.statusCode {
         case 401, 403:
-            throw TranslationError.authFailed(message)
+            throw TranslationError.authFailed(detail)
         case 429:
-            throw TranslationError.rateLimited(message)
+            throw TranslationError.rateLimited(detail)
         case 500...599:
-            throw TranslationError.serverError(httpResponse.statusCode, message)
+            throw TranslationError.serverError(httpResponse.statusCode, detail)
         default:
-            throw TranslationError.apiFailed(message)
+            throw TranslationError.apiFailed(detail)
         }
     }
 

@@ -24,7 +24,7 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var error: String?
     var meetingEnded = false
     /// 初值读「音频」设置的默认包含麦克风；浮层内仍可临时切换。
-    var includeMicrophone = UserDefaults.standard.bool(forKey: AudioSettings.includeMicrophoneKey)
+    var includeMicrophone = UserDefaults.standard.bool(forKey: AudioConfiguration.includeMicrophoneKey)
     var onMeetingEnded: (() -> Void)?
     var customRecordingName: String?
 

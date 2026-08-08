@@ -69,11 +69,11 @@ final class FloatingLetterViewModel {
     /// 字幕空闲自动清除延迟（默认 3 秒，设置页可配置）。
     var subtitleClearDelay: TimeInterval = 3
     /// 句子端点检测参数（最短 1s / 最长 5s / 停顿 1s）。
-    var speechConfig = SpeechEndpointConfig()
+
     /// 一句结束回调（桥接层接线到 AppState 翻译引擎，一次一句）。
     var onSentenceCompleted: ((String) -> Void)?
     /// 句子端点检测器。
-    @ObservationIgnored private var detector = SpeechEndpointDetector()
+    @ObservationIgnored private var detector = SpeechEndpointDetector(config: SpeechEndpointConfig())
     /// 句子去重（ASR 重复输出 / 与译文相同只保留一次）。
     @ObservationIgnored private var sentenceDeduplicator = SubtitleDeduplicator()
     /// 延迟统计（ASR → 翻译 → 显示）。
@@ -81,7 +81,7 @@ final class FloatingLetterViewModel {
     /// 空闲清除任务：3 秒没有新的 ASR 输入就清空浮窗字幕。
     @ObservationIgnored private var idleClearTask: Task<Void, Never>?
     /// 停顿检测任务（silencePause 后检查句子是否结束）。
-    @ObservationIgnored private var sentenceSilenceTask: Task<Void, Never>?
+
     /// 翻译超时任务（3 秒无结果回退原文，不阻塞下一句）。
     @ObservationIgnored private var translationTimeoutTask: Task<Void, Never>?
 
@@ -127,7 +127,7 @@ final class FloatingLetterViewModel {
 
     // 录制选项（与原选择窗口保持一致，不丢功能）。
     // 麦克风初值读「音频」设置的默认包含麦克风。
-    var includeMicrophone = UserDefaults.standard.bool(forKey: AudioSettings.includeMicrophoneKey)
+    var includeMicrophone = UserDefaults.standard.bool(forKey: AudioConfiguration.includeMicrophoneKey)
     var enableLiveTranscription = true
     var enableLiveTranslation = false
     var liveModelOptions: [FloatingModelOption] = []
@@ -267,7 +267,6 @@ final class FloatingLetterViewModel {
         // 兜底：ViewModel 销毁时主动 invalidate 定时器，防止内存泄漏。
         invalidateIdleTimer()
         idleClearTask?.cancel()
-        sentenceSilenceTask?.cancel()
         translationTimeoutTask?.cancel()
 #if DEBUG
         FloatingLetterLeakState.viewModelAlive -= 1
@@ -317,7 +316,6 @@ final class FloatingLetterViewModel {
         isTornDown = true
         invalidateIdleTimer()
         idleClearTask?.cancel()
-        sentenceSilenceTask?.cancel()
         translationTimeoutTask?.cancel()
     }
 
@@ -530,17 +528,34 @@ final class FloatingLetterViewModel {
         isPlaying: Bool
     ) {
         self.isPlaying = isPlaying
+        print("[Renderer] updateSubtitleState final=\(final.count) interim=\(interimText.debugDescription) isPlaying=\(isPlaying)")
+
+        // 排查直通：绕过句子端点/最短时长/去重，任何非空文本直接显示。
+        if SubtitleDebug.bypassFilters {
+            if !interimText.isEmpty {
+                recognitionText = interimText
+                subtitleState = .recognizing
+                renderText(interimText)
+                scheduleIdleClear()
+            } else if let newest = final.last {
+                handleSentenceCompleted(newest.text)
+            } else {
+                resetSubtitleDisplay()
+            }
+            return
+        }
 
         // 录制结束/清空：全部清空。
         if final.isEmpty, interimText.isEmpty {
+            print("[Renderer] reset (empty final+interim)")
             resetSubtitleDisplay()
             return
         }
 
         // 暂停冻结：停止刷新、取消空闲清除，但不清空已有字幕。
         if !isPlaying {
+            print("[Renderer] paused (isPlaying=false) — frozen, not clearing")
             idleClearTask?.cancel()
-            sentenceSilenceTask?.cancel()
             translationTimeoutTask?.cancel()
             return
         }
@@ -553,28 +568,16 @@ final class FloatingLetterViewModel {
             return
         }
 
-        // 流式识别 → 端点检测（停顿/标点/最长时长）。
+        // 流式识别 → 标点断句（音频切片/停顿判定由 AudioManager 负责）。
+        // partial（非空文本）立即显示，不等待时长。
         switch detector.update(text: interimText) {
-        case .speechStarted:
-            // 不足最短识别时长：不显示（避免嗯/啊/单字触发）。
-            subtitleState = .listening
-            scheduleSilenceCheck()
         case .recognized(let text):
-            // 最短识别时长：不足 1 秒不显示（避免嗯/啊/单字触发）。
-            if let started = detector.speechStartedAt,
-               Date().timeIntervalSince(started) >= speechConfig.minimumSpeechDuration {
-                recognitionText = text
-                subtitleState = .recognizing
-                renderText(text)
-                scheduleSilenceCheck()
-                scheduleIdleClear()
-            } else {
-                subtitleState = .listening
-            }
+            recognitionText = text
+            subtitleState = .recognizing
+            renderText(text)
+            scheduleIdleClear()
         case .sentenceEnded(let sentence):
             handleSentenceCompleted(sentence)
-        case .discarded:
-            subtitleState = .listening
         case .none:
             break
         }
@@ -623,6 +626,7 @@ final class FloatingLetterViewModel {
 
     /// 单一渲染入口：断句（中文 30 / 英文 80）→ 渲染器（≤2 行，不省略）。
     private func renderText(_ text: String) {
+        print("[Subtitle Display] render text=\(text.debugDescription)")
         let splitter = SubtitleSentenceSplitter()
         let lines = splitter.split(text, language: SubtitleLanguage.detect(text))
         renderer.maxLines = 2
@@ -631,6 +635,10 @@ final class FloatingLetterViewModel {
         }
         subtitleText = renderer.text
         latencyManager.markDisplayed()
+        let windowState = MainActor.assumeIsolated {
+            FloatingLetterOverlayController.shared.debugStateDescription
+        }
+        print("[Subtitle Display] displayed=\(renderer.text.debugDescription) window=\(windowState)")
     }
 
     /// 译文渲染入口：独立于原文渲染器（原文保持不动，译文出现在下方）。
@@ -655,19 +663,6 @@ final class FloatingLetterViewModel {
         }
     }
 
-    /// 停顿检测：silencePause 后无新输入 → 一句结束。
-    private func scheduleSilenceCheck() {
-        sentenceSilenceTask?.cancel()
-        let pause = speechConfig.silencePause
-        sentenceSilenceTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(pause))
-            guard let self, !Task.isCancelled, self.isPlaying else { return }
-            if case .sentenceEnded(let sentence) = self.detector.checkSilence() {
-                self.handleSentenceCompleted(sentence)
-            }
-        }
-    }
-
     /// 翻译超时兜底：3 秒无结果只显示原文，不阻塞下一句。
     private func scheduleTranslationTimeout() {
         translationTimeoutTask?.cancel()
@@ -684,7 +679,6 @@ final class FloatingLetterViewModel {
     /// 清空浮窗字幕（空闲超时 / 录制结束共用）。
     private func resetSubtitleDisplay() {
         idleClearTask?.cancel()
-        sentenceSilenceTask?.cancel()
         translationTimeoutTask?.cancel()
         detector.reset()
         sentenceDeduplicator.reset()

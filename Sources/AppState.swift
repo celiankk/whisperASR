@@ -10,7 +10,7 @@ import Observation
 // 3. 用户界面状态（liveSegments / liveError / toast / 翻译暂停等）。
 //
 // 业务逻辑已拆分到运行调度中心（AppRuntimeManager）：
-//   ├── RecognitionManager（识别循环 / 健康检查 / 自动保存）
+//   ├── ASRManager（识别循环 / 健康检查 / 自动保存）
 //   ├── TranslationManager（翻译队列 / Provider 调用 / API 请求管理）
 //   └── SubtitleManager（partial/final 字幕 / 字幕缓存 / 生命周期）
 //
@@ -101,21 +101,6 @@ class AppState {
     var subtitleClearDelay: Double = {
         let stored = UserDefaults.standard.object(forKey: "subtitleClearDelay") as? NSNumber
         return stored?.doubleValue ?? 3
-    }()
-
-    var subtitleMinSpeechDuration: Double = {
-        let stored = UserDefaults.standard.object(forKey: "subtitleMinSpeechDuration") as? NSNumber
-        return stored?.doubleValue ?? 1
-    }()
-
-    var subtitleMaxSentenceDuration: Double = {
-        let stored = UserDefaults.standard.object(forKey: "subtitleMaxSentenceDuration") as? NSNumber
-        return stored?.doubleValue ?? 8
-    }()
-
-    var subtitleSilencePause: Double = {
-        let stored = UserDefaults.standard.object(forKey: "subtitleSilencePause") as? NSNumber
-        return stored?.doubleValue ?? 1
     }()
 
     var subtitleContainerWidth: Double = {
@@ -352,10 +337,10 @@ class AppState {
         }
     }
 
-    // MARK: - 实时转录（委托 RecognitionManager）
+    // MARK: - 实时转录（委托 ASRManager）
 
     /// Start periodic live transcription from the AudioRecorder's accumulated PCM buffer.
-    /// 实时循环 / 健康检查 / 自动保存在 RecognitionManager。
+    /// 实时循环 / 健康检查 / 自动保存在 ASRManager。
     func startLiveTranscription(recorder: AudioRecorder) {
         runtime.startLive(recorder: recorder)
     }
@@ -441,16 +426,16 @@ class AppState {
         }
     }
 
-    // MARK: - 崩溃恢复（快照读写由 RecognitionManager 负责）
+    // MARK: - 崩溃恢复（快照读写由 ASRManager 负责）
 
     /// Check if there is a recoverable live transcription from a previous crash/hang.
     var hasLiveRecoveryData: Bool {
-        RecognitionManager.hasLiveRecoveryData
+        ASRManager.hasLiveRecoveryData
     }
 
     /// Import recovered live transcription as a completed transcription item.
     func importRecoveredTranscription() {
-        guard let snapshot = RecognitionManager.loadRecoveredSnapshot() else { return }
+        guard let snapshot = ASRManager.loadRecoveredSnapshot() else { return }
         let item = TranscriptionItem(
             fileURL: URL(fileURLWithPath: "/recovered-\(ISO8601DateFormatter().string(from: snapshot.savedAt))"))
         item.segments = snapshot.segments
@@ -461,7 +446,7 @@ class AppState {
         item.fileName = "Recovered \(DateFormatter.localizedString(from: snapshot.savedAt, dateStyle: .short, timeStyle: .short))"
         history.add(item)
         selectedItemID = item.id
-        RecognitionManager.removeRecoveryFile()
+        ASRManager.removeRecoveryFile()
     }
 
     // MARK: - Floating Letter Overlay（样式偏好，纯页面状态）
@@ -497,24 +482,6 @@ class AppState {
         let clamped = min(max(seconds, 1), 10)
         subtitleClearDelay = clamped
         UserDefaults.standard.set(clamped, forKey: "subtitleClearDelay")
-    }
-
-    func setSubtitleMinSpeechDuration(_ seconds: Double) {
-        let clamped = min(max(seconds, 0.5), 3)
-        subtitleMinSpeechDuration = clamped
-        UserDefaults.standard.set(clamped, forKey: "subtitleMinSpeechDuration")
-    }
-
-    func setSubtitleMaxSentenceDuration(_ seconds: Double) {
-        let clamped = min(max(seconds, 2), 15)
-        subtitleMaxSentenceDuration = clamped
-        UserDefaults.standard.set(clamped, forKey: "subtitleMaxSentenceDuration")
-    }
-
-    func setSubtitleSilencePause(_ seconds: Double) {
-        let clamped = min(max(seconds, 0.5), 3)
-        subtitleSilencePause = clamped
-        UserDefaults.standard.set(clamped, forKey: "subtitleSilencePause")
     }
 
     func setSubtitleContainerWidth(_ value: Double) {

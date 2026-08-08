@@ -21,6 +21,7 @@ enum ASRProviderEngine: String, Sendable {
     case nemotron
     case qwen3asr
     case online
+    case apple
 }
 
 /// Provider 状态快照。
@@ -29,6 +30,41 @@ enum ASRProviderStatus: Sendable, Equatable {
     case idle
     /// 模型已加载，附模型路径。
     case loaded(path: String)
+}
+
+// MARK: - 统一 ASR 输出（ASRResult）
+//
+// 所有 Provider 统一输出中间结果。字幕链路规则：
+// - 只要 text 非空即可进入 SubtitleManager（禁止因 isFinal=false /
+//   confidence 为空 / language 为空 丢弃）；
+// - partial（isFinal=false）：立即显示实时字幕；
+// - final（isFinal=true）：更新当前字幕。
+
+struct ASRResult {
+    let text: String
+    let isFinal: Bool
+    let language: String?
+    let confidence: Float?
+    let timestamp: (start: Double, end: Double?)
+
+    /// 转现有 TranscriptionResult（单段；时间戳缺失时回落）。
+    func toTranscriptionResult() -> TranscriptionResult {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return TranscriptionResult(
+            text: trimmed,
+            segments: trimmed.isEmpty
+                ? []
+                : [TranscriptionSegment(start: timestamp.start, end: timestamp.end, text: trimmed)],
+            detectedLanguage: language
+        )
+    }
+
+    /// Provider 输出日志：[ASR Result] provider= text= isFinal=
+    func log(provider: String) {
+        print("[ASR Result] provider=\(provider) text=\(text.debugDescription) "
+            + "isFinal=\(isFinal) language=\(language ?? "nil") "
+            + "confidence=\(confidence.map { String(format: "%.2f", $0) } ?? "nil")")
+    }
 }
 
 /// 统一 ASR Provider 接口。

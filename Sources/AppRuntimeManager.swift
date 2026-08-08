@@ -7,7 +7,7 @@ import Foundation
 //   AppState（页面状态 / 全局配置引用 / 用户界面状态）
 //        ↓ 委托
 //   AppRuntimeManager（运行调度中心）
-//        ├── RecognitionManager（ASR 启动/停止、识别循环、健康检查）
+//        ├── ASRManager（ASR 启动/停止、识别循环、健康检查）
 //        ├── TranslationManager（翻译队列、Provider 调用、API 请求管理）
 //        ├── SubtitleManager（partial/final 字幕、字幕缓存、生命周期）
 //        ├── TranscriptionService（引擎门面 → ASR Provider）
@@ -20,7 +20,7 @@ final class AppRuntimeManager: @unchecked Sendable {
     /// 转录引擎门面（文件转录 / 实时转录 / 模型生命周期统一入口）。
     let service = TranscriptionService()
     /// 实时识别管理器（识别循环 / 健康检查 / 自动保存）。
-    let recognition: RecognitionManager
+    let recognition: ASRManager
     /// 翻译管理器（句尾翻译队列 / 批量翻译 / 降级）。
     let translation: TranslationManager
     /// 字幕管理器（partial/final 字幕缓存 / 生命周期）。
@@ -29,7 +29,7 @@ final class AppRuntimeManager: @unchecked Sendable {
     init() {
         subtitle = SubtitleManager()
         translation = TranslationManager()
-        recognition = RecognitionManager(
+        recognition = ASRManager(
             service: service,
             subtitleManager: subtitle,
             translationManager: translation
@@ -41,7 +41,10 @@ final class AppRuntimeManager: @unchecked Sendable {
     func attach(appState: AppState) {
         recognition.attach(appState: appState)
         translation.appState = appState
+        ASRPromptManager.shared.appState = appState
         attachAPIServer()
+        // Apple 服务能力检测：启动时一次（不轮询；语言变化/进页面时刷新）。
+        Task { await AppleServiceStatusManager.shared.refresh() }
     }
 
     /// 把共享 TranscriptionService 挂到本地 OpenAI 兼容 API 服务器，

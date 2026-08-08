@@ -47,39 +47,37 @@ enum SubtitleState: String, Equatable {
     case showing
 }
 
+// MARK: - 字幕链路调试开关
+//
+// 排查用（默认关闭，不影响正常行为）：
+// bypassFilters = true 时，ViewModel 绕过句子端点/最短时长/去重过滤，
+// 任何非空 ASR 文本直接渲染显示（先恢复"任何文字立即显示"，再逐个排查过滤）。
+
+enum SubtitleDebug {
+    static var bypassFilters = false
+}
+
 // MARK: - 句子端点检测（SpeechEndpointDetector）
 
 struct SpeechEndpointConfig {
-    /// 最短识别时长：讲话不足此值不显示、不翻译（避免嗯/啊/单字触发）。
-    var minimumSpeechDuration: TimeInterval = 1.0
-    /// 最长单句时长：超过强制截断，下一句继续显示。
-    var maximumSentenceDuration: TimeInterval = 5.0
-    /// 停顿判定：无新识别输入超过此值视为一句结束（800ms–1200ms）。
-    var silencePause: TimeInterval = 1.0
-    /// 标点结束符。
+    /// 标点结束符（文字级断句；音频切片/停顿判定由 AudioManager 负责）。
     var sentenceTerminators: Set<Character> = ["。", "？", "！", ".", "?", "!"]
 }
 
 enum SpeechEndpointEvent: Equatable {
     case none
-    /// 开始讲话（尚未达到最短时长，不显示）。
-    case speechStarted
     /// 实时识别文本更新（可显示）。
     case recognized(String)
-    /// 一句结束（满足最短时长），携带完整句子。
+    /// 一句结束（标点），携带完整句子。
     case sentenceEnded(String)
-    /// 太短被丢弃（嗯/啊）。
-    case discarded
 }
 
-/// 句子端点检测：停顿（800–1200ms）/ 标点 / 最大时长，任一条件即认为一句结束。
-/// 只有满足最短识别时长的句子才会进入翻译。
+/// 句子端点检测：仅文字级标点断句。
+/// 音频切片 / 发送时机 / 停顿判定由 AudioManager 负责，本检测器不再等待音频时长。
 struct SpeechEndpointDetector {
     var config: SpeechEndpointConfig
 
     private(set) var sentenceText = ""
-    private(set) var speechStartedAt: Date?
-    private(set) var lastChangeAt: Date?
     /// 最近已结束的句子：避免标点结束后 whisper 重复推同一文本再次触发翻译。
     private var lastEndedText = ""
 
@@ -87,7 +85,7 @@ struct SpeechEndpointDetector {
         self.config = config
     }
 
-    mutating func update(text: String, now: Date = Date()) -> SpeechEndpointEvent {
+    mutating func update(text: String) -> SpeechEndpointEvent {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .none }
 
@@ -101,62 +99,37 @@ struct SpeechEndpointDetector {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !remainder.isEmpty else { return .none }
                 lastEndedText = ""
-                return startSentence(remainder, now: now)
+                return startSentence(remainder)
             }
         }
 
         if sentenceText.isEmpty {
-            return startSentence(trimmed, now: now)
+            return startSentence(trimmed)
         }
 
         sentenceText = trimmed
-        lastChangeAt = now
 
         // 标点结束：。？！.?! 等。
         if let last = trimmed.last, config.sentenceTerminators.contains(last) {
-            return endSentence(now: now)
-        }
-        // 最大时长强制截断（不超过 5 秒，不等待整段话结束）。
-        if let started = speechStartedAt,
-           now.timeIntervalSince(started) >= config.maximumSentenceDuration {
-            return endSentence(now: now)
+            return endSentence()
         }
         return .recognized(trimmed)
     }
 
-    /// 由调用方周期检查：停顿超过 silencePause 视为一句结束。
-    mutating func checkSilence(now: Date = Date()) -> SpeechEndpointEvent {
-        guard !sentenceText.isEmpty, let last = lastChangeAt else { return .none }
-        guard now.timeIntervalSince(last) >= config.silencePause else { return .none }
-        return endSentence(now: now)
-    }
-
-    private mutating func startSentence(_ text: String, now: Date) -> SpeechEndpointEvent {
+    private mutating func startSentence(_ text: String) -> SpeechEndpointEvent {
         sentenceText = text
-        speechStartedAt = now
-        lastChangeAt = now
-        return .speechStarted
+        return .recognized(text)
     }
 
-    private mutating func endSentence(now: Date) -> SpeechEndpointEvent {
+    private mutating func endSentence() -> SpeechEndpointEvent {
         let text = sentenceText
-        let startedAt = speechStartedAt
-        let lastChange = lastChangeAt
         lastEndedText = text
         reset()
-        // 最短识别时长按“有效讲话时长”计算（最后一次输入变化 - 开始），
-        // 排除尾随停顿，避免“嗯 + 1 秒停顿”被误判为完整句。
-        if let startedAt, let lastChange,
-           lastChange.timeIntervalSince(startedAt) >= config.minimumSpeechDuration {
-            return .sentenceEnded(text)
-        }
-        return .discarded
+        return .sentenceEnded(text)
     }
 
     mutating func reset() {
         sentenceText = ""
-        speechStartedAt = nil
-        lastChangeAt = nil
     }
 }
 

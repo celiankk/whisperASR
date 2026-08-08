@@ -15,6 +15,10 @@ final class OnlineASRProvider: @unchecked Sendable, ASRProvider {
     private let service = OnlineASRService()
     private let requestQueue = ASRRequestQueue()
     private let stats = OnlineASRStats.shared
+    /// 在线句子模式：音频缓冲（累计达标/停顿才发送，不发送碎片短音频）。
+    private let audioBuffer = OnlineASRBuffer()
+    /// 在线结果合并（碎片 → 完整句）。
+    private let resultAccumulator = OnlineResultAccumulator()
 
     var engine: ASRProviderEngine { .online }
 
@@ -36,21 +40,49 @@ final class OnlineASRProvider: @unchecked Sendable, ASRProvider {
         stats.setState(.ready, detail: "已停止")
     }
 
-    /// 实时分块转录：直接上传（分片聚合由上层 ChunkManager 完成，
-    /// 收到即达标的完整切片）。
+    /// 实时分块转录：句子模式（sentence mode）——
+    /// 音频经 OnlineASRBuffer 累计（目标 ~2.5s / 停顿提前 / 上限兜底），
+    /// 达标才发送 API；结果经 OnlineResultAccumulator 合并至句完成。
+    /// 未达标返回空（AppState 继续累积，不发送碎片短音频）。
     func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
         guard !samples.isEmpty else {
             return TranscriptionResult(text: "", segments: [])
         }
+        // 1. 缓冲累积（不直接发送实时 chunk）。
+        audioBuffer.append(samples)
+        // 2. 达标判定：目标时长 / 末尾停顿 / 上限。
+        guard audioBuffer.shouldSend() else {
+            return TranscriptionResult(text: "", segments: [])
+        }
+        let chunk = audioBuffer.takeAll()
 
+        // 3. 发送日志：确认实际发送的音频长度。
+        let duration = Double(chunk.count) / 16000.0
+        print(String(format: "[Online ASR] audio duration: %.1fs samples: %d chunk: %d",
+                     duration, chunk.count, chunk.count))
+
+        // 4. 发送。
+        let prompt = ASRPromptManager.shared.currentPrompt
         let start = Date()
         stats.requestStarted()
         do {
             let result = try await requestQueue.submit { [service] in
-                try await service.transcribe(samples: samples, language: nil) { _ in }
+                try await service.transcribe(samples: chunk, language: nil, prompt: prompt) { _ in }
             }
             stats.requestSucceeded(responseTime: Date().timeIntervalSince(start))
-            return result
+            print("[Online ASR] response: \(result.text.debugDescription)")
+
+            // 5. 结果合并：碎片累积，句末标点提交完整句。
+            let merged = resultAccumulator.merge(result.text)
+            let asr = ASRResult(
+                text: merged.text,
+                isFinal: merged.isComplete,
+                language: result.detectedLanguage,
+                confidence: nil,
+                timestamp: (0, duration)
+            )
+            asr.log(provider: "online")
+            return asr.toTranscriptionResult()
         } catch {
             stats.requestFailed(error.localizedDescription)
             throw error
@@ -62,18 +94,35 @@ final class OnlineASRProvider: @unchecked Sendable, ASRProvider {
                         translate: Bool,
                         onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
         try validateConfiguration()
+        let prompt = ASRPromptManager.shared.currentPrompt
         let start = Date()
         stats.requestStarted()
         do {
             let result = try await service.transcribe(fileURL: fileURL,
                                                       language: language,
+                                                      prompt: prompt,
                                                       onProgress: onProgress)
             stats.requestSucceeded(responseTime: Date().timeIntervalSince(start))
-            return result
+            // 统一 ASRResult：非流式响应天然 final。
+            let asr = Self.makeASRResult(from: result)
+            asr.log(provider: "online")
+            return asr.toTranscriptionResult()
         } catch {
             stats.requestFailed(error.localizedDescription)
             throw error
         }
+    }
+
+    /// TranscriptionResult → 统一 ASRResult（isFinal=true，纯文本时间戳回落）。
+    static func makeASRResult(from result: TranscriptionResult) -> ASRResult {
+        let first = result.segments.first
+        return ASRResult(
+            text: result.text,
+            isFinal: true,
+            language: result.detectedLanguage,
+            confidence: nil,
+            timestamp: (first?.start ?? 0, first?.end)
+        )
     }
 
     func status() async -> ASRProviderStatus {
@@ -86,8 +135,10 @@ final class OnlineASRProvider: @unchecked Sendable, ASRProvider {
         await OnlineASRService.testConnection()
     }
 
-    /// 取消在途请求（结束实时会话时调用，同步版）。
+    /// 取消在途请求并清空缓冲/累积（结束实时会话时调用，同步版）。
     func cancelPending() {
+        audioBuffer.clear()
+        resultAccumulator.clear()
         Task { await requestQueue.cancelPending() }
     }
 

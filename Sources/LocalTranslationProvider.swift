@@ -1,26 +1,27 @@
 import Foundation
 
-/// LMStudioProvider：本地 OpenAI 兼容服务（LM Studio / Ollama / llama.cpp
+/// LocalTranslationProvider：本地 OpenAI 兼容服务（LM Studio / Ollama / llama.cpp
 /// server）适配层。
 ///
 /// 包装 TranslationService 的本地模式（`local: true`）：
 /// - 端点解析：用户配置优先，否则依次探测 127.0.0.1:1234/11434/8080；
 /// - 模型名：未配置时自动取服务第一个模型（取不到抛 localModelNotDetected）。
 /// 内部实现未改动，仅收敛到统一 TranslationProvider 接口。
-struct LMStudioProvider: TranslationProvider {
+struct LocalTranslationProvider: TranslationProvider {
     var kind: TranslationProviderKind { .lmStudio }
 
     func translate(
         segmentTexts: [String],
         targetLanguage: String,
         previousTranslations: [(original: String, translated: String)]
-    ) async throws -> [String] {
-        try await TranslationService.translateSegmentsWithOpenAI(
+    ) async throws -> TranslationResult {
+        let texts = try await TranslationService.translateSegmentsWithOpenAI(
             segmentTexts: segmentTexts,
             targetLanguage: targetLanguage,
             previousTranslations: previousTranslations,
             local: true
         )
+        return TranslationResult(texts: texts)
     }
 
     /// 与设置页「检测 API 状态」的本地分支一致：解析端点并探测模型列表，

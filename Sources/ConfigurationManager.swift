@@ -1,43 +1,42 @@
 import Foundation
 import Observation
 
-// MARK: - 设置数据中心（SettingsManager）
+// MARK: - 配置中心（ConfigurationManager）
 //
-// 所有设置页面只绑定这里的数据，不直接触碰业务逻辑：
-// - UserDefaults 键与旧 @AppStorage 完全一致，业务代码读取路径不变；
-// - 需要联动字幕浮层/状态机的写入（字幕样式、翻译方式）转发 AppState setter；
-// - 外部入口（快速切换菜单、URL Scheme 等）可能直接写 UserDefaults，
-//   页面 onAppear 调 SettingsManager.reload() 吸收外部变更。
+// 统一管理所有设置（AppState 拆分后的配置架构）：
+//
+//   AppConfiguration
+//   ├── ASRConfiguration         识别引擎 / 模型路径 / 在线识别 / 音频分片
+//   ├── TranslationConfiguration 翻译方式 / 端点 / 密钥 / 模型 / 上下文
+//   ├── SubtitleConfiguration    字幕样式（代理 AppState 联动浮层）
+//   ├── AudioConfiguration       录音（麦克风默认等）
+//   ├── WindowConfiguration      浮层窗口偏好
+//   └── ASRPromptConfiguration   会议纪要提示词（MinutesPromptStore）
+//
+// 规则：
+// - 设置页面只绑定 ConfigurationManager（不直接修改业务对象 / UserDefaults）；
+// - 业务模块只读取配置（UserDefaults 键与 1.4 完全一致，旧配置兼容）；
+// - 支持保存（didSet 持久化）/ 读取 / 默认值兜底 / 版本迁移（ConfigurationSchema）。
+//
+// 取代 1.4 的 SettingsManager；字幕/翻译等需要联动浮层状态机的写入
+// 经 AppState setter 转发（attach(appState:) 注入）。
 
-@Observable
-final class SettingsManager {
-    static let shared = SettingsManager()
+/// 配置 schema 版本迁移（UserDefaults "configSchemaVersion"）。
+/// 旧配置（无版本键）视为 v0；v0 → v1 键与 1.4 完全一致，无需数据搬运，
+/// 仅写入版本号。未来版本在此追加迁移分支。
+enum ConfigurationSchema {
+    static let currentVersion = 1
+    static let versionKey = "configSchemaVersion"
 
-    let general = GeneralSettings()
-    let recognition = RecognitionSettings()
-    let translation = TranslationSettings()
-    let caption = CaptionSettings()
-    let audio = AudioSettings()
-
-    private init() {}
-
-    /// App 启动时注入 AppState：字幕样式/翻译方式需要经 AppState setter 联动浮层。
-    func attach(appState: AppState) {
-        general.appState = appState
-        translation.appState = appState
-        caption.appState = appState
-    }
-
-    /// 从 UserDefaults 重新同步外部直接写入的变更（页面 onAppear 调用）。
-    func reload() {
-        general.reload()
-        recognition.reload()
-        translation.reload()
-        audio.reload()
+    /// 启动 / reload 时调用：低于当前版本则执行迁移并写入新版本号。
+    static func migrateIfNeeded() {
+        let stored = UserDefaults.standard.integer(forKey: versionKey)
+        guard stored < currentVersion else { return }
+        UserDefaults.standard.set(currentVersion, forKey: versionKey)
     }
 }
 
-// MARK: - 通用
+// MARK: - 通用（API 服务器 / 转录字体）
 
 @Observable
 final class GeneralSettings {
@@ -96,7 +95,7 @@ final class GeneralSettings {
     }
 }
 
-// MARK: - 识别
+// MARK: - ASR 配置
 
 /// 识别引擎选择（UserDefaults "asrEngine"）：
 /// - auto：按所选模型自动判定引擎（1.4 默认行为，推荐）；
@@ -109,6 +108,7 @@ enum ASREngineSelection: String, CaseIterable, Codable {
     case qwen
     case nemotron
     case online
+    case apple
 
     static let key = "asrEngine"
 
@@ -119,6 +119,7 @@ enum ASREngineSelection: String, CaseIterable, Codable {
         case .qwen: return "Qwen"
         case .nemotron: return "Nemotron"
         case .online: return "Online API"
+        case .apple: return "Apple"
         }
     }
 
@@ -128,8 +129,109 @@ enum ASREngineSelection: String, CaseIterable, Codable {
     }
 }
 
+/// 在线 ASR API 类型（UserDefaults "onlineASRApiType"）：
+/// - openai：OpenAI Compatible（baseURL 如 https://xxx/v1，自动拼 /audio/transcriptions）；
+/// - mimo：小米 MiMo（POST {base}/chat/completions，messages 内 input_audio 多模态，
+///   认证头 api-key:，asr_options.language=auto/zh/en）；
+/// - custom：自定义端点（填写完整端点 URL，原样请求，不做路径加工）。
+enum OnlineASRApiType: String, CaseIterable, Codable {
+    case openai
+    case mimo
+    case custom
+
+    static let key = "onlineASRApiType"
+
+    var label: String {
+        switch self {
+        case .openai: return "OpenAI Compatible"
+        case .mimo: return "Xiaomi MiMo"
+        case .custom: return "Custom Endpoint"
+        }
+    }
+
+    /// 按类型的默认 Base URL。
+    var defaultBaseURL: String {
+        switch self {
+        case .openai: return "https://api.openai.com/v1"
+        case .mimo: return "https://api.xiaomimimo.com/v1"
+        case .custom: return ""
+        }
+    }
+
+    /// 按类型的默认模型名。
+    var defaultModel: String {
+        switch self {
+        case .openai: return "whisper-1"
+        case .mimo: return "mimo-v2.5-asr"
+        case .custom: return "whisper-1"
+        }
+    }
+
+    static var current: OnlineASRApiType {
+        OnlineASRApiType(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .openai
+    }
+}
+
+/// 音频分片模式（UserDefaults "audioChunkingMode"）：
+/// - off：所有识别引擎关闭分片，保持 1.4 原实时识别流程；
+/// - localOnly：Whisper / Qwen / Nemotron 启用分片，Online API 跳过；
+/// - onlineOnly：Online ASR 启用分片，本地引擎跳过。
+enum AudioChunkingMode: String, CaseIterable, Codable {
+    case off
+    case localOnly
+    case onlineOnly
+
+    static let key = "audioChunkingMode"
+
+    var label: String {
+        switch self {
+        case .off: return "关闭"
+        case .localOnly: return "仅本地模型"
+        case .onlineOnly: return "仅在线 API"
+        }
+    }
+
+    /// 说明文字（设置页展示应用范围）。
+    var appliesToText: String {
+        switch self {
+        case .off: return ""
+        case .localOnly: return "应用于：Whisper / Qwen / Nemotron"
+        case .onlineOnly: return "应用于：Online ASR"
+        }
+    }
+
+    /// 当前保存的模式。
+    static var current: AudioChunkingMode {
+        AudioChunkingMode(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .off
+    }
+}
+
+/// 音频分片参数（UserDefaults 持久化；运行时读取，修改立即生效）。
+enum AudioChunkingConfig {
+    enum Keys {
+        static let minSeconds = "audioChunkingMinSeconds"
+        static let maxWaitSeconds = "audioChunkingMaxWaitSeconds"
+    }
+
+    static let minChunkRange = 1.0...10.0
+    static let maxWaitRange = 3.0...15.0
+
+    /// 最短识别时间（聚合发送下限，1-10 秒，默认 3）。
+    static var minChunkSeconds: Double {
+        let value = UserDefaults.standard.double(forKey: Keys.minSeconds)
+        return minChunkRange.contains(value) ? value : 3
+    }
+
+    /// 最长等待时间（聚合发送兜底，3-15 秒，默认 5）。
+    static var maxWaitSeconds: Double {
+        let value = UserDefaults.standard.double(forKey: Keys.maxWaitSeconds)
+        return maxWaitRange.contains(value) ? value : 5
+    }
+}
+
+/// ASR 配置：识别引擎 / 自定义模型路径 / 在线识别 API / 音频分片。
 @Observable
-final class RecognitionSettings {
+final class ASRConfiguration {
     /// 自定义 GGML/GGUF 模型路径（resolveModelPath 中优先级最高；留空用已下载模型）。
     var customModelPath = "" {
         didSet { UserDefaults.standard.set(customModelPath, forKey: "modelPath") }
@@ -153,6 +255,18 @@ final class RecognitionSettings {
     var onlineASRModel = "" {
         didSet { UserDefaults.standard.set(onlineASRModel, forKey: OnlineASRConfig.Keys.model) }
     }
+    /// API 类型：OpenAI Compatible / MiMo / Custom Endpoint。
+    var onlineASRApiType: OnlineASRApiType = .openai {
+        didSet { UserDefaults.standard.set(onlineASRApiType.rawValue, forKey: OnlineASRApiType.key) }
+    }
+    /// 流式输出（仅 MiMo 类型生效；默认关闭 = 非流式）。
+    var onlineASRStreaming = false {
+        didSet { UserDefaults.standard.set(onlineASRStreaming, forKey: OnlineASRConfig.Keys.streaming) }
+    }
+    /// MiMo 指定语种（auto / zh / en，默认 auto；文档推荐显式指定提升准确率）。
+    var onlineASRMimoLanguage = "auto" {
+        didSet { UserDefaults.standard.set(onlineASRMimoLanguage, forKey: OnlineASRConfig.Keys.mimoLanguage) }
+    }
 
     /// 音频分片模式（统一策略：关闭 / 仅本地模型 / 仅在线 API）。
     var audioChunkingMode: AudioChunkingMode = .off {
@@ -167,6 +281,17 @@ final class RecognitionSettings {
         didSet { UserDefaults.standard.set(audioChunkingMaxWaitSeconds, forKey: AudioChunkingConfig.Keys.maxWaitSeconds) }
     }
 
+    // Apple Speech（系统 Speech 框架）。
+    /// 识别语言（默认 zh-CN；AppleSpeechProvider.localeIdentifier 读取同键）。
+    var appleSpeechLocale = "zh-CN" {
+        didSet { UserDefaults.standard.set(appleSpeechLocale, forKey: "appleSpeechLocale") }
+    }
+    /// 优先本地（on-device）识别（默认开启：语言包已安装即可离线识别，
+    /// 更可靠；设备不支持时自动回落系统服务器）。
+    var appleSpeechOnDevice = true {
+        didSet { UserDefaults.standard.set(appleSpeechOnDevice, forKey: "appleSpeechOnDevice") }
+    }
+
     init() { reload() }
 
     func reload() {
@@ -178,19 +303,28 @@ final class RecognitionSettings {
         onlineASRBaseURL = defaults.string(forKey: OnlineASRConfig.Keys.baseURL) ?? ""
         onlineASRApiKey = defaults.string(forKey: OnlineASRConfig.Keys.apiKey) ?? ""
         onlineASRModel = defaults.string(forKey: OnlineASRConfig.Keys.model) ?? ""
+        onlineASRApiType = OnlineASRApiType(rawValue: defaults.string(forKey: OnlineASRApiType.key) ?? "")
+            ?? .openai
+        onlineASRStreaming = defaults.bool(forKey: OnlineASRConfig.Keys.streaming)
+        let mimoLang = defaults.string(forKey: OnlineASRConfig.Keys.mimoLanguage) ?? "auto"
+        onlineASRMimoLanguage = ["auto", "zh", "en"].contains(mimoLang) ? mimoLang : "auto"
         audioChunkingMode = AudioChunkingMode(rawValue: defaults.string(forKey: AudioChunkingMode.key) ?? "")
             ?? .off
         let minChunk = defaults.double(forKey: AudioChunkingConfig.Keys.minSeconds)
         audioChunkingMinSeconds = AudioChunkingConfig.minChunkRange.contains(minChunk) ? minChunk : 3
         let maxWait = defaults.double(forKey: AudioChunkingConfig.Keys.maxWaitSeconds)
         audioChunkingMaxWaitSeconds = AudioChunkingConfig.maxWaitRange.contains(maxWait) ? maxWait : 5
+        appleSpeechLocale = defaults.string(forKey: "appleSpeechLocale") ?? "zh-CN"
+        // 未设置过时默认开启（旧配置兼容：读不到键视为 true）。
+        appleSpeechOnDevice = defaults.object(forKey: "appleSpeechOnDevice") == nil
+            ? true : defaults.bool(forKey: "appleSpeechOnDevice")
     }
 }
 
-// MARK: - 翻译
+// MARK: - 翻译配置
 
 @Observable
-final class TranslationSettings {
+final class TranslationConfiguration {
     @ObservationIgnored weak var appState: AppState?
 
     /// 翻译方式：唯一写入口是 AppState.setTranslationMode（联动字幕浮层状态机）。
@@ -226,6 +360,10 @@ final class TranslationSettings {
     var temperature = 0.3 {
         didSet { UserDefaults.standard.set(temperature, forKey: TranslationService.ConfigKeys.temperature) }
     }
+    /// 自定义翻译系统提示词（空 = 默认翻译指令）。
+    var systemPrompt = "" {
+        didSet { UserDefaults.standard.set(systemPrompt, forKey: TranslationService.ConfigKeys.systemPrompt) }
+    }
 
     init() { reload() }
 
@@ -242,15 +380,16 @@ final class TranslationSettings {
         let temperature = defaults.double(forKey: TranslationService.ConfigKeys.temperature)
         self.temperature = defaults.object(forKey: TranslationService.ConfigKeys.temperature) == nil
             ? 0.3 : temperature
+        systemPrompt = defaults.string(forKey: TranslationService.ConfigKeys.systemPrompt) ?? ""
     }
 }
 
-// MARK: - 字幕
+// MARK: - 字幕配置
 
 /// 字幕样式设置：全部代理到 AppState（setter 会同步持久化并实时联动字幕浮层）。
 /// 属性读取经由 AppState（@Observable），页面刷新依赖跟踪不受影响。
 @Observable
-final class CaptionSettings {
+final class SubtitleConfiguration {
     @ObservationIgnored weak var appState: AppState?
 
     var sourceFontSize: Double {
@@ -309,32 +448,15 @@ final class CaptionSettings {
         get { appState?.subtitleClearDelay ?? 3 }
         set { appState?.setSubtitleClearDelay(newValue) }
     }
-    var minSpeechDuration: Double {
-        get { appState?.subtitleMinSpeechDuration ?? 1 }
-        set { appState?.setSubtitleMinSpeechDuration(newValue) }
-    }
-    var maxSentenceDuration: Double {
-        get { appState?.subtitleMaxSentenceDuration ?? 8 }
-        set { appState?.setSubtitleMaxSentenceDuration(newValue) }
-    }
-    var silencePause: Double {
-        get { appState?.subtitleSilencePause ?? 1 }
-        set { appState?.setSubtitleSilencePause(newValue) }
-    }
-    var autoHideControls: Bool {
-        get { appState?.floatingOverlayAutoHide ?? false }
-        set { appState?.setFloatingOverlayAutoHide(newValue) }
-    }
-
     func resetOverlayPosition() {
         appState?.resetFloatingOverlayPosition()
     }
 }
 
-// MARK: - 音频
+// MARK: - 音频配置
 
 @Observable
-final class AudioSettings {
+final class AudioConfiguration {
     /// 录制时默认包含麦克风（浮层内仍可临时切换；AudioRecorder/选择面板初值读此键）。
     var defaultIncludeMicrophone = false {
         didSet { UserDefaults.standard.set(defaultIncludeMicrophone, forKey: Self.includeMicrophoneKey) }
@@ -346,5 +468,63 @@ final class AudioSettings {
 
     func reload() {
         defaultIncludeMicrophone = UserDefaults.standard.bool(forKey: Self.includeMicrophoneKey)
+    }
+}
+
+// MARK: - 窗口配置
+
+/// 浮层窗口偏好（设置页经本配置修改，联动 AppState/浮层）。
+@Observable
+final class WindowConfiguration {
+    @ObservationIgnored weak var appState: AppState?
+
+    /// 字幕浮层自动隐藏工具栏（代理 AppState，浮层实时联动）。
+    var autoHideControls: Bool {
+        get { appState?.floatingOverlayAutoHide ?? false }
+        set { appState?.setFloatingOverlayAutoHide(newValue) }
+    }
+}
+
+// MARK: - 配置中心
+
+/// 配置中心：设置页面唯一绑定入口。
+@Observable
+final class ConfigurationManager {
+    static let shared = ConfigurationManager()
+
+    /// API 服务器 / 转录字体等通用配置。
+    let general = GeneralSettings()
+    /// ASR：识别引擎 / 模型路径 / 在线识别 / 音频分片。
+    let asr = ASRConfiguration()
+    /// 翻译：方式 / 端点 / 密钥 / 模型 / 上下文参数。
+    let translation = TranslationConfiguration()
+    /// 字幕样式（代理 AppState，实时联动浮层）。
+    let subtitle = SubtitleConfiguration()
+    /// 录音配置。
+    let audio = AudioConfiguration()
+    /// 浮层窗口偏好。
+    let window = WindowConfiguration()
+    /// ASR 识别提示词（热词注入）配置。
+    let asrPrompt = ASRPromptConfiguration()
+
+    private init() {
+        ConfigurationSchema.migrateIfNeeded()
+    }
+
+    /// App 启动时注入 AppState：字幕/翻译/窗口配置需要经 AppState setter 联动浮层。
+    func attach(appState: AppState) {
+        general.appState = appState
+        translation.appState = appState
+        subtitle.appState = appState
+        window.appState = appState
+    }
+
+    /// 从 UserDefaults 重新同步外部直接写入的变更（页面 onAppear 调用）。
+    func reload() {
+        general.reload()
+        asr.reload()
+        translation.reload()
+        audio.reload()
+        ConfigurationSchema.migrateIfNeeded()
     }
 }

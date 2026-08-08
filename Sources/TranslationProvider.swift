@@ -22,6 +22,8 @@ enum TranslationProviderKind: String, Sendable {
     case lmStudio
     /// 在线 OpenAI 兼容 API。
     case onlineAPI
+    /// 系统翻译框架（macOS 15+；低版本报告不可用）。
+    case apple
 }
 
 /// 连接测试结果（testConnection() 返回值）。
@@ -44,13 +46,20 @@ enum TranslationProviderStatus: Sendable, Equatable {
     case unavailable(String)
 }
 
-/// 统一翻译 Provider 接口。
+/// 统一翻译输出（TranslationResult）。
+struct TranslationResult: Sendable {
+    /// 与输入等长的译文数组（不足部分以空串补齐）。
+    let texts: [String]
+    /// 检测/指定的源语言（可选）。
+    var sourceLanguage: String? = nil
+}
+
+/// 统一翻译 Provider 接口（统一输出 TranslationResult）。
 protocol TranslationProvider: Sendable {
     /// 提供方标识。
     var kind: TranslationProviderKind { get }
 
-    /// 翻译一批字幕文本（与 1.4 TranslationEngine.translate 签名一致：
-    /// 输入输出数据结构不变）。
+    /// 翻译一批字幕文本（输入输出数据结构与 1.4 一致，输出统一为 TranslationResult）。
     /// - Parameters:
     ///   - segmentTexts: 待翻译的原文行数组。
     ///   - targetLanguage: 目标语言 locale id（如 "en"、"zh-Hans"）。
@@ -60,7 +69,7 @@ protocol TranslationProvider: Sendable {
         segmentTexts: [String],
         targetLanguage: String,
         previousTranslations: [(original: String, translated: String)]
-    ) async throws -> [String]
+    ) async throws -> TranslationResult
 
     /// 连接测试：验证配置可用性与端到端连通（不发真实字幕翻译请求）。
     func testConnection() async -> TranslationConnectionStatus

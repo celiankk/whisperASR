@@ -6,7 +6,7 @@ import Network
 // MARK: - 通用
 
 struct GeneralSettingsView: View {
-    @State private var settings = SettingsManager.shared
+    @State private var settings = ConfigurationManager.shared
     @State private var apiServer = APIServer.shared
 
     // Backup & restore
@@ -192,13 +192,15 @@ struct GeneralSettingsView: View {
 // MARK: - 识别
 
 struct RecognitionSettingsView: View {
-    @State private var settings = SettingsManager.shared
+    @State private var settings = ConfigurationManager.shared
     @State private var localModelManager = LocalModelManager.shared
     @State private var onlineASRTesting = false
     @State private var onlineASRResult: (success: Bool, message: String)?
+    @State private var promptPreview = ""
 
     var body: some View {
-        @Bindable var recognition = settings.recognition
+        @Bindable var recognition = settings.asr
+        @Bindable var asrPrompt = settings.asrPrompt
 
         Form {
             Section("语音识别模型") {
@@ -225,14 +227,54 @@ struct RecognitionSettingsView: View {
             Section("在线识别 API") {
                 Toggle("启用在线识别", isOn: $recognition.onlineASREnabled)
                 if recognition.onlineASREnabled {
-                    TextField("Base URL", text: $recognition.onlineASRBaseURL,
-                              prompt: Text("https://api.openai.com/v1"))
-                        .textFieldStyle(.roundedBorder)
+                    Picker("API 类型", selection: $recognition.onlineASRApiType) {
+                        ForEach(OnlineASRApiType.allCases, id: \.self) { type in
+                            Text(type.label).tag(type)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    if recognition.onlineASRApiType == .openai {
+                        TextField("Base URL", text: $recognition.onlineASRBaseURL,
+                                  prompt: Text("https://api.openai.com/v1"))
+                            .textFieldStyle(.roundedBorder)
+                        Text("自动拼接 /audio/transcriptions；重复 /v1 自动去重。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if recognition.onlineASRApiType == .mimo {
+                        TextField("Base URL", text: $recognition.onlineASRBaseURL,
+                                  prompt: Text("https://api.xiaomimimo.com/v1"))
+                            .textFieldStyle(.roundedBorder)
+                        Toggle("流式输出（stream）", isOn: $recognition.onlineASRStreaming)
+                        HStack {
+                            Text("指定语种")
+                            Spacer()
+                            Picker("", selection: $recognition.onlineASRMimoLanguage) {
+                                Text("自动检测（auto）").tag("auto")
+                                Text("中文（zh）").tag("zh")
+                                Text("英文（en）").tag("en")
+                            }
+                            .labelsHidden()
+                            .frame(width: 160)
+                        }
+                        Text("小米 MiMo：POST {base}/chat/completions（messages 内 input_audio），认证头 api-key:，asr_options.language 按上方选择（文档推荐显式指定提升准确率）。流式输出按文档 stream=true 逐 chunk 返回识别内容。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        TextField("完整端点 URL", text: $recognition.onlineASRBaseURL,
+                                  prompt: Text("https://your-server.com/asr/recognize"))
+                            .textFieldStyle(.roundedBorder)
+                        Text("Custom Endpoint：填写完整请求 URL，原样发送不做路径加工。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     SecureField("API Key（本地兼容服务可留空）", text: $recognition.onlineASRApiKey)
                         .textFieldStyle(.roundedBorder)
                     TextField("Model Name", text: $recognition.onlineASRModel,
-                              prompt: Text("whisper-1"))
+                              prompt: Text("whisper-1 / mini-V2.5-asr"))
                         .textFieldStyle(.roundedBorder)
+                    Text("OpenAI Compatible 音频转录（POST /audio/transcriptions，multipart form-data）；识别不使用 /chat/completions。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     HStack {
                         Button {
@@ -299,6 +341,62 @@ struct RecognitionSettingsView: View {
                 }
             }
 
+            Section("ASR Prompt（热词提示）") {
+                Toggle("启用识别提示词", isOn: $asrPrompt.enabled)
+                if asrPrompt.enabled {
+                    Picker("来源", selection: $asrPrompt.source) {
+                        ForEach(ASRPromptSource.allCases, id: \.self) { source in
+                            Text(source.label).tag(source)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    if asrPrompt.source == .manual {
+                        TextField("专业词汇 / 产品名 / 人名", text: $asrPrompt.customPrompt,
+                                  prompt: Text("例如：Transformer、WhisperASR、张伟、Sprint 评审"),
+                                  axis: .vertical)
+                            .lineLimit(2...4)
+                        Text("手动输入的内容将作为识别提示词注入。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if asrPrompt.source == .scene {
+                        Picker("场景模板", selection: $asrPrompt.sceneTemplate) {
+                            ForEach(ASRSceneTemplate.allCases, id: \.self) { scene in
+                                Text(scene.label).tag(scene)
+                            }
+                        }
+                        Text("自动生成该场景的基础热词 Prompt。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if asrPrompt.source == .history {
+                        Text("自动从最近 50 条历史字幕提取高频词与专有名词，无需手动维护。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if asrPrompt.source == .ai {
+                        HStack {
+                            Text("使用翻译服务配置的模型生成")
+                            Spacer()
+                            Button("重新生成") { ASRPromptManager.shared.regenerate() }
+                        }
+                        Text("仅在启动识别 / 切换场景 / 修改配置时生成，不会每句话调用。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    TextField("附加关键词（逗号分隔）", text: $asrPrompt.keywords)
+                    if !promptPreview.isEmpty {
+                        Text("当前提示词：\(promptPreview)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                    Text("提示词注入 Online API 与本地 Whisper（initial_prompt）；Nemotron / Qwen 不受影响；关闭后行为与之前一致。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("自定义模型") {
                 HStack {
                     TextField("GGML 模型文件", text: $recognition.customModelPath,
@@ -356,12 +454,19 @@ struct RecognitionSettingsView: View {
         .onAppear {
             ModelManager.shared.refresh()
             settings.reload()
+            refreshPromptPreview()
         }
+    }
+
+    /// 刷新 ASR Prompt 预览（重新生成 + 快照显示）。
+    private func refreshPromptPreview() {
+        ASRPromptManager.shared.refresh()
+        promptPreview = ASRPromptManager.shared.currentPrompt ?? ""
     }
 
     /// 引擎选择提示（按当前选择给出说明）。
     private var engineHint: String {
-        switch settings.recognition.asrEngine {
+        switch settings.asr.asrEngine {
         case .auto:
             return "自动：按所选模型判定引擎（Whisper / Qwen / Nemotron），与 1.4 行为一致。"
         case .whisper:
@@ -372,6 +477,8 @@ struct RecognitionSettingsView: View {
             return "强制使用 Nemotron 引擎（FluidAudio Core ML 模型包目录）。"
         case .online:
             return "使用在线 OpenAI 兼容 API，无需本地模型；需在上方启用并配置。"
+        case .apple:
+            return "使用系统 Apple Speech（需在系统设置中授权语音识别；默认关闭）。"
         }
     }
 
@@ -394,7 +501,7 @@ struct RecognitionSettingsView: View {
         panel.allowsMultipleSelection = false
         panel.begin { response in
             if response == .OK, let url = panel.url {
-                settings.recognition.customModelPath = url.path
+                settings.asr.customModelPath = url.path
             }
         }
     }
@@ -415,7 +522,7 @@ struct RecognitionSettingsView: View {
 // MARK: - 翻译
 
 struct TranslationSettingsView: View {
-    @State private var settings = SettingsManager.shared
+    @State private var settings = ConfigurationManager.shared
     @State private var verifyInFlight = false
     @State private var verifyResult: VerifyResult? = nil
 
@@ -455,6 +562,10 @@ struct TranslationSettingsView: View {
                     Text("音频 → 本地实时识别 → 原文字幕 → 在线 API 翻译 → 目标语言字幕。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                case .apple:
+                    Text("Apple 翻译需要 macOS 15+ 的系统翻译框架，当前系统版本暂不可用。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -472,6 +583,14 @@ struct TranslationSettingsView: View {
                               prompt: Text(mode == .localModel ? "留空自动检测" : "gpt-4o-mini"))
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: translation.model) { _, _ in verifyResult = nil }
+
+                    TextField("系统提示词（可选）", text: $translation.systemPrompt,
+                              prompt: Text("你是专业字幕翻译助手。保持原意。不要解释。只输出翻译结果。"),
+                              axis: .vertical)
+                        .lineLimit(2...4)
+                    Text("自定义 system message 提示词；留空使用默认翻译指令。编号输出格式要求会自动追加。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     HStack {
                         Text("请求超时时间")
@@ -580,10 +699,11 @@ struct TranslationSettingsView: View {
 // MARK: - 字幕
 
 struct CaptionSettingsView: View {
-    @State private var settings = SettingsManager.shared
+    @State private var settings = ConfigurationManager.shared
 
     var body: some View {
-        @Bindable var caption = settings.caption
+        @Bindable var caption = settings.subtitle
+        @Bindable var window = settings.window
 
         Form {
             Section("字幕文字") {
@@ -728,48 +848,9 @@ struct CaptionSettingsView: View {
                 Text("3 秒没有新的识别输入时自动清空浮窗字幕（1–10 秒）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack {
-                    Text("最短识别时长")
-                    Spacer()
-                    Slider(value: $caption.minSpeechDuration, in: 0.5...3, step: 0.1)
-                        .frame(width: 180)
-                    Text(String(format: "%.1fs", caption.minSpeechDuration))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
-                }
-                Text("讲话不足该时长不显示字幕（避免嗯/啊等单字触发）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Text("最长单句时长")
-                    Spacer()
-                    Slider(value: $caption.maxSentenceDuration, in: 2...15, step: 0.5)
-                        .frame(width: 180)
-                    Text(String(format: "%.1fs", caption.maxSentenceDuration))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
-                }
-                Text("一句话超过该时长强制截断，内容移到下一句显示。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Text("停顿判定阈值")
-                    Spacer()
-                    Slider(value: $caption.silencePause, in: 0.5...3, step: 0.1)
-                        .frame(width: 180)
-                    Text(String(format: "%.1fs", caption.silencePause))
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, alignment: .trailing)
-                }
-                Text("停顿超过该时长判定一句结束并发送翻译。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("5 秒未点击自动隐藏控件", isOn: $caption.autoHideControls)
+                Toggle("5 秒未点击自动隐藏控件", isOn: $window.autoHideControls)
                 Button("浮层回到默认位置") {
-                    settings.caption.resetOverlayPosition()
+                    settings.subtitle.resetOverlayPosition()
                 }
             }
         }
@@ -781,7 +862,7 @@ struct CaptionSettingsView: View {
 
 struct AudioSettingsView: View {
     @Environment(AudioRecorder.self) private var recorder
-    @State private var settings = SettingsManager.shared
+    @State private var settings = ConfigurationManager.shared
     @State private var screenCaptureMonitor = ScreenCaptureMonitor.shared
 
     var body: some View {
@@ -1024,7 +1105,7 @@ private enum StatusLevel {
 struct SystemStatusSettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(AudioRecorder.self) private var recorder
-    @State private var settings = SettingsManager.shared
+    @State private var settings = ConfigurationManager.shared
     @State private var monitor = SystemMonitor()
     @State private var screenCaptureMonitor = ScreenCaptureMonitor.shared
 
@@ -1034,6 +1115,7 @@ struct SystemStatusSettingsView: View {
     @State private var apiLevel: StatusLevel = .idle
     @State private var apiCheckInFlight = false
     @State private var onlineASRStats = OnlineASRStats.shared
+    @State private var appleStatus = AppleServiceStatusManager.shared
 
     var body: some View {
         Form {
@@ -1090,6 +1172,15 @@ struct SystemStatusSettingsView: View {
                         .foregroundStyle(.red)
                         .lineLimit(2)
                 }
+            }
+
+            Section("Apple Services") {
+                StatusRow(title: "Apple Speech",
+                          text: appleSpeechStatusText,
+                          level: appleSpeechStatusLevel)
+                StatusRow(title: "Apple Translation",
+                          text: appleTranslationStatusText,
+                          level: appleTranslationStatusLevel)
             }
 
             Section("资源占用") {
@@ -1154,6 +1245,7 @@ struct SystemStatusSettingsView: View {
             screenCaptureMonitor.refresh()
             refreshModelStatus()
             checkTranslationStatus()
+            Task { await appleStatus.refresh() }
         }
         .onDisappear { monitor.stop() }
     }
@@ -1168,6 +1260,41 @@ struct SystemStatusSettingsView: View {
         case .permissionDenied: return "权限被拒绝"
         case .idle, .ready:
             return appState.isLiveTranscribing ? "实时转录中" : "空闲"
+        }
+    }
+
+    private var appleSpeechStatusText: String {
+        switch appleStatus.speechAuth {
+        case .authorized: return appleStatus.speechServiceAvailable
+            ? "可用（\(appleStatus.speechCurrentLocale)）" : "不可用"
+        case .notDetermined: return "未请求授权"
+        case .denied: return "被拒绝"
+        case .restricted: return "受限"
+        }
+    }
+
+    private var appleSpeechStatusLevel: StatusLevel {
+        switch appleStatus.speechAuth {
+        case .authorized: return appleStatus.speechServiceAvailable ? .ok : .error
+        case .notDetermined: return .idle
+        case .denied, .restricted: return .error
+        }
+    }
+
+    private var appleTranslationStatusText: String {
+        switch appleStatus.translationState {
+        case .available: return "可用"
+        case .needLanguageResource: return "缺少语言资源"
+        case .unavailable: return "不可用"
+        case .error: return "初始化失败"
+        }
+    }
+
+    private var appleTranslationStatusLevel: StatusLevel {
+        switch appleStatus.translationState {
+        case .available: return .ok
+        case .needLanguageResource: return .warning
+        case .unavailable, .error: return .error
         }
     }
 
@@ -1204,7 +1331,7 @@ struct SystemStatusSettingsView: View {
             modelLevel = .ok
             return
         }
-        let customPath = settings.recognition.customModelPath
+        let customPath = settings.asr.customModelPath
         if !customPath.isEmpty, FileManager.default.fileExists(atPath: customPath) {
             modelText = "未加载（就绪：\((customPath as NSString).lastPathComponent)）"
             modelLevel = .warning
@@ -1253,6 +1380,9 @@ struct SystemStatusSettingsView: View {
                 apiText = "失败（未配置 API 端点 / Key）"
                 apiLevel = .error
             }
+        case .apple:
+            apiText = "需要 macOS 15+"
+            apiLevel = .warning
         }
     }
 
@@ -1301,6 +1431,189 @@ struct SystemStatusSettingsView: View {
 }
 
 /// 状态指示灯行：● 标题 … 状态文字（绿/黄/红/灰）。
+// MARK: - Apple 服务
+
+/// Apple 服务设置：Apple Speech（系统语音识别）+ Apple Translation（系统翻译）。
+/// 状态由 AppleServiceStatusManager 统一检测（View 不自行判断）；
+/// 进入页面自动刷新；默认关闭；切换无需重启；失败不影响其他 Provider。
+struct AppleServicesSettingsView: View {
+    @State private var settings = ConfigurationManager.shared
+    @State private var appleStatus = AppleServiceStatusManager.shared
+    @State private var localeOptions: [String] = []
+
+    var body: some View {
+        @Bindable var asr = settings.asr
+
+        Form {
+            Section("Apple Speech（系统语音识别）") {
+                StatusRow(title: "授权",
+                          text: authText,
+                          level: authLevel)
+                StatusRow(title: "服务状态",
+                          text: appleStatus.speechServiceAvailable ? "可用" : "不可用",
+                          level: appleStatus.speechServiceAvailable ? .ok : .error)
+                StatusRow(title: "语言资源",
+                          text: appleStatus.speechInstalledLocaleCount == 0
+                              ? "检测中…"
+                              : "本机可用语言：\(appleStatus.speechInstalledLocaleCount) 种",
+                          level: .ok)
+                HStack {
+                    Text("当前语言")
+                    Spacer()
+                    Text("\(appleStatus.speechCurrentLocale)")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    if appleStatus.speechLocaleSupported {
+                        Label("已安装", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("未安装", systemImage: "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                HStack {
+                    Text("离线识别")
+                    Spacer()
+                    if appleStatus.speechOfflineAvailable {
+                        Label("可用（on-device）", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        Text("需要网络（服务器识别）")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                    }
+                }
+                Picker("识别语言", selection: $asr.appleSpeechLocale) {
+                    ForEach(localeOptions, id: \.self) { locale in
+                        Text(localeDisplayName(locale)).tag(locale)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text("列表只显示本机已安装的语音识别语言（可直接离线使用）；下载/删除语言包后进入本页自动刷新。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("优先本地识别（on-device）", isOn: $asr.appleSpeechOnDevice)
+                Text("启用方式：识别 → 识别引擎 → Apple。授权在首次使用时请求（系统设置 → 隐私与安全性 → 语音识别）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Apple Translation（系统翻译）") {
+                StatusRow(title: "系统支持",
+                          text: appleStatus.translationSystemSupported ? "✓ 支持" : "✗ 不支持",
+                          level: appleStatus.translationSystemSupported ? .ok : .error)
+                StatusRow(title: "Framework",
+                          text: appleStatus.translationFrameworkAvailable ? "✓ 可用" : "✗ 不可用",
+                          level: appleStatus.translationFrameworkAvailable ? .ok : .error)
+                StatusRow(title: "翻译会话",
+                          text: sessionText,
+                          level: sessionLevel)
+                StatusRow(title: "语言资源",
+                          text: languageText,
+                          level: languageLevel)
+                if !appleStatus.translationTargetLanguage.isEmpty {
+                    Text("目标语言：\(appleStatus.translationTargetLanguage)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                StatusRow(title: "已安装语言",
+                          text: appleStatus.translationInstalledLanguageCount == 0
+                              ? "检测中…"
+                              : "\(appleStatus.translationInstalledLanguageCount) 种",
+                          level: .ok)
+                Text("状态由系统实际能力决定（Framework / 会话可创建性 / 语言资源），不依赖固定系统版本。启用方式：翻译 → 翻译方式 → Apple。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            settings.reload()
+            Task {
+                await appleStatus.refresh()
+                await loadLocaleOptions()
+            }
+        }
+        .onChange(of: asr.appleSpeechLocale) { _, _ in
+            Task { await appleStatus.refresh() }
+        }
+    }
+
+    // MARK: Speech 派生状态
+
+    private var authText: String {
+        switch appleStatus.speechAuth {
+        case .notDetermined: return "未请求（首次使用时请求）"
+        case .authorized: return "已授权"
+        case .denied: return "被拒绝"
+        case .restricted: return "受限"
+        }
+    }
+
+    private var authLevel: StatusLevel {
+        switch appleStatus.speechAuth {
+        case .authorized: return .ok
+        case .notDetermined: return .idle
+        case .denied, .restricted: return .error
+        }
+    }
+
+    // MARK: Translation 派生状态
+
+    private var sessionText: String {
+        switch appleStatus.translationState {
+        case .available: return "✓ 可创建"
+        case .needLanguageResource: return "需要语言资源"
+        case .unavailable: return "✗ 不可用"
+        case .error: return "初始化失败"
+        }
+    }
+
+    private var sessionLevel: StatusLevel {
+        switch appleStatus.translationState {
+        case .available: return .ok
+        case .needLanguageResource: return .warning
+        case .unavailable, .error: return .error
+        }
+    }
+
+    private var languageText: String {
+        if appleStatus.translationLanguageAvailable {
+            return "✓ 可用"
+        }
+        return appleStatus.translationLanguageNeedsDownload
+            ? "⚠ 缺少语言资源（需要下载语言包）"
+            : "✗ 不支持"
+    }
+
+    private var languageLevel: StatusLevel {
+        if appleStatus.translationLanguageAvailable { return .ok }
+        return appleStatus.translationLanguageNeedsDownload ? .warning : .error
+    }
+
+    // MARK: 语言选项
+
+    /// 语言选项：只显示本机已安装语言（可直接离线使用）；
+    /// 当前配置语言未安装时附加显示（保证选择器有当前值）。
+    private func loadLocaleOptions() async {
+        var options = await AppleSpeechLanguageManager.shared.installedLanguages()
+            .map(\.identifier)
+        let current = AppleSpeechProvider.localeIdentifier
+        if !options.contains(current) {
+            options.append(current)
+        }
+        localeOptions = options.sorted()
+    }
+
+    private func localeDisplayName(_ identifier: String) -> String {
+        let name = Locale.current.localizedString(forIdentifier: identifier) ?? identifier
+        return "\(name)（\(identifier)）"
+    }
+}
+
 private struct StatusRow: View {
     let title: String
     let text: String
@@ -1410,7 +1723,7 @@ private struct LocalModelRowView: View {
                         modelPath = model.path
                         AppLogger.shared.log(.model, "Local model enabled: \(model.path)")
                     }
-                    SettingsManager.shared.reload()
+                    ConfigurationManager.shared.reload()
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)

@@ -17,7 +17,7 @@ struct WhisperASRApp: App {
         // 关闭该断言：AppKit 退化为日志记录，不再崩溃（见 newdme 第十三节）。
         UserDefaults.standard.set(false, forKey: "NSWindowAssertWhenDisplayCycleLimitReached")
         // 设置数据中心注入 AppState（字幕样式/翻译方式经 AppState 联动浮层）。
-        SettingsManager.shared.attach(appState: appState)
+        ConfigurationManager.shared.attach(appState: appState)
     }
 
     var body: some Scene {

@@ -186,9 +186,6 @@ final class FloatingLetterOverlayBinder {
                 _ = self.appState.subtitleOverlayBorderOpacity
                 _ = self.appState.subtitleHorizontalAlignment
                 _ = self.appState.subtitleClearDelay
-                _ = self.appState.subtitleMinSpeechDuration
-                _ = self.appState.subtitleMaxSentenceDuration
-                _ = self.appState.subtitleSilencePause
                 _ = self.appState.subtitleContainerWidth
                 _ = self.appState.subtitleContainerHeight
                 _ = self.appState.subtitleBackgroundOpacity
@@ -225,6 +222,7 @@ final class FloatingLetterOverlayBinder {
     }
 
     private func pushState() {
+        print("[Renderer] pushState liveSegments=\(appState.liveSegments.count) texts=\(appState.liveSegments.map { $0.text.debugDescription })")
         // 字幕：末段为流式临时句（interim），其余为完整句（final）进入队列。
         let segments = appState.liveSegments
         let translations = appState.liveTranslatedSegments
@@ -254,11 +252,6 @@ final class FloatingLetterOverlayBinder {
         }
         viewModel.maxLines = appState.maxSubtitleLines
         viewModel.subtitleClearDelay = appState.subtitleClearDelay
-        viewModel.speechConfig = SpeechEndpointConfig(
-            minimumSpeechDuration: appState.subtitleMinSpeechDuration,
-            maximumSentenceDuration: appState.subtitleMaxSentenceDuration,
-            silencePause: appState.subtitleSilencePause
-        )
         // 字幕容器（独立于字体）。
         viewModel.subtitleContainerWidth = CGFloat(appState.subtitleContainerWidth)
         viewModel.subtitleContainerHeight = CGFloat(appState.subtitleContainerHeight)

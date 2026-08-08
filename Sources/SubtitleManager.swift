@@ -9,7 +9,7 @@ import Foundation
 //   长时间运行内存恒定；
 // - 字幕生命周期：SubtitleEngine 启停（健康度监控 / 日志 / 异常信号）。
 //
-// 音频采集、静音检测、封口判定仍在 RecognitionManager（操作 AudioRecorder）；
+// 音频采集、静音检测、封口判定仍在 ASRManager（操作 AudioRecorder）；
 // 本类只管理字幕数据与生命周期，不触碰显示层（FloatingLetter 等）。
 
 final class SubtitleManager: @unchecked Sendable {
@@ -76,7 +76,7 @@ final class SubtitleManager: @unchecked Sendable {
     }
 
     /// 推进封口：把 `combined` 中在 sealTime 之前的段固化为 final。
-    /// 调用方（RecognitionManager）负责 recorder.trimSamples。
+    /// 调用方（ASRManager）负责 recorder.trimSamples。
     func seal(upToSampleCount: Int, clean: Bool, combined: [TranscriptionSegment]) {
         let sealTime = Double(upToSampleCount) / 16000.0
         sealedSegments = combined.filter { $0.start < sealTime }

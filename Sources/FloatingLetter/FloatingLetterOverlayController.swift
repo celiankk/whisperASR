@@ -152,6 +152,14 @@ final class FloatingLetterOverlayController: NSObject {
     /// 字幕浮层当前区域（选择弹窗判断“空白处返回”时排除浮层本身）。
     var overlayFrame: NSRect? { panel.isVisible ? panel.frame : nil }
 
+    /// 排查日志：窗口关键状态快照。
+    var debugStateDescription: String {
+        let frame = panel.isVisible ? NSStringFromRect(panel.frame) : "hidden"
+        return "visible=\(panel.isVisible) hidden=\(isHidden) "
+            + "alpha=\(String(format: "%.2f", panel.alphaValue)) "
+            + "mouseThrough=\(panel.ignoresMouseEvents) frame=\(frame)"
+    }
+
     private override init() {
         panel = FloatingLetterOverlayPanel(
             contentRect: NSRect(origin: .zero, size: FloatingLetterMetrics.expandedSize),

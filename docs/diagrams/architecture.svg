@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1140" viewBox="0 0 1500 1140" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, Helvetica Neue, sans-serif">
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5a5a5a"/></marker>
+</defs>
+<rect x="0" y="0" width="1500" height="1140" fill="#ffffff"/>
+<text x="750.0" y="34" text-anchor="middle" font-size="24" font-weight="bold" fill="#1a1a2e">WhisperASR 软件架构原理图</text>
+<text x="750.0" y="56" text-anchor="middle" font-size="13" fill="#666666">macOS 语音识别与字幕应用 · 五层结构（UI → 状态 → 服务 → 引擎 → 数据）</text>
+<rect x="8" y="70" width="1484" height="180" rx="12" fill="#eef5fc" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="94" font-size="15" font-weight="bold" fill="#3b6ea5">UI 层 · SwiftUI 视图 + AppKit 窗口</text>
+<rect x="8" y="270" width="1484" height="215" rx="12" fill="#fff7e6" stroke="#c98a00" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="294" font-size="15" font-weight="bold" fill="#c98a00">状态层 · @Observable 中央状态（UI 与服务桥梁）</text>
+<rect x="8" y="505" width="1484" height="280" rx="12" fill="#eefaf1" stroke="#2e8b57" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="529" font-size="15" font-weight="bold" fill="#2e8b57">服务层 · 业务逻辑 / 编排</text>
+<rect x="8" y="805" width="1484" height="125" rx="12" fill="#fdf0f9" stroke="#a04a8a" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="829" font-size="15" font-weight="bold" fill="#a04a8a">引擎层 · 推理后端（C 桥接 / 原生框架）</text>
+<rect x="8" y="950" width="1484" height="170" rx="12" fill="#f4f1fb" stroke="#6b5ba8" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="974" font-size="15" font-weight="bold" fill="#6b5ba8">数据层 · 持久化</text>
+<rect x="30" y="115" width="280" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="170.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">WhisperASRApp  @main</text>
+<text x="170.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">4 个 Scene · URL Scheme</text>
+<text x="170.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">崩溃恢复 · 调试参数</text>
+<rect x="330" y="115" width="280" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="470.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">ContentView 主窗口</text>
+<text x="470.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">Sidebar | Detail</text>
+<text x="470.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">底部 PlayerView 播放条</text>
+<rect x="630" y="115" width="230" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="745.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">SettingsView</text>
+<text x="745.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">7 分类设置中心</text>
+<text x="745.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">(内嵌，非新窗口)</text>
+<rect x="880" y="115" width="200" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="980.0" y="138.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">MinutesWindowView</text>
+<text x="980.0" y="157.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">会议纪要窗口</text>
+<rect x="1100" y="115" width="370" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1285.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">FloatingLetterViews 浮层视图</text>
+<text x="1285.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">容器 / 字幕层 / 工具栏</text>
+<text x="1285.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">/ 录制条</text>
+<rect x="30" y="330" width="220" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="140.0" y="343.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">SettingsManager</text>
+<text x="140.0" y="362.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">设置数据中心</text>
+<text x="140.0" y="381.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">5 组设置对象</text>
+<rect x="270" y="330" width="250" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="395.0" y="343.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AudioRecorder</text>
+<text x="395.0" y="362.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">SCStream 录制 · 写 m4a</text>
+<text x="395.0" y="381.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">PCM 环形缓冲</text>
+<rect x="540" y="330" width="200" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="640.0" y="343.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AudioPlayerManager</text>
+<text x="640.0" y="362.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">AVPlayer 封装</text>
+<text x="640.0" y="381.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">0.1s 周期观察</text>
+<rect x="770" y="310" width="390" height="150" rx="9" fill="#ffe9b8" stroke="#b26a00" stroke-width="1.5"/>
+<text x="965.0" y="350.32" text-anchor="middle" font-size="14" font-weight="bold" fill="#222222">AppState  全局状态中枢</text>
+<text x="965.0" y="370.32" text-anchor="middle" font-size="13" font-weight="normal" fill="#222222">转写队列 · 实时转写主循环</text>
+<text x="965.0" y="390.32" text-anchor="middle" font-size="13" font-weight="normal" fill="#222222">整句翻译队列(8并发/10s超时)</text>
+<text x="965.0" y="410.32" text-anchor="middle" font-size="13" font-weight="normal" fill="#222222">健康检查 · 崩溃恢复 · Toast</text>
+<rect x="1180" y="310" width="290" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1325.0" y="323.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">FloatingLetterOverlayBinder</text>
+<text x="1325.0" y="342.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">桥接层:观察 AppState/录音</text>
+<text x="1325.0" y="361.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">150ms 节流 → ViewModel</text>
+<rect x="1180" y="405" width="290" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1325.0" y="418.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">FloatingLetterViewModel</text>
+<text x="1325.0" y="437.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">纯 UI 状态机(零业务依赖)</text>
+<text x="1325.0" y="456.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">断句 · 去重 · 闲置隐藏</text>
+<rect x="30" y="560" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="195.0" y="573.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranscriptionService 引擎门面</text>
+<text x="195.0" y="592.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">文件转写 + 实时分块</text>
+<text x="195.0" y="611.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">主/实时模型双上下文</text>
+<rect x="390" y="560" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="555.0" y="573.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">SubtitleEngine 字幕引擎</text>
+<text x="555.0" y="592.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">生命周期 · 性能监控</text>
+<text x="555.0" y="611.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">150ms UI 刷新调度</text>
+<rect x="750" y="560" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="915.0" y="573.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranslationService 翻译</text>
+<text x="915.0" y="592.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">OpenAI 兼容 · 引擎工厂</text>
+<text x="915.0" y="611.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">源语言检测 · 重试2次</text>
+<rect x="1110" y="560" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1275.0" y="573.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">MeetingMinutesService</text>
+<text x="1275.0" y="592.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">Map-Reduce 长文纪要</text>
+<text x="1275.0" y="611.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">MinutesPromptStore 模板</text>
+<rect x="30" y="660" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="195.0" y="673.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">APIServer 本地 HTTP 服务</text>
+<text x="195.0" y="692.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">POST /v1/audio/transcriptions</text>
+<text x="195.0" y="711.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">Bearer 鉴权 · Bonjour</text>
+<rect x="390" y="660" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="555.0" y="673.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">模型管理 ModelManager</text>
+<text x="555.0" y="692.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">下载/断点续传 · 本地扫描</text>
+<text x="555.0" y="711.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">LocalModelManager · GGUF 识别</text>
+<rect x="750" y="660" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="915.0" y="673.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranscriptionHistoryManager</text>
+<text x="915.0" y="692.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">历史唯一出入口 · 500条</text>
+<text x="915.0" y="711.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">TranscriptionStore JSON 落盘</text>
+<rect x="1110" y="660" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1275.0" y="673.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">Backup / LanguageDetector / AppLogger</text>
+<text x="1275.0" y="692.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">配置备份 · 字幕语言检测</text>
+<text x="1275.0" y="711.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">分类日志(1000条)+ErrorManager</text>
+<rect x="30" y="850" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="195.0" y="873.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">CWhisper (whisper.cpp)</text>
+<text x="195.0" y="892.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">C 桥接 · CPU/GPU 推理</text>
+<rect x="390" y="850" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="555.0" y="863.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">NemotronEngine</text>
+<text x="555.0" y="882.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">FluidAudio · CoreML/ANE</text>
+<text x="555.0" y="901.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">RNNT 时间戳 → 分段</text>
+<rect x="750" y="850" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="915.0" y="863.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">Qwen3ASRBackend</text>
+<text x="915.0" y="882.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">CTranscribe · ggml+Metal</text>
+<text x="915.0" y="901.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">无时间戳按句等分</text>
+<rect x="1110" y="850" width="330" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1275.0" y="863.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">GGUFInspector</text>
+<text x="1275.0" y="882.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">GGUF 头部解析</text>
+<text x="1275.0" y="901.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">引擎归属识别</text>
+<rect x="30" y="1005" width="250" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="155.0" y="1028.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">UserDefaults</text>
+<text x="155.0" y="1047.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">设置/偏好 60+ 键</text>
+<rect x="310" y="1005" width="260" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="440.0" y="1028.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">Transcriptions/&lt;UUID&gt;.json</text>
+<text x="440.0" y="1047.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">转录历史逐条落盘</text>
+<rect x="600" y="1005" width="240" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="720.0" y="1028.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">Recordings/*.m4a</text>
+<text x="720.0" y="1047.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">录音 AAC 48kHz</text>
+<rect x="870" y="1005" width="250" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="995.0" y="1028.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">Models/ 模型文件</text>
+<text x="995.0" y="1047.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">.bin/.gguf/目录包</text>
+<rect x="1150" y="1005" width="320" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1310.0" y="1028.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">live_recovery.json</text>
+<text x="1310.0" y="1047.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">实时转写崩溃恢复</text>
+<path d="M310,152 L330,152" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M470,190 C470,250 890,250 890,310" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="720" y="240" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">注入</text>
+<path d="M745,190 C745,255 140,255 140,330" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="442" y="248" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">绑定</text>
+<path d="M980,190 C980,250 1030,250 1030,310" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1285,190 C1285,250 1325,250 1325,310" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1335" y="240" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">状态/动作</text>
+<path d="M1325,405 L1325,385" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)" marker-start="url(#ah)"/>
+<text x="1337" y="398" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">双向</text>
+<path d="M1180,347 L1160,347" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)" marker-start="url(#ah)"/>
+<path d="M400,330 C400,322 770,322 770,322" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)" marker-start="url(#ah)"/>
+<text x="585" y="312" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">读取PCM/状态</text>
+<path d="M900,460 C900,500 195,500 195,565" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="547" y="495" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">transcribe / transcribeChunk</text>
+<path d="M950,460 C950,500 555,500 555,565" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="790" y="505" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">字幕生命周期</text>
+<path d="M1000,460 C1000,500 915,500 915,565" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="957" y="495" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">整句翻译请求</text>
+<path d="M1060,460 C1060,530 1095,530 1095,647" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1077" y="528" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">保存/读取</text>
+<path d="M1095,647 C1095,653 900,653 900,662" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1120,460 C1120,510 1478,510 1478,545" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1299" y="500" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">崩溃恢复落盘(15s节流)</text>
+<path d="M1478,545 L1478,985" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1478,985 C1478,995 1310,995 1310,1007" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M395,405 C395,415 734,415 734,430" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="750" y="478" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">写 m4a</text>
+<path d="M734,430 L734,990" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M734,990 C734,998 720,998 720,1007" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M362,635 C362,730 375,730 375,826" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M375,838 C375,846 195,846 195,853" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M375,834 C375,842 555,842 555,853" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M375,830 C375,838 755,843 755,853" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M375,826 C375,834 1275,834 1275,853" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="825" y="827" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">GGUF 识别</text>
+<path d="M420,735 C420,742 30,742 30,744" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M30,744 C30,812 30,884 30,880" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="200" y="756" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">模型路径/加载</text>
+<path d="M915,735 C915,770 744,770 744,770" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M744,770 L744,988" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M744,988 C744,996 440,996 440,1007" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="600" y="988" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">&lt;UUID&gt;.json</text>
+<path d="M30,400 C30,700 10,700 10,985" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="45" y="490" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">读写设置</text>
+<path d="M10,985 C10,996 155,996 155,1007" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M195,660 L195,635" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="207" y="650" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">attach(service:)</text>
+<path d="M140,405 C140,450 770,450 770,445" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="455" y="465" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">attach(appState:)</text>
+</svg>

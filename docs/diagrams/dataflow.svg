@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1060" viewBox="0 0 1500 1060" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, Helvetica Neue, sans-serif">
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5a5a5a"/></marker>
+</defs>
+<rect x="0" y="0" width="1500" height="1060" fill="#ffffff"/>
+<text x="750.0" y="34" text-anchor="middle" font-size="24" font-weight="bold" fill="#1a1a2e">核心数据流 · 音频 → 转写 → 字幕 / 历史 / 外部接入</text>
+<text x="750.0" y="56" text-anchor="middle" font-size="13" fill="#666666">① 采集 → ② 实时链路 → ③ 离线链路 → ④ 外部接入（虚线为间接/外部关联）</text>
+<rect x="8" y="70" width="1484" height="225" rx="12" fill="#eef5fc" stroke="#3b6ea5" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="94" font-size="15" font-weight="bold" fill="#3b6ea5">① 音频采集（录制链路）</text>
+<rect x="8" y="305" width="1484" height="260" rx="12" fill="#fff7e6" stroke="#c98a00" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="329" font-size="15" font-weight="bold" fill="#c98a00">② 实时转写 → 字幕浮层（核心链路）</text>
+<rect x="8" y="575" width="1484" height="250" rx="12" fill="#eefaf1" stroke="#2e8b57" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="599" font-size="15" font-weight="bold" fill="#2e8b57">③ 文件转录 → 历史（离线链路）</text>
+<rect x="8" y="835" width="1484" height="200" rx="12" fill="#f4f1fb" stroke="#6b5ba8" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="22" y="859" font-size="15" font-weight="bold" fill="#6b5ba8">④ 外部接入 / 对外服务</text>
+<rect x="30" y="115" width="260" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="160.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">ScreenCaptureKit SCStream</text>
+<text x="160.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">目标 App 音频</text>
+<text x="160.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">(可选混入麦克风)</text>
+<rect x="330" y="115" width="280" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="470.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AudioRecorder</text>
+<text x="470.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">didOutputSampleBuffer</text>
+<text x="470.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">48kHz CMSampleBuffer</text>
+<rect x="650" y="115" width="260" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="780.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AVAssetWriter</text>
+<text x="780.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">录制写盘 m4a</text>
+<text x="780.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">(AAC 64kbps 48kHz)</text>
+<rect x="950" y="115" width="230" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1065.0" y="138.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">Recordings/*.m4a</text>
+<text x="1065.0" y="157.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">历史录音文件</text>
+<rect x="1220" y="115" width="250" height="75" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1345.0" y="128.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">PCM 环形缓冲</text>
+<text x="1345.0" y="147.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">16kHz 单声道 Float32</text>
+<text x="1345.0" y="166.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">getSamples(from:upTo:)</text>
+<path d="M290,152 L330,152" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="310.0" y="144" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">音频帧</text>
+<path d="M610,152 L650,152" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="630.0" y="144" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">旁路录制</text>
+<path d="M910,152 L950,152" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M470,190 C470,195 1345,195 1345,192" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="907" y="212" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">重采样 48k→16k</text>
+<path d="M1345,190 C1345,270 150,270 150,350" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="747" y="262" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">PCM 分块</text>
+<rect x="30" y="350" width="270" height="90" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="165.0" y="361.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AppState.startLiveTranscription</text>
+<text x="165.0" y="380.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">实时主循环(Task)</text>
+<text x="165.0" y="399.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">静音检测 · 尾部重转录</text>
+<text x="165.0" y="418.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">1s overlap 去重 · sealed 封口</text>
+<rect x="340" y="350" width="230" height="90" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="455.0" y="371.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranscriptionService</text>
+<text x="455.0" y="390.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">transcribeChunk(samples:)</text>
+<text x="455.0" y="409.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">主/实时双上下文</text>
+<rect x="610" y="350" width="330" height="90" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="775.0" y="361.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">推理引擎路由</text>
+<text x="775.0" y="380.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">whisper.cpp | Nemotron</text>
+<text x="775.0" y="399.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">| Qwen3-ASR</text>
+<text x="775.0" y="418.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">(GGUFInspector 判定)</text>
+<rect x="980" y="350" width="260" height="90" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1110.0" y="371.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AppState.liveSegments</text>
+<text x="1110.0" y="390.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">环形 100 段</text>
+<text x="1110.0" y="409.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">15s 节流崩溃恢复落盘</text>
+<rect x="30" y="480" width="290" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="175.0" y="491.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">FloatingLetterOverlayBinder</text>
+<text x="175.0" y="510.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">withObservationTracking 观察</text>
+<text x="175.0" y="529.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">150ms 节流推送</text>
+<rect x="360" y="480" width="290" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="505.0" y="491.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">FloatingLetterViewModel</text>
+<text x="505.0" y="510.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">断句 · 去重 · 渲染</text>
+<text x="505.0" y="529.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">闲置 5s 自动隐藏</text>
+<rect x="690" y="480" width="270" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="825.0" y="491.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">NSPanel 置顶浮层</text>
+<text x="825.0" y="510.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">字幕层显示(不抢焦点)</text>
+<text x="825.0" y="529.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">拖动/缩放/鼠标穿透</text>
+<rect x="1000" y="480" width="250" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1125.0" y="491.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranslationService</text>
+<text x="1125.0" y="510.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">句尾整句翻译</text>
+<text x="1125.0" y="529.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">3s 超时回退原文</text>
+<path d="M300,395 L340,395" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="320.0" y="388.0" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">转写分块</text>
+<path d="M570,395 L610,395" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M940,395 L980,395" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="950" y="395" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">分段结果</text>
+<path d="M1050,440 C1050,460 175,460 175,480" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M320,515 L360,515" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M650,515 L690,515" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1170,440 L1125,480" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1000,515 L960,515" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="996" y="532" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">回填</text>
+<rect x="30" y="620" width="250" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="155.0" y="638.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">拖放 / 文件选择器</text>
+<text x="155.0" y="657.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">→ TranscriptionItem</text>
+<text x="155.0" y="676.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">(status: .pending)</text>
+<rect x="320" y="620" width="230" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="435.0" y="638.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AppState 转录队列</text>
+<text x="435.0" y="657.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">逐个执行</text>
+<text x="435.0" y="676.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">(Task.detached)</text>
+<rect x="590" y="620" width="240" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="710.0" y="638.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">AudioLoader</text>
+<text x="710.0" y="657.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">AVFoundation → ffmpeg 兜底</text>
+<text x="710.0" y="676.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">统一 16kHz Float32</text>
+<rect x="870" y="620" width="250" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="995.0" y="638.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranscriptionService</text>
+<text x="995.0" y="657.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">transcribe(fileURL:)</text>
+<text x="995.0" y="676.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">引擎路由(同上)</text>
+<rect x="1160" y="620" width="280" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1300.0" y="638.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranscriptionResult</text>
+<text x="1300.0" y="657.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">text · segments</text>
+<text x="1300.0" y="676.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">detectedLanguage</text>
+<rect x="30" y="745" width="290" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="175.0" y="756.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranscriptionHistoryManager</text>
+<text x="175.0" y="775.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">保存 · 500条上限</text>
+<text x="175.0" y="794.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">批量删除</text>
+<rect x="360" y="745" width="270" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="495.0" y="756.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">TranscriptionStore</text>
+<text x="495.0" y="775.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">&lt;UUID&gt;.json 逐条</text>
+<text x="495.0" y="794.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">录音路径自愈</text>
+<rect x="670" y="745" width="280" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="810.0" y="756.44" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">DetailView 展示</text>
+<text x="810.0" y="775.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">播放联动高亮</text>
+<text x="810.0" y="794.44" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">段内搜索</text>
+<rect x="990" y="745" width="240" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1110.0" y="765.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">导出 SRT/VTT/SUB/TXT</text>
+<text x="1110.0" y="784.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">字幕格式化</text>
+<rect x="1270" y="745" width="200" height="70" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1370.0" y="765.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">会议纪要入口</text>
+<text x="1370.0" y="784.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">MeetingMinutes</text>
+<path d="M280,662 L320,662" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M550,705 C550,712 950,712 950,703" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="710" y="726" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">入队</text>
+<path d="M830,662 L870,662" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="850.0" y="655.0" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">解码</text>
+<path d="M1120,662 L1160,662" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1140.0" y="655.0" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">结果</text>
+<path d="M1220,705 C1220,722 175,722 175,745" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1300,705 C1300,730 810,730 810,745" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1350,705 C1350,736 1110,736 1110,745" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1380,705 C1380,740 1370,740 1370,745" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M290,780 L360,780" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1000,620 C968,480 968,340 968,340" fill="none" stroke="#5a5a5a" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ah)"/>
+<text x="925" y="472" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">复用同一引擎路由</text>
+<path d="M968,340 C968,341 790,341 790,352" fill="none" stroke="#5a5a5a" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ah)"/>
+<rect x="30" y="885" width="310" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="185.0" y="903.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">whisperasr://record?app=…</text>
+<text x="185.0" y="922.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">URL Scheme → AppDelegate</text>
+<text x="185.0" y="941.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">参数: live/mic/translate/pin</text>
+<rect x="380" y="885" width="280" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="520.0" y="903.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">FloatingLetterOverlayHost</text>
+<text x="520.0" y="922.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">present / startRecordingFlow</text>
+<text x="520.0" y="941.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">选择应用或直接录制</text>
+<rect x="700" y="885" width="340" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="870.0" y="903.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">APIServer (FlyingFox)</text>
+<text x="870.0" y="922.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">POST /v1/audio/transcriptions</text>
+<text x="870.0" y="941.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">Bearer 鉴权 · Bonjour · 多格式</text>
+<rect x="1080" y="885" width="340" height="85" rx="9" fill="#ffffff" stroke="#3b6ea5" stroke-width="1.5"/>
+<text x="1250.0" y="903.94" text-anchor="middle" font-size="13" font-weight="bold" fill="#222222">OpenAI 兼容 API</text>
+<text x="1250.0" y="922.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">本地 LM Studio/Ollama 等</text>
+<text x="1250.0" y="941.94" text-anchor="middle" font-size="12" font-weight="normal" fill="#222222">或在线服务</text>
+<path d="M340,927 L380,927" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M520,885 C520,845 1490,845 1490,825" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1462" y="500" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">启动录制</text>
+<path d="M1490,825 L1490,210" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1490,210 C1490,202 470,197 470,194" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M800,885 C800,850 660,820 660,820" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M660,820 C660,775 660,775 660,730" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M660,730 C660,732 20,732 20,730" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M20,730 C20,600 20,600 20,450" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M20,450 C20,446 455,446 455,442" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="237" y="462" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">attach(service:) 复用</text>
+<path d="M1250,515 C1250,530 1480,530 1480,545" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1365" y="516" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">翻译请求</text>
+<path d="M1480,545 L1480,880" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1480,880 C1480,876 1250,876 1250,887" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M1400,815 C1400,850 1462,850 1462,886" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+<text x="1448" y="830" text-anchor="middle" font-size="11" fill="#5a5a5a" paint-order="stroke" stroke="#ffffff" stroke-width="3">纪要请求</text>
+<path d="M1462,886 C1462,892 1420,892 1420,900" fill="none" stroke="#5a5a5a" stroke-width="1.6" marker-end="url(#ah)"/>
+</svg>

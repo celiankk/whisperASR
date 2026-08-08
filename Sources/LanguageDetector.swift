@@ -4,7 +4,7 @@ import Foundation
 //
 // 自动检测 ASR 输出语言：中文（zh-CN/zh-TW/zh-HK）、英文、日文、韩文、
 // 俄文、法文、德文；默认不固定中文（language = auto）。
-// 仅用于状态显示与调试；所有语言统一进入 TranslationEngine（不做跳过）。
+// 仅用于状态显示与调试；所有语言统一进入 TranslationProvider（不做跳过）。
 
 enum DetectedLanguage: String {
     case zhCN = "zh-CN"

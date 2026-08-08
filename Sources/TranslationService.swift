@@ -127,43 +127,17 @@ enum SourceLanguage: String {
     }
 }
 
-// MARK: - 统一翻译引擎接口（TranslationEngine）
-
-/// 所有翻译提供方（LM Studio / Ollama / llama.cpp / 在线 OpenAI API）统一入口。
-/// 本地 GGUF 翻译模型通过外部 OpenAI 兼容服务加载（LM Studio / llama.cpp server），
-/// 本接口对上层屏蔽本地/在线差异。
-protocol TranslationEngine {
-    func translate(
-        segmentTexts: [String],
-        targetLanguage: String,
-        previousTranslations: [(original: String, translated: String)]
-    ) async throws -> [String]
-}
-
-/// OpenAI 兼容实现：本地（LM Studio / Ollama / llama.cpp）与在线 API 共用。
-struct OpenAICompatibleTranslationEngine: TranslationEngine {
-    let local: Bool
-
-    func translate(
-        segmentTexts: [String],
-        targetLanguage: String,
-        previousTranslations: [(original: String, translated: String)]
-    ) async throws -> [String] {
-        try await TranslationService.translateSegmentsWithOpenAI(
-            segmentTexts: segmentTexts,
-            targetLanguage: targetLanguage,
-            previousTranslations: previousTranslations,
-            local: local
-        )
-    }
-}
-
-/// 按当前翻译方式返回对应引擎。
-enum TranslationEngineFactory {
-    static func engine(local: Bool) -> TranslationEngine {
-        OpenAICompatibleTranslationEngine(local: local)
-    }
-}
+// MARK: - 底层翻译实现
+//
+// 1.4 的统一引擎接口（TranslationEngine / OpenAICompatibleTranslationEngine /
+// TranslationEngineFactory）已由 Provider 抽象层取代：
+//
+//   TranslationManager → TranslationProvider
+//     ├── LMStudioProvider  （local: true）
+//     └── OnlineAPIProvider （local: false）
+//
+// 本文件保留 OpenAI 兼容 HTTP 客户端与配置解析，供 Provider 与
+// MeetingMinutesService（共享重试客户端）调用，内部实现未改动。
 
 enum TranslationService {
     /// 翻译配置的 UserDefaults 键。

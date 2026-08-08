@@ -353,11 +353,9 @@ class AppState {
                     return (original: texts[i], translated: item.translatedSegments[i])
                 }
 
-                let engine = TranslationEngineFactory.engine(
-                    local: TranslationMode.current == .localModel
-                )
+                let provider = TranslationManager.provider(for: TranslationMode.current)
                 do {
-                    let translations = try await engine.translate(
+                    let translations = try await provider.translate(
                         segmentTexts: batch,
                         targetLanguage: targetLanguage,
                         previousTranslations: contextPairs
@@ -1018,7 +1016,7 @@ class AppState {
     }
 
     /// 整句翻译（字幕层检测到一句结束后调用，一次一句、单飞）：
-    /// 所有语言统一进入 TranslationEngine；失败返回 nil（显示原文），
+    /// 所有语言统一进入 TranslationProvider；失败返回 nil（显示原文），
     /// 连续失败 3 次自动降级为“仅识别模式”。
     @MainActor
     func translateSentence(_ text: String) async -> String? {
@@ -1030,9 +1028,9 @@ class AppState {
         let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
         guard !targetLang.isEmpty else { return nil }
 
-        let engine = TranslationEngineFactory.engine(local: translationMode == .localModel)
+        let provider = TranslationManager.provider(for: translationMode)
         do {
-            let result = try await engine.translate(
+            let result = try await provider.translate(
                 segmentTexts: [trimmed],
                 targetLanguage: targetLang,
                 previousTranslations: []

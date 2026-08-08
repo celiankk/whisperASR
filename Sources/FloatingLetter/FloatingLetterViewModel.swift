@@ -64,6 +64,8 @@ final class FloatingLetterViewModel {
     var showingTranslation = false
     /// 全 App 唯一的字幕渲染器（禁止多个 TextOverlay）。
     var renderer = SubtitleRenderer(maxLines: 2)
+    /// 译文渲染器：与原文并存（原文在上、译文在下同时显示）。
+    var translationRenderer = SubtitleRenderer(maxLines: 2)
     /// 字幕空闲自动清除延迟（默认 3 秒，设置页可配置）。
     var subtitleClearDelay: TimeInterval = 3
     /// 句子端点检测参数（最短 1s / 最长 5s / 停顿 1s）。
@@ -585,10 +587,11 @@ final class FloatingLetterViewModel {
         guard sentenceDeduplicator.decide(trimmed) != .suppress else { return }
         sentenceDeduplicator.record(trimmed)
 
-        // 显示原文，进入 Translating（不阻塞下一句）。
+        // 显示原文，进入 Translating（不阻塞下一句）；清空上一句的译文区。
         recognitionText = trimmed
         translationText = nil
         showingTranslation = false
+        translationRenderer.clear()
         subtitleState = .translating
         renderText(trimmed)
         onSentenceCompleted?(trimmed)
@@ -596,20 +599,24 @@ final class FloatingLetterViewModel {
         scheduleIdleClear()
     }
 
-    /// 翻译结果返回：译文替换当前字幕；失败/译文==原文时只显示原文一次。
+    /// 翻译结果返回：原文保持显示，译文渲染到下方译文区（原文+译文同时显示）。
+    /// 迟到容忍：只要当前显示的仍是这一句（recognitionText 未变）就接受，
+    /// 不论状态机已走到哪一步；新的一句已开始（文本变了）则丢弃，避免串行。
     func setTranslationResult(for source: String, translation: String?) {
-        guard subtitleState == .translating || subtitleState == .showing else { return }
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSource.isEmpty, trimmedSource == recognitionText else { return }
         let t = translation?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         latencyManager.markTranslated()
-        if t.isEmpty || t == source {
+        if t.isEmpty || t == trimmedSource {
             showingTranslation = false
             translationText = nil
+            translationRenderer.clear()
         } else {
             showingTranslation = true
             translationText = t
+            renderTranslation(t)
         }
         subtitleState = .showing
-        renderText(showingTranslation ? (translationText ?? source) : source)
         scheduleIdleClear()
     }
 
@@ -618,11 +625,21 @@ final class FloatingLetterViewModel {
         let splitter = SubtitleSentenceSplitter()
         let lines = splitter.split(text, language: SubtitleLanguage.detect(text))
         renderer.maxLines = 2
-        withAnimation(.easeOut(duration: 0.18)) {
+        _ = withAnimation(.easeOut(duration: 0.18)) {
             renderer.setLines(Array(lines.prefix(2)))
         }
         subtitleText = renderer.text
         latencyManager.markDisplayed()
+    }
+
+    /// 译文渲染入口：独立于原文渲染器（原文保持不动，译文出现在下方）。
+    private func renderTranslation(_ text: String) {
+        let splitter = SubtitleSentenceSplitter()
+        let lines = splitter.split(text, language: SubtitleLanguage.detect(text))
+        translationRenderer.maxLines = 2
+        _ = withAnimation(.easeOut(duration: 0.18)) {
+            translationRenderer.setLines(Array(lines.prefix(2)))
+        }
     }
 
     /// 字幕空闲自动清除：subtitleClearDelay 秒没有新的 ASR 输入 → 清空浮窗，
@@ -650,7 +667,7 @@ final class FloatingLetterViewModel {
         }
     }
 
-    /// 翻译超时兜底：3 秒无结果回退原文显示，不阻塞下一句。
+    /// 翻译超时兜底：3 秒无结果只显示原文，不阻塞下一句。
     private func scheduleTranslationTimeout() {
         translationTimeoutTask?.cancel()
         translationTimeoutTask = Task { @MainActor [weak self] in
@@ -658,7 +675,7 @@ final class FloatingLetterViewModel {
             guard let self, !Task.isCancelled, self.subtitleState == .translating else { return }
             self.subtitleState = .showing
             self.showingTranslation = false
-            self.renderText(self.recognitionText)
+            self.translationRenderer.clear()
             self.scheduleIdleClear()
         }
     }
@@ -672,6 +689,7 @@ final class FloatingLetterViewModel {
         sentenceDeduplicator.reset()
         latencyManager.reset()
         renderer.clear()
+        translationRenderer.clear()
         recognitionText = ""
         translationText = nil
         showingTranslation = false

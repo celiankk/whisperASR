@@ -135,6 +135,31 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    /// 估计近期噪声底（自适应静音阈值用）：最近 windowSamples 内
+    /// frameSamples 帧 RMS 的约 10 分位。返回 0 表示数据不足。
+    /// 10 分位落在"最安静的 10% 帧"上——语音+停顿混合窗口中即为停顿/底噪水平。
+    func estimateNoiseFloor(upTo endIndex: Int, frameSamples: Int, windowSamples: Int) -> Float {
+        pcmState.withLock { state in
+            let bufEnd = min(endIndex - state.trimOffset, state.buffer.count)
+            let bufStart = max(0, bufEnd - windowSamples)
+            guard frameSamples > 0, bufEnd - bufStart >= frameSamples * 3 else { return 0 }
+            let frameCount = (bufEnd - bufStart) / frameSamples
+            var values = [Float]()
+            values.reserveCapacity(frameCount)
+            for f in 0..<frameCount {
+                let s = bufStart + f * frameSamples
+                var sumSquares: Float = 0
+                for i in s..<(s + frameSamples) {
+                    let v = state.buffer[i]
+                    sumSquares += v * v
+                }
+                values.append(sqrt(sumSquares / Float(frameSamples)))
+            }
+            values.sort()
+            return values[max(0, values.count / 10)]
+        }
+    }
+
     /// 当前音频电平（最近 1 秒 RMS，供调试显示 Audio Level）。
     var currentAudioLevel: Float {
         pcmState.withLock { state in

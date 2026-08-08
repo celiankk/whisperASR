@@ -177,23 +177,32 @@ struct FloatingLetterContainerView: View {
         return Color(red: r, green: g, blue: b)
     }
 
-    /// SubtitleTextLayer：原文/译文 + 字体大小/粗细/行间距/对齐。
-    /// 文字在容器内部自动换行；字号只影响本层，不影响容器/窗口尺寸。
+    /// SubtitleTextLayer：原文（上）+ 译文（下）同时显示；
+    /// 字号/粗细/行间距/对齐只影响本层，不影响容器/窗口尺寸。
     private var subtitleTextLayer: some View {
         let horizontal: HorizontalAlignment =
             viewModel.subtitleTextAlignment == .leading ? .leading : .center
-        let size = viewModel.showingTranslation
-            ? viewModel.translationFontSize
-            : viewModel.sourceFontSize
         return VStack(alignment: horizontal, spacing: viewModel.subtitleLineSpacing) {
             Spacer(minLength: 0)
+            // 原文区（始终显示）。
             ForEach(Array(viewModel.renderer.lines.enumerated()), id: \.offset) { _, line in
                 Text(line)
-                    .font(.system(size: size, weight: subtitleFontWeight))
+                    .font(.system(size: viewModel.sourceFontSize, weight: subtitleFontWeight))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(viewModel.subtitleTextAlignment)
                     .lineLimit(nil) // 逻辑层控制内容，禁止 "..." 截断
                     .frame(maxWidth: .infinity, alignment: .init(horizontal: horizontal, vertical: .center))
+            }
+            // 译文区（有译文时显示在原文下方，译文字号独立设置）。
+            if viewModel.showingTranslation, !viewModel.translationRenderer.lines.isEmpty {
+                ForEach(Array(viewModel.translationRenderer.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(size: viewModel.translationFontSize, weight: subtitleFontWeight))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(viewModel.subtitleTextAlignment)
+                        .lineLimit(nil)
+                        .frame(maxWidth: .infinity, alignment: .init(horizontal: horizontal, vertical: .center))
+                }
             }
             Spacer(minLength: 0)
         }
@@ -201,6 +210,7 @@ struct FloatingLetterContainerView: View {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeOut(duration: 0.18), value: viewModel.renderer.text)
+        .animation(.easeOut(duration: 0.18), value: viewModel.translationRenderer.text)
     }
 
     /// 字体粗细映射（regular / medium→semibold 保持当前风格 / bold）。

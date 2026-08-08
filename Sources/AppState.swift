@@ -164,10 +164,11 @@ class AppState {
     /// Maximum chunk duration sent to whisper (30 seconds at 16kHz).
     /// Caps processing time so the loop never snowballs.
     private static let maxChunkSamples = 16000 * 30
-    /// When speech runs continuously past this without a pause (12s at 16kHz), force a chunk cut at
-    /// the live tail rather than waiting longer. Kept well under `maxChunkSamples` so the live tail
-    /// is always transcribed and no audio is silently dropped.
-    private static let forceChunkSamples = 16000 * 12
+    /// When speech runs continuously past this without a pause (8s at 16kHz), force a chunk cut at
+    /// the live tail rather than waiting longer. Bounds per-pass re-transcription cost for
+    /// continuous/noisy speech（背景音乐或底噪下干净停顿可能整段不出现——8s 上限保证
+    /// 每轮重转录成本有界、字幕延迟可控）。Kept well under `maxChunkSamples`.
+    private static let forceChunkSamples = 16000 * 8
     /// 实时显示分段上限：超过丢弃最旧（环形窗口），防止数小时录制内存无限增长。
     private static let maxLiveSegments = 100
     /// sealed 分段上限：只保留近期（用于 overlap/显示），旧段不再需要。
@@ -406,8 +407,6 @@ class AppState {
         translateItemTask = nil
         transcriptionQueueTask?.cancel()
         transcriptionQueueTask = nil
-        sentenceTranslationChain?.cancel()
-        sentenceTranslationChain = nil
         sentenceTranslationPending = 0
         subtitleEngine.stop()
         service.shutdown()
@@ -528,7 +527,8 @@ class AppState {
             // Silence-scan tuning (16kHz): 100ms frames; a run of >=3 (~300ms) counts as a pause.
             let frameSamples = 1600
             let minSilenceFrames = 3
-            let silenceThreshold: Float = 0.001
+            // 固定下限阈值：干净麦克风输入（底噪 RMS < 0.001）行为与之前一致。
+            let baseSilenceThreshold: Float = 0.001
             let contextSamples = 16000   // 1s left-context, used only after a forced seal
 
             // The loop awaits each transcribeChunk before iterating, so passes never overlap.
@@ -543,9 +543,25 @@ class AppState {
                     continue
                 }
 
+                // 自适应静音阈值：固定 0.001 对带底噪/背景音的音频（屏幕共享、视频）
+                // 永远不触发干净停顿——最安静帧 RMS 都高于它，封口逻辑失效，
+                // 每轮被迫重转录 12s 尾部 → 识别越来越慢。
+                // 每轮按最近 10s 的噪声底（帧 RMS 10 分位）动态计算：
+                //   跳过阈值 = 噪声底 ×1.2（只有真正的背景静默才跳过转录）；
+                //   封口阈值 = 噪声底 ×2.0（停顿帧略高于底噪即可判定）。
+                // 干净输入下噪声底 ≈0 → 两个阈值都回落到 0.001，行为不变。
+                let noiseFloor = recorder.estimateNoiseFloor(
+                    upTo: totalSamples, frameSamples: frameSamples, windowSamples: 16000 * 10)
+                let skipThreshold = noiseFloor > 0
+                    ? min(max(noiseFloor * 1.2, baseSilenceThreshold), 0.01)
+                    : baseSilenceThreshold
+                let sealSilenceThreshold = noiseFloor > 0
+                    ? min(max(noiseFloor * 2.0, baseSilenceThreshold), 0.02)
+                    : baseSilenceThreshold
+
                 // If the whole unsealed tail is silence, seal forward and show only sealed text.
                 let rms = recorder.rmsEnergy(from: sealedSampleCount, count: tailCount)
-                guard rms > silenceThreshold else {
+                guard rms > skipThreshold else {
                     sealedSampleCount = totalSamples
                     sealedClean = true
                     lastTranscribedTotal = totalSamples
@@ -622,7 +638,7 @@ class AppState {
                     // grown past the cap without one. Everything before it becomes final.
                     let silenceCut = recorder.lastSilenceCut(
                         searchFrom: sealedSampleCount, searchTo: totalSamples,
-                        frameSamples: frameSamples, silenceThreshold: silenceThreshold,
+                        frameSamples: frameSamples, silenceThreshold: sealSilenceThreshold,
                         minSilenceFrames: minSilenceFrames)
                     var newSeal = sealedSampleCount
                     var newSealClean = sealedClean
@@ -676,8 +692,6 @@ class AppState {
         // Free the dedicated live model (if one was loaded) — the final file
         // transcription uses the main model.
         service.unloadLiveModel()
-        sentenceTranslationChain?.cancel()
-        sentenceTranslationChain = nil
         sentenceTranslationPending = 0
         healthCheckTask?.cancel()
         healthCheckTask = nil
@@ -995,8 +1009,6 @@ class AppState {
         liveTranslationPaused = paused
         if paused {
             // 暂停：立即取消排队/进行中的整句翻译，不再发新请求。
-            sentenceTranslationChain?.cancel()
-            sentenceTranslationChain = nil
             sentenceTranslationPending = 0
         }
     }
@@ -1024,6 +1036,9 @@ class AppState {
             translationFailureCount = 0
             translationUnavailable = false
             return result.first
+        } catch is CancellationError {
+            // 取消（超时兜底 / 暂停 / 停止）不是服务故障：不计入三连失败。
+            return nil
         } catch {
             ErrorManager.shared.report(.api, error, context: "translateSentence")
             translationFailureCount += 1
@@ -1036,16 +1051,15 @@ class AppState {
         }
     }
 
-    // MARK: - 整句翻译串行队列（TranslationQueue）
+    // MARK: - 整句翻译队列（TranslationQueue）
 
-    /// 串行链：多句连续完成时按顺序执行，避免并发请求乱序 / 请求堆积。
-    /// 每个请求挂在前一个之后（不阻塞 ASR，纯 await 链）。
-    private var sentenceTranslationChain: Task<String?, Never>?
-    /// 排队中的句数（含执行中），超上限直接丢弃最新（显示原文兜底）。
+    /// 在途句数，超上限丢弃最新（显示原文兜底）。
+    /// 有界并发：每句独立请求（本地/在线服务自带队列与重试），不做串行链——
+    /// 串行会让后到的译文错过字幕状态机窗口被丢弃，且体感翻译明显变慢。
     private(set) var sentenceTranslationPending = 0
     private static let maxPendingSentenceTranslations = 8
 
-    /// 整句翻译统一入口（桥接层调用）：串行 + 10s 超时兜底 + 队列上限。
+    /// 整句翻译统一入口（桥接层调用）：有界并发 + 10s 超时兜底 + 队列上限。
     /// 历史记录（时间/原文/翻译/语言）在此单一收口。
     @MainActor
     func requestSentenceTranslation(_ text: String) async -> String? {
@@ -1057,29 +1071,24 @@ class AppState {
             return nil
         }
         sentenceTranslationPending += 1
-        let previous = sentenceTranslationChain
-        let task = Task { @MainActor [weak self] () -> String? in
-            // 等前一句完成（串行）；前一句被取消/超时也不阻塞本句。
-            _ = await previous?.value
-            guard let self, !Task.isCancelled else { return nil }
-            defer { self.sentenceTranslationPending -= 1 }
-            let result: String?
-            do {
-                result = try await Self.withTimeout(seconds: 10) {
-                    await self.translateSentence(text)
-                }
-            } catch {
-                ErrorManager.shared.report(.api, error, context: "sentence translation timeout")
-                result = nil
+        defer { sentenceTranslationPending -= 1 }
+        let result: String?
+        do {
+            result = try await Self.withTimeout(seconds: 10) {
+                await self.translateSentence(text)
             }
-            // 历史记录独立存储（容量上限 200），与实时字幕状态分离。
-            SubtitleHistoryManager.shared.record(
-                original: text, translation: result, language: LanguageDetector.detect(text).rawValue
-            )
-            return result
+        } catch is CancellationError {
+            result = nil
+        } catch {
+            // 超时 = 服务慢（≠ 服务不可用）：只记日志，不计入三连失败降级。
+            ErrorManager.shared.report(.network, error, context: "sentence translation timeout")
+            result = nil
         }
-        sentenceTranslationChain = task
-        return await task.value
+        // 历史记录独立存储（容量上限 200），与实时字幕状态分离。
+        SubtitleHistoryManager.shared.record(
+            original: text, translation: result, language: LanguageDetector.detect(text).rawValue
+        )
+        return result
     }
 
     // MARK: - Timeout helper

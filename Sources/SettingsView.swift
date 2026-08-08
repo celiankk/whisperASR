@@ -549,26 +549,10 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(localModelManager.models) { model in
-                        HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(model.name)
-                                Text(model.path)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            Spacer()
-                            Text(model.sizeText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(model.status)
-                                .font(.caption)
-                                .foregroundStyle(.green)
-                        }
+                        LocalModelRowView(model: model)
                     }
                 }
-                Text("本地扫描不联网；在线下载与 LM Studio 探测仍由模型管理器负责。")
+                Text("本地扫描不联网；在线下载与 LM Studio 探测仍由模型管理器负责。悬停模型行可直接启用（自定义路径优先级最高，同时只生效一个）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -964,6 +948,55 @@ private struct MinutesPromptEditorSheet: View {
         }
         .padding(20)
         .frame(width: 480, height: 420)
+    }
+}
+
+// MARK: - Local Model Row
+
+/// 本地模型行：悬停显示「启用/停用」按钮。
+/// 启用 = 写入 modelPath（自定义路径在 resolveModelPath 中优先级最高，立即生效）；
+/// modelPath 是单值，天然保证同一时间只有一个模型在运行。
+private struct LocalModelRowView: View {
+    let model: LocalModelInfo
+    @AppStorage("modelPath") private var modelPath = ""
+    @State private var isHovering = false
+
+    private var isActive: Bool { modelPath == model.path }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.name)
+                Text(model.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Text(model.sizeText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if isHovering {
+                Button(isActive ? "停用" : "启用") {
+                    if isActive {
+                        modelPath = ""
+                        AppLogger.shared.log(.model, "Local model disabled: \(model.path)")
+                    } else {
+                        modelPath = model.path
+                        AppLogger.shared.log(.model, "Local model enabled: \(model.path)")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            } else {
+                Text(isActive ? "使用中" : model.status)
+                    .font(.caption)
+                    .foregroundStyle(isActive ? Color.accentColor : .green)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
     }
 }
 

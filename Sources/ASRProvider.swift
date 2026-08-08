@@ -20,6 +20,7 @@ enum ASRProviderEngine: String, Sendable {
     case whisper
     case nemotron
     case qwen3asr
+    case online
 }
 
 /// Provider 状态快照。

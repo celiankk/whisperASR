@@ -194,6 +194,8 @@ struct GeneralSettingsView: View {
 struct RecognitionSettingsView: View {
     @State private var settings = SettingsManager.shared
     @State private var localModelManager = LocalModelManager.shared
+    @State private var onlineASRTesting = false
+    @State private var onlineASRResult: (success: Bool, message: String)?
 
     var body: some View {
         @Bindable var recognition = settings.recognition
@@ -206,6 +208,95 @@ struct RecognitionSettingsView: View {
                 Text("选择已下载的模型用于转录。模型越小速度越快，但准确率越低。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("识别引擎") {
+                Picker("ASR Engine", selection: $recognition.asrEngine) {
+                    ForEach(ASREngineSelection.allCases, id: \.self) { engine in
+                        Text(engine.label).tag(engine)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(engineHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("在线识别 API") {
+                Toggle("启用在线识别", isOn: $recognition.onlineASREnabled)
+                if recognition.onlineASREnabled {
+                    TextField("Base URL", text: $recognition.onlineASRBaseURL,
+                              prompt: Text("https://api.openai.com/v1"))
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("API Key（本地兼容服务可留空）", text: $recognition.onlineASRApiKey)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Model Name", text: $recognition.onlineASRModel,
+                              prompt: Text("whisper-1"))
+                        .textFieldStyle(.roundedBorder)
+
+                    HStack {
+                        Button {
+                            testOnlineASR()
+                        } label: {
+                            if onlineASRTesting {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text("测试连接")
+                            }
+                        }
+                        .disabled(onlineASRTesting)
+                        Spacer()
+                        if let result = onlineASRResult {
+                            Label(result.message,
+                                  systemImage: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(result.success ? Color.green : Color.red)
+                                .lineLimit(2)
+                        }
+                    }
+                    Text("在线识别失败不会导致 App 崩溃或影响本地识别；切换到其他引擎立即生效，无需重启。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("启用后可使用 OpenAI 兼容 Whisper API（如 OpenAI / Groq / 自建服务）进行识别。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("音频处理") {
+                Picker("音频分片模式", selection: $recognition.audioChunkingMode) {
+                    ForEach(AudioChunkingMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                if recognition.audioChunkingMode != .off {
+                    HStack {
+                        Text("最短识别时间")
+                        Spacer()
+                        Stepper("\(Int(recognition.audioChunkingMinSeconds)) 秒",
+                                value: $recognition.audioChunkingMinSeconds,
+                                in: AudioChunkingConfig.minChunkRange, step: 1)
+                    }
+                    HStack {
+                        Text("最长等待时间")
+                        Spacer()
+                        Stepper("\(Int(recognition.audioChunkingMaxWaitSeconds)) 秒",
+                                value: $recognition.audioChunkingMaxWaitSeconds,
+                                in: AudioChunkingConfig.maxWaitRange, step: 1)
+                    }
+                    Text("音频按最短识别时间聚合后发送；未达标时最长等待指定时间后强制发送，避免请求过于频繁。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(recognition.audioChunkingMode.appliesToText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("关闭：所有识别引擎保持原实时识别流程（每个音频块直接发送）。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("自定义模型") {
@@ -265,6 +356,34 @@ struct RecognitionSettingsView: View {
         .onAppear {
             ModelManager.shared.refresh()
             settings.reload()
+        }
+    }
+
+    /// 引擎选择提示（按当前选择给出说明）。
+    private var engineHint: String {
+        switch settings.recognition.asrEngine {
+        case .auto:
+            return "自动：按所选模型判定引擎（Whisper / Qwen / Nemotron），与 1.4 行为一致。"
+        case .whisper:
+            return "强制使用 whisper.cpp 引擎（本地 .bin 模型）。"
+        case .qwen:
+            return "强制使用 Qwen3-ASR 引擎（transcribe.cpp GGUF 模型）。"
+        case .nemotron:
+            return "强制使用 Nemotron 引擎（FluidAudio Core ML 模型包目录）。"
+        case .online:
+            return "使用在线 OpenAI 兼容 API，无需本地模型；需在上方启用并配置。"
+        }
+    }
+
+    private func testOnlineASR() {
+        onlineASRTesting = true
+        onlineASRResult = nil
+        Task {
+            let result = await OnlineASRService.testConnection()
+            await MainActor.run {
+                onlineASRTesting = false
+                onlineASRResult = result
+            }
         }
     }
 
@@ -999,6 +1118,7 @@ struct SystemStatusSettingsView: View {
     @State private var apiText = "检测中…"
     @State private var apiLevel: StatusLevel = .idle
     @State private var apiCheckInFlight = false
+    @State private var onlineASRStats = OnlineASRStats.shared
 
     var body: some View {
         Form {
@@ -1012,6 +1132,49 @@ struct SystemStatusSettingsView: View {
                           level: monitor.networkOnline ? .ok : .error)
                 StatusRow(title: "翻译 API", text: apiText, level: apiLevel)
                 StatusRow(title: "当前识别", text: recognitionText, level: recognitionLevel)
+                StatusRow(title: "音频分片",
+                          text: AudioChunkingMode.current == .off
+                              ? "关闭"
+                              : AudioChunkingMode.current.label,
+                          level: AudioChunkingMode.current == .off ? .idle : .ok)
+            }
+
+            Section("Online ASR") {
+                StatusRow(title: "状态",
+                          text: onlineASRStats.state == .error
+                              ? "\(onlineASRStats.state.rawValue)：\(onlineASRStats.stateDetail)"
+                              : onlineASRStats.state.rawValue,
+                          level: onlineASRStats.state == .error ? .error
+                              : (onlineASRStats.state == .running || onlineASRStats.state == .connecting ? .ok : .idle))
+                HStack {
+                    Text("总请求")
+                    Spacer()
+                    Text("\(onlineASRStats.totalRequests)")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("成功 / 失败")
+                    Spacer()
+                    Text("\(onlineASRStats.successRequests) / \(onlineASRStats.failedRequests)")
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(onlineASRStats.failedRequests > 0 ? .red : .secondary)
+                }
+                HStack {
+                    Text("平均响应时间")
+                    Spacer()
+                    Text(onlineASRStats.successRequests == 0
+                         ? "—"
+                         : String(format: "%.2f s", onlineASRStats.averageResponseTime))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                if onlineASRStats.state == .error {
+                    Text(onlineASRStats.stateDetail)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
             }
 
             Section("资源占用") {

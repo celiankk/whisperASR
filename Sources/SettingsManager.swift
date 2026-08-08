@@ -98,6 +98,36 @@ final class GeneralSettings {
 
 // MARK: - 识别
 
+/// 识别引擎选择（UserDefaults "asrEngine"）：
+/// - auto：按所选模型自动判定引擎（1.4 默认行为，推荐）；
+/// - whisper / qwen / nemotron：强制使用对应本地引擎；
+/// - online：使用在线 OpenAI 兼容 API（需在「在线识别 API」启用并配置）。
+/// 切换立即生效，无需重启；实时转录与文件转录同时切换。
+enum ASREngineSelection: String, CaseIterable, Codable {
+    case auto
+    case whisper
+    case qwen
+    case nemotron
+    case online
+
+    static let key = "asrEngine"
+
+    var label: String {
+        switch self {
+        case .auto: return "自动（按模型）"
+        case .whisper: return "Whisper"
+        case .qwen: return "Qwen"
+        case .nemotron: return "Nemotron"
+        case .online: return "Online API"
+        }
+    }
+
+    /// 当前保存的引擎选择。
+    static var current: ASREngineSelection {
+        ASREngineSelection(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .auto
+    }
+}
+
 @Observable
 final class RecognitionSettings {
     /// 自定义 GGML/GGUF 模型路径（resolveModelPath 中优先级最高；留空用已下载模型）。
@@ -105,10 +135,55 @@ final class RecognitionSettings {
         didSet { UserDefaults.standard.set(customModelPath, forKey: "modelPath") }
     }
 
+    /// 识别引擎（auto = 按模型自动判定）。
+    var asrEngine: ASREngineSelection = .auto {
+        didSet { UserDefaults.standard.set(asrEngine.rawValue, forKey: ASREngineSelection.key) }
+    }
+
+    // 在线识别 API（OpenAI 兼容 Whisper API）。
+    var onlineASREnabled = false {
+        didSet { UserDefaults.standard.set(onlineASREnabled, forKey: OnlineASRConfig.Keys.enabled) }
+    }
+    var onlineASRBaseURL = "" {
+        didSet { UserDefaults.standard.set(onlineASRBaseURL, forKey: OnlineASRConfig.Keys.baseURL) }
+    }
+    var onlineASRApiKey = "" {
+        didSet { UserDefaults.standard.set(onlineASRApiKey, forKey: OnlineASRConfig.Keys.apiKey) }
+    }
+    var onlineASRModel = "" {
+        didSet { UserDefaults.standard.set(onlineASRModel, forKey: OnlineASRConfig.Keys.model) }
+    }
+
+    /// 音频分片模式（统一策略：关闭 / 仅本地模型 / 仅在线 API）。
+    var audioChunkingMode: AudioChunkingMode = .off {
+        didSet { UserDefaults.standard.set(audioChunkingMode.rawValue, forKey: AudioChunkingMode.key) }
+    }
+    /// 最短识别时间（1-10 秒，默认 3）：分片开启时生效。
+    var audioChunkingMinSeconds: Double = 3 {
+        didSet { UserDefaults.standard.set(audioChunkingMinSeconds, forKey: AudioChunkingConfig.Keys.minSeconds) }
+    }
+    /// 最长等待时间（3-15 秒，默认 5）：分片开启时生效。
+    var audioChunkingMaxWaitSeconds: Double = 5 {
+        didSet { UserDefaults.standard.set(audioChunkingMaxWaitSeconds, forKey: AudioChunkingConfig.Keys.maxWaitSeconds) }
+    }
+
     init() { reload() }
 
     func reload() {
-        customModelPath = UserDefaults.standard.string(forKey: "modelPath") ?? ""
+        let defaults = UserDefaults.standard
+        customModelPath = defaults.string(forKey: "modelPath") ?? ""
+        asrEngine = ASREngineSelection(rawValue: defaults.string(forKey: ASREngineSelection.key) ?? "")
+            ?? .auto
+        onlineASREnabled = defaults.bool(forKey: OnlineASRConfig.Keys.enabled)
+        onlineASRBaseURL = defaults.string(forKey: OnlineASRConfig.Keys.baseURL) ?? ""
+        onlineASRApiKey = defaults.string(forKey: OnlineASRConfig.Keys.apiKey) ?? ""
+        onlineASRModel = defaults.string(forKey: OnlineASRConfig.Keys.model) ?? ""
+        audioChunkingMode = AudioChunkingMode(rawValue: defaults.string(forKey: AudioChunkingMode.key) ?? "")
+            ?? .off
+        let minChunk = defaults.double(forKey: AudioChunkingConfig.Keys.minSeconds)
+        audioChunkingMinSeconds = AudioChunkingConfig.minChunkRange.contains(minChunk) ? minChunk : 3
+        let maxWait = defaults.double(forKey: AudioChunkingConfig.Keys.maxWaitSeconds)
+        audioChunkingMaxWaitSeconds = AudioChunkingConfig.maxWaitRange.contains(maxWait) ? maxWait : 5
     }
 }
 

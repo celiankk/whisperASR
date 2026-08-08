@@ -19,27 +19,66 @@ final class TranscriptionService: @unchecked Sendable {
     private let whisperProvider = WhisperProvider()
     private let nemotronProvider = NemotronProvider()
     private let qwenProvider = QwenProvider()
+    /// 在线 OpenAI 兼容 Whisper API（无本地模型，需在设置中启用并配置）。
+    private let onlineProvider = OnlineASRProvider()
 
     /// True while a live session runs on the Nemotron engine — blocks the
     /// "unload nemotron when file-transcribing with whisper" eviction below.
     private let liveStateLock = NSLock()
     private var liveNemotronActive = false
+    /// 统一音频分片聚合器（按「音频分片模式」+ 引擎类型决定是否启用）。
+    private let chunkManager = ChunkManager()
 
     /// Which engine the currently selected model runs on.
     private enum ResolvedEngine {
         case whisper(path: String)
         case nemotron(directory: String)
         case qwen3asr(path: String)
+        case online
     }
 
-    /// Whisper models are single files; Nemotron bundles are directories.
+    /// Engine resolution: the user's ASR Engine selection takes precedence
+    /// (switching takes effect immediately, no restart). `auto` keeps the
+    /// 1.4 path-based detection.
     private func resolveEngine() -> ResolvedEngine {
-        Self.engine(forPath: ModelPathResolver.resolveModelPath())
+        switch ASREngineSelection.current {
+        case .online:
+            // 开关未启用时回落自动判定（本地模型）。
+            guard OnlineASRConfig.isEnabled else {
+                return Self.engine(forPath: ModelPathResolver.resolveModelPath())
+            }
+            return .online
+        case .whisper:
+            return .whisper(path: ModelPathResolver.resolveModelPath())
+        case .qwen:
+            return .qwen3asr(path: ModelPathResolver.resolveModelPath())
+        case .nemotron:
+            return .nemotron(directory: ModelPathResolver.resolveModelPath())
+        case .auto:
+            return Self.engine(forPath: ModelPathResolver.resolveModelPath())
+        }
     }
 
-    /// Engine for the live-transcription model selection.
+    /// Engine for the live-transcription model selection. The user's ASR
+    /// Engine selection takes precedence; otherwise the live model path
+    /// (`liveModelFile`, falling back to the main model) decides, matching 1.4.
     private func resolveLiveEngine() -> ResolvedEngine {
-        Self.engine(forPath: ModelPathResolver.resolveLiveModelPath())
+        switch ASREngineSelection.current {
+        case .online:
+            // 开关未启用时回落自动判定（本地模型）。
+            guard OnlineASRConfig.isEnabled else {
+                return Self.engine(forPath: ModelPathResolver.resolveLiveModelPath())
+            }
+            return .online
+        case .whisper:
+            return .whisper(path: ModelPathResolver.resolveLiveModelPath())
+        case .qwen:
+            return .qwen3asr(path: ModelPathResolver.resolveLiveModelPath())
+        case .nemotron:
+            return .nemotron(directory: ModelPathResolver.resolveLiveModelPath())
+        case .auto:
+            return Self.engine(forPath: ModelPathResolver.resolveLiveModelPath())
+        }
     }
 
     private static func engine(forPath path: String) -> ResolvedEngine {
@@ -66,11 +105,13 @@ final class TranscriptionService: @unchecked Sendable {
         Task { await whisperProvider.unloadModel() }
         Task { await nemotronProvider.unloadModel() }
         Task { await qwenProvider.unloadModel() }
+        Task { await onlineProvider.unloadModel() }
     }
 
     /// Free the live session's resources when recording ends: the dedicated
     /// live whisper context (if any), and the Nemotron engine when only the
-    /// live selection was using it.
+    /// live selection was using it. Online mode: cancel in-flight requests
+    /// and drop the pending audio queue.
     func unloadLiveModel() {
         let wasNemotron = liveStateLock.withLock {
             let was = liveNemotronActive
@@ -83,6 +124,8 @@ final class TranscriptionService: @unchecked Sendable {
             Task { await nemotronProvider.unloadModel() }
         }
         Task { await qwenProvider.unloadModel() }
+        onlineProvider.cancelPending()
+        chunkManager.clear()  // 丢弃未发送的聚合残留
     }
 
     /// Transcribe (or translate-to-English, when `translate` is true) an audio file.
@@ -115,6 +158,15 @@ final class TranscriptionService: @unchecked Sendable {
             return try await whisperProvider.transcribeFile(
                 fileURL: fileURL, language: language, translate: translate, onProgress: onProgress
             )
+        case .online:
+            guard !translate else {
+                throw TranscriptionError.processFailed(
+                    "Translation to English is not supported by the Online API. Select a Whisper model instead."
+                )
+            }
+            return try await onlineProvider.transcribeFile(
+                fileURL: fileURL, language: language, translate: translate, onProgress: onProgress
+            )
         }
     }
 
@@ -122,18 +174,58 @@ final class TranscriptionService: @unchecked Sendable {
 
     /// Transcribe raw 16kHz mono PCM Float32 samples directly (used for live transcription during recording).
     /// Uses the live model selection (falling back to the main model) and runs on a background queue.
+    ///
+    /// 音频分片（Chunk Manager）：
+    /// - 按「音频分片模式」+ 当前引擎类型决定是否聚合：
+    ///   关闭 → 直接发送 Provider（原实时流程）；
+    ///   仅本地 → 本地引擎聚合、Online 跳过；仅在线 → Online 聚合、本地跳过；
+    /// - 聚合未达标（时长 / 等待）时返回空结果，上层循环继续累积。
     func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
         guard !samples.isEmpty else {
             return TranscriptionResult(text: "", segments: [])
         }
 
-        switch resolveLiveEngine() {
+        let engine = resolveLiveEngine()
+        if shouldChunk(engine: engine) {
+            chunkManager.append(samples)
+            guard chunkManager.isReadyToSend() else {
+                return TranscriptionResult(text: "", segments: [])
+            }
+            let chunk = chunkManager.takeAll()
+            return try await dispatchChunk(chunk, engine: engine)
+        }
+        return try await dispatchChunk(samples, engine: engine)
+    }
+
+    /// 把切片（或原样样本）发送到对应引擎的 Provider。
+    private func dispatchChunk(_ samples: [Float], engine: ResolvedEngine) async throws -> TranscriptionResult {
+        switch engine {
         case .nemotron:
             return try await nemotronProvider.transcribeChunk(samples: samples)
         case .qwen3asr:
             return try await qwenProvider.transcribeChunk(samples: samples)
         case .whisper:
             return try await whisperProvider.transcribeChunk(samples: samples)
+        case .online:
+            return try await onlineProvider.transcribeChunk(samples: samples)
+        }
+    }
+
+    /// 音频分片判定：按「音频分片模式」+ 引擎类型。
+    private func shouldChunk(engine: ResolvedEngine) -> Bool {
+        switch AudioChunkingMode.current {
+        case .off:
+            return false
+        case .localOnly:
+            switch engine {
+            case .whisper, .nemotron, .qwen3asr: return true
+            case .online: return false
+            }
+        case .onlineOnly:
+            switch engine {
+            case .online: return true
+            case .whisper, .nemotron, .qwen3asr: return false
+            }
         }
     }
 
@@ -149,6 +241,9 @@ final class TranscriptionService: @unchecked Sendable {
             try await nemotronProvider.prepare()
         case .qwen3asr:
             try await qwenProvider.prepare()
+        case .online:
+            // 在线模式：校验配置（失败时由调用方提示，不影响本地引擎）。
+            try await onlineProvider.prepare()
         }
     }
 
@@ -196,6 +291,7 @@ final class TranscriptionService: @unchecked Sendable {
         case .whisper: return "arch=\(arch) engine=whisper"
         case .nemotron: return "arch=\(arch) engine=nemotron"
         case .qwen3asr: return "arch=\(arch) engine=qwen3asr"
+        case .online: return "arch=\(arch) engine=online"
         }
     }
 #endif

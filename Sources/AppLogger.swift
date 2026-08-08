@@ -12,6 +12,7 @@ import Foundation
 enum LogCategory: String, CaseIterable {
     case window = "Window"
     case asr = "ASR"
+    case onlineASR = "OnlineASR"
     case translation = "Translation"
     case model = "Model"
     case ui = "UI"
@@ -66,6 +67,7 @@ enum AppErrorDomain: String {
     case api = "API"
     case network = "Network"
     case asr = "ASR"
+    case onlineASR = "OnlineASR"
     case window = "Window"
 }
 
@@ -91,6 +93,7 @@ final class ErrorManager {
         case .model: category = .model
         case .api, .network: category = .translation
         case .asr: category = .asr
+        case .onlineASR: category = .onlineASR
         case .window: category = .window
         }
         AppLogger.shared.log(category, "ERROR \(context)\(detail)")

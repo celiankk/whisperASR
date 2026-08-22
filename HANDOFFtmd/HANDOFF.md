@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-23 04:30 CST（第 20 节为最新交接）
+- 交接时间：2026-08-23 05:10 CST（第 21 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -1889,3 +1889,38 @@ Text(verbatim:) 路径（commit 已含）。
 - fix: catalog engine filter picker actually written（补落盘）
 - fix: engine filter label wording（弯路产物）
 - fix: Text(verbatim:) for engine filter label（无害保留）
+
+---
+
+## 21. 第十三轮会话（2026-08-23 04:50–05:10）：深度架构报告对标第一二四节落地
+
+依据用户保存的 LiveTranslate 深度技术架构报告（实现层细节，比 releases
+对标多出的部分），按用户指定优先级（四 → 一 → 二）7 项全部落地，
+3 个 commit、测试 106→118：
+
+**Commit A `a993a54`（第四节·可靠性）**
+- #10 看门狗基线相对制：MemoryReclaimPolicy 加 baselineBytes（preload
+  成功点 recordBaseline 快照），生效上限 = min(基线+2GB, 绝对上限)，
+  显式配置绝对制优先——泄漏检测适配模型大小而非固定 6GB 猜测；
+- #9 降级代数守卫：auto-degrade 的异步 prepare 前快照引擎选择，
+  完成后校验未变才写入——用户探测期间手动换引擎不再被迟到降级覆盖。
+
+**Commit B `51277c4`（第一节·VAD 断句体系）**
+- #1 自适应停顿：最近 50 次真实停顿（干净封口时记录）P75×1.2 夹
+  [0.3, 2.0]s 作为停顿判定时长（纯函数可测）；
+- #2 渐进式静音：tail >6s 停顿需求减半、>10s 四分之一；
+- #3 谷值回溯：8s 强制封口改为后 70% 区间 5 帧平滑能量最低点，
+  谷值 < 段均值 80% 才有效（自然停顿切分），无谷值才硬切；
+- #4 密度门：tail >1s 且语音帧密度 <25% 直接按静音封口跳过 ASR
+  （音乐底噪/碎音段不浪费推理）；AudioRecorder 新增 speechDensity
+  与 lowestEnergyCut 扫描（与主循环同源 VAD 判定）。
+
+**Commit C `0c32fb0`（第二节·补零桶化）**
+- InputBucketing（0.5s 量子=8000 样本）：whisper/qwen/SenseVoice 的
+  chunk 输入补零对齐——限制输入形状集合，避免 GPU kernel 重选/
+  显存池扩张的周期性延迟毛刺（平均多算 ~0.25s 尾部静音，成本极小）；
+  流式 paraformer 排除（补零破坏流语义）、文件转录一次性无需。
+
+**下轮待做**（第三节翻译层 + 第五节显示层）：
+#5 三铁律提示词（ASR 容错下沉 LLM）、#6 上下文双路径、#7 复读机检测、
+#8 空 completion 诊断、#11 字幕最短停留、#12 分区动态穿透、#13 OBS 窗。

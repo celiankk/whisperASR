@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-23 06:00 CST（第 23 节为最新交接）
+- 交接时间：2026-08-23 06:10 CST（第 23.1 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -2004,6 +2004,25 @@ common.cancel / common.done）。
 
 `class X: NSHostingView<PrivateView>` 报"must be declared private"——
 泛型参数引用 private 类型时子类可见性不得更宽。
+
+### 23.1 追加：OBS 拖动失效真根因（allowsHitTesting 全关反噬）
+
+用户反馈 OBS 浮窗依然不能拖动。真根因：SwiftUI 层
+`allowsHitTesting(false)` 让内容整体退出 hit-test——AppKit 命中测试
+找不到响应视图，mouseDown 根本不到 NSView 层，performDrag 永不触发
+（上轮"NSView 层转发"的设计前提就不成立）。且文字本无交互需求，
+全关命中毫无收益。
+
+修复：移除 allowsHitTesting(false)，内容参与命中；NSView mouseDown
+统一走 performDrag（加日志便于确认链路）。
+
+### 新坑 32：allowsHitTesting(false) 会吞掉 NSView 层的 mouseDown
+
+SwiftUI allowsHitTesting(false) 不是"事件穿透到窗口"，而是"此视图
+不参与 hit-test"——若整个 contentView 内容都 false，AppKit 找不到
+first responder 候选，窗口级 performDrag 的入口（mouseDown）不会发生。
+需要"显示不可点 + 窗口可拖"时：保留 hit-test，在 NSView/Window 层
+接管 mouseDown。
 
 ### 一句话总结（第 20–23 节）
 

@@ -107,7 +107,8 @@ final class MenuBarController: NSObject {
         for (item, engine) in engineItems {
             let base = item.title.replacingOccurrences(of: " ✓", with: "")
             let selected = engine == currentEngine ||
-                (currentEngine != .online && currentEngine != .apple && engine == .auto)
+                (currentEngine != .online && currentEngine != .apple && currentEngine != .funasr
+                    && engine == .auto)
             item.title = selected ? base + " ✓" : base
         }
 
@@ -137,7 +138,8 @@ final class MenuBarController: NSObject {
         for (title, engine) in options {
             let item = NSMenuItem(
                 title: (engine == current ||
-                        (current != .online && current != .apple && engine == .auto))
+                        (current != .online && current != .apple && current != .funasr
+                            && engine == .auto))
                     ? title + " ✓" : title,
                 action: #selector(selectEngine(_:)), keyEquivalent: "")
             item.target = self
@@ -373,8 +375,6 @@ final class MenuBarController: NSObject {
         NSApp.terminate(nil)
     }
 }
-
-extension MenuBarController {}
 
 
 extension MenuBarController: NSMenuDelegate {}

@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-22 10:00 CST（第 17–17.16 节为最新交接）
+- 交接时间：2026-08-22 10:20 CST（第 18 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -1668,3 +1668,54 @@ applicationDidFinishLaunching 的 setup 调用删除。
 对标 LiveTranslate 的 12 项全部落地（流式翻译/思考兼容/双下载源/JSON 批量/
 VAD 增强/下载校验/自动降级/基准测试/主题/菜单栏/上下文轮数/i18n）+ 源码
 按管线六环节重组；56 测试全绿、构建打包重启全通过；待真机回归六项。
+
+---
+
+## 18. 第十轮会话（2026-08-22 10:00–）：FunASR Provider 接入（按规格分步实施）
+
+### 架构决策与约束（实施前已对齐）
+
+1. **FunASR 无官方 Swift 绑定**：可行路径 = sherpa-onnx Swift API
+   （FunASR 官方 ONNX 模型在其生态推理）。**段 1 用占位 Runtime**
+   （明确报错不静默失败），Provider/路由/目录/UI 全链路先通。
+2. 规格中的 `AudioChunk`/`ASRModelType`/`ASRRuntime` 是目标态签名——
+   按现有真实类型等价落地（`[Float]` PCM / `TranscriptionResult` /
+   `ModelEngine.funasr`），不引入平行类型体系。
+3. 目录：现有 `Pipeline/ASR/FunASR/`（非规格的 Speech/Providers——
+   与既有组织一致，避免无谓搬迁）。
+
+### 已完成（3 个 commit）
+
+1. `feat: add FunASR provider architecture`
+   - `Pipeline/ASR/FunASR/FunASRRuntime.swift`：FunASRModelType 四枚举 +
+     FunASRRuntime 协议 + Placeholder 运行时；
+   - `FunASRProvider.swift`：完整 ASRProvider 实现（prepare/loadModel/
+     transcribeChunk/transcribeFile/status；isStreamingEngine 跟随模型类型，
+     paraformer-streaming=true 走调度层水位线）；
+   - `ASREngineSelection/.funasr` + `ResolvedEngine/.funasr` + 全部分发
+     （chunk/file/preload/waterline/languageSupport/debug 描述，共 9 处 switch）；
+   - 设置页三项选择器归「本地模型」范畴（配置区互斥逻辑复用）。
+2. `feat: add FunASR model catalog (SenseVoice/Paraformer/Nano) + settings grouping`
+   - ModelCatalog 四模型（hfFolder 源）：sensevoice-small(~900MB) /
+     paraformer-zh-streaming(~250MB) / paraformer-zh(~850MB) /
+     fun-asr-nano(int8 ~760MB)；isComplete 单文件判定；
+   - engine(forPath:) 按 catalog 元数据自动判定 funasr 引擎；
+   - 设置页模型列表分组显示（FunASR 组 / Whisper·Qwen·Nemotron 组）。
+3. 存量先行提交：此前 91 个未提交文件按逻辑分两个 commit
+   （refactor 管线架构 + chore 交接文档），FunASR 变更不再混杂。
+
+### 未完成 / 下一步
+
+1. **sherpa-onnx 后端**（段 2 核心）：Package.swift 加依赖（或预编译
+   xcframework 入 Frameworks/）、实现 FunASRRuntime 的 load/infer/unload、
+   SenseVoice tokens 解析（CTC greedy → 文本 + 时间戳）。
+2. **FSMN-VAD / CT-Punc 辅助模块**（规格第七节，可选）：FSMN 替换 RMS+ZCR
+   （现有 Pipeline/VAD 接口不变）；CT-Punc 只作用于文件转录结果文本。
+3. **真机验证**：模型下载（hfFolder 多文件 → 单 onnx 落盘路径需确认
+   resolveModelPath 语义匹配）、runtime 报错文案。
+
+### 一句话总结（第 18 节）
+
+FunASR 以 Provider 形态接入既有管线（非独立系统）：四模型目录/路由/UI/
+流式语义声明全通，runtime 占位报错；存量工作区先行清理提交。下一步
+sherpa-onnx 后端实现。

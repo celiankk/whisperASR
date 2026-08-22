@@ -41,20 +41,40 @@ enum FunASRModelType: String, CaseIterable {
 
 /// FunASR 推理运行时协议（后端可替换：sherpa-onnx / 未来 Core ML 导出）。
 protocol FunASRRuntime: Sendable {
-    func load(modelPath: URL) async throws
+    /// 加载模型（单 .onnx 文件路径；tokens 等附属文件同目录由后端解析）。
+    func load(modelPath: URL, modelType: FunASRModelType) async throws
     /// 16kHz mono Float32 PCM → 识别结果（时间戳相对音频起点）。
-    func infer(pcm: [Float], modelType: FunASRModelType) async throws -> ASRResult
+    /// 模型类型在 load 时已知，infer 无需重复传。
+    func infer(pcm: [Float]) async throws -> ASRResult
     func unload() async
+}
+
+/// Runtime 后端注册中心（段 2 接入点）：
+/// sherpa-onnx 后端实现 FunASRRuntime 后调用
+/// `FunASRRuntimeRegistry.register(SherpaOnnxFunASRRuntime())` 即全链路生效
+/// ——Provider 经此取运行时，占位/真实后端对 Provider 透明。
+enum FunASRRuntimeRegistry {
+    private static let lock = NSLock()
+    private static var backend: FunASRRuntime = PlaceholderFunASRRuntime()
+
+    /// 注册真实后端（应用启动或后端模块加载时调用一次）。
+    static func register(_ runtime: FunASRRuntime) {
+        lock.withLock { backend = runtime }
+    }
+
+    static func current() -> FunASRRuntime {
+        lock.withLock { backend }
+    }
 }
 
 /// 占位运行时：sherpa-onnx 后端接入前的明确报错（不静默失败）。
 struct PlaceholderFunASRRuntime: FunASRRuntime {
-    func load(modelPath: URL) async throws {
+    func load(modelPath: URL, modelType: FunASRModelType) async throws {
         throw TranscriptionError.processFailed(
             "FunASR runtime 尚未接入（sherpa-onnx 后端开发中）；模型已可下载与选择。")
     }
 
-    func infer(pcm: [Float], modelType: FunASRModelType) async throws -> ASRResult {
+    func infer(pcm: [Float]) async throws -> ASRResult {
         throw TranscriptionError.processFailed("FunASR runtime 尚未接入")
     }
 

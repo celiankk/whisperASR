@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-23 06:10 CST（第 23.1 节为最新交接）
+- 交接时间：2026-08-23 06:20 CST（第 23.2 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -2023,6 +2023,21 @@ SwiftUI allowsHitTesting(false) 不是"事件穿透到窗口"，而是"此视图
 first responder 候选，窗口级 performDrag 的入口（mouseDown）不会发生。
 需要"显示不可点 + 窗口可拖"时：保留 hit-test，在 NSView/Window 层
 接管 mouseDown。
+
+### 23.2 追加：引擎切换后识别语言不同步（didClose 时序竞争）
+
+真根因：AppKit 里**子菜单项 action 早于 menuDidClose 派发**——
+selectEngine 执行 rebuildMenu() 时 isMenuOpen 仍为 true，被
+「打开中禁止替换」守卫拦截，结构重建从未发生。
+
+修复：rebuildMenu 延迟到下一 runloop
+（DispatchQueue.main.async）——彼时菜单已完全关闭，重建安全生效。
+守卫本身保留（防打开中替换的 17.12 陷阱不复发）。
+
+### 新坑 33：NSMenu 子菜单 action 与 menuDidClose 的派发顺序
+
+action 先于 didClose。依赖 didClose 复位状态后立刻在 action 里做
+"菜单已关闭"假设的操作会全部落空；跨该时序的操作用 async 延迟一拍。
 
 ### 一句话总结（第 20–23 节）
 

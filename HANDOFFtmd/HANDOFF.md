@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-23 02:00 CST（第 19 节为最新交接）
+- 交接时间：2026-08-23 02:35 CST（第 19.5 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -1737,6 +1737,36 @@ VAD 增强/下载校验/自动降级/基准测试/主题/菜单栏/上下文轮�
 
 死代码清理：空 extension、悬空注释、infer 冗余参数。
 测试 106/106；release 打包重启通过。
+
+### 19.5 追加：Phase 2/3 全模型接入（2 commit）+ 引擎误路由修复
+
+**fix commit**（用户报错触发）：SenseVoice 目录被 engine(forPath:) 的
+「目录→一律 Nemotron」分支误路由 → 报 metadata.json not found。
+修复：目录分支先查 catalog（fileName 命中 engine==.funasr → .funasr）。
+
+**Phase 2**（`feat: add Paraformer-zh-streaming runtime`）：
+- OnlineRecognizer + **持久 stream**（会话状态跨 transcribe 保留）；
+- 端点检测（尾静音 1.2s / 20s 上限）→ SherpaOnnxOnlineStreamReset 开新段
+  （注意：函数名是 OnlineStreamReset，非网上资料的 ResetOnlineStream）；
+- 累积文本 → 增量：公共前缀 diff（与 Apple waitForTextGrowth 同语义）；
+- 流式冒烟 PASS（Scripts/funasr-stream-smoke.swift）：创建/跨轮状态/
+  endpoint/reset/释放全链路（hf-mirror 下载 226MB 模型实测）。
+
+**Phase 3**（`feat: add Paraformer-zh + Fun-ASR-Nano offline configs`）：
+- paraformerZH：Offline paraformer 配置（时间戳透传，文件转录场景）；
+- funASRNano：FunASRNanoModelConfig（encoder-adaptor/llm/embedding/
+  tokenizer 四文件；官方 repo csukuangfj/sherpa-onnx-funasr-nano-2512-int8）；
+- catalog 四模型全部目录语义（官方转换 repo）；
+- FunASRModelConfig：目录名精确匹配 + 自定义目录文件特征探测双路；
+- Provider 类型推导统一走 FunASRModelConfig（删重复映射）。
+
+**新坑 28**：sherpa-onnx 新版 API 命名细节——Reset 是
+SherpaOnnxOnlineStreamReset（词序与旧资料不同）；provider 等 C 字段
+必须 strdup（字面量赋值报 String→UnsafePointer）；方法名 cString 与
+String 扩展冲突（改名 dup）；free 全局重载歧义用 deallocate。
+
+待真机：SenseVoice/paraformer-streaming 实时字幕；paraformer-zh 文件
+转录（时间戳）；Nano 模型下载验证（~900MB）。
 
 ### 一句话总结（第 18 节）
 

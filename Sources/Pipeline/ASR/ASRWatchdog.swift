@@ -41,6 +41,12 @@ struct MemoryReclaimPolicy {
     var ceilingBytes: Int64
     /// 触发冷却：回收后该时间内不重复触发（防 unload/load 抖动）。
     var cooldown: TimeInterval = 60
+    /// 模型加载完成后的常驻基线（footprint 快照）。nil = 未记录，
+    /// 退回绝对上限判定。相对制：基线 + deltaBytes（原生推理库长时
+    /// 泄漏检测——绝对阈值对不同大小模型会误判/漏判）。
+    var baselineBytes: Int64? = nil
+    /// 基线之上的膨胀容许量（默认 2GB，对标上游实践）。
+    var deltaBytes: Int64 = 2_000_000_000
 
     static var `default`: MemoryReclaimPolicy {
         let configuredMB = UserDefaults.standard.double(forKey: "asrMemoryCeilingMB")
@@ -50,13 +56,26 @@ struct MemoryReclaimPolicy {
         return .init(ceilingBytes: bytes)
     }
 
-    /// 是否应回收：超上限 && 全部空闲 && 冷却已过。
+    /// 当前生效上限：显式配置的绝对上限优先；否则基线相对制
+    ///（baseline + delta，与绝对下限 ceilingBytes 取小者——基线制
+    /// 不应比绝对制更宽松）。
+    var effectiveCeiling: Int64 {
+        if UserDefaults.standard.double(forKey: "asrMemoryCeilingMB") > 0 {
+            return ceilingBytes
+        }
+        if let baseline = baselineBytes {
+            return min(baseline + deltaBytes, ceilingBytes)
+        }
+        return ceilingBytes
+    }
+
+    /// 是否应回收：超生效上限 && 全部空闲 && 冷却已过。
     func shouldReclaim(footprintBytes: Int64,
                        asrIdle: Bool,
                        transcriptionIdle: Bool,
                        lastReclaim: Date?,
                        now: Date = Date()) -> Bool {
-        guard footprintBytes > 0, footprintBytes >= ceilingBytes else { return false }
+        guard footprintBytes > 0, footprintBytes >= effectiveCeiling else { return false }
         guard asrIdle, transcriptionIdle else { return false }
         if let last = lastReclaim, now.timeIntervalSince(last) < cooldown {
             return false
@@ -70,7 +89,15 @@ struct MemoryReclaimPolicy {
 final class ASRWatchdog {
     private(set) var lastReclaimAt: Date?
     private(set) var reclaimCount = 0
-    private let policy: MemoryReclaimPolicy
+    private var policy: MemoryReclaimPolicy
+
+    /// 模型加载完成后记录常驻基线（preloadLiveModel 成功点调用；
+    /// 每次（重）加载都会刷新——泄漏检测相对的就是最新基线）。
+    func recordBaseline() {
+        policy.baselineBytes = ProcessMemory.footprintBytes
+        AppLogger.shared.log(.asr,
+            "Watchdog: baseline recorded at \(policy.baselineBytes.map { "\($0 / 1_000_000)MB" } ?? "-")")
+    }
 
     /// nonisolated：允许在非隔离上下文构造（状态本身在 MainActor 方法中变更）。
     nonisolated init(policy: MemoryReclaimPolicy = .default) {

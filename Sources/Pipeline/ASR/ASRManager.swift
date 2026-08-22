@@ -35,6 +35,31 @@ final class ASRManager: @unchecked Sendable {
     private var consecutiveChunkTimeouts = 0
     /// 看门狗（内存超阈值空闲回收；子进程隔离段 1）。
     private let watchdog = ASRWatchdog()
+    /// 自适应静音统计：最近 50 次真实停顿（干净封口）的静音时长，
+    /// P75×1.2 夹 [0.3, 2.0]s 为停顿判定时长——语速快自动收紧、慢放宽。
+    private var silenceDurations: [TimeInterval] = []
+
+    /// 当前生效的停顿判定时长（秒）。
+    private var adaptiveSilenceSeconds: TimeInterval {
+        Self.adaptiveSilenceSeconds(from: silenceDurations)
+    }
+
+    /// 自适应停顿时长（纯函数）：最近停顿时长的 P75×1.2 夹 [0.3, 2.0]s；
+    /// 样本 <3 用默认 0.3s。
+    static func adaptiveSilenceSeconds(from durations: [TimeInterval]) -> TimeInterval {
+        guard durations.count >= 3 else { return 0.3 }
+        let sorted = durations.sorted()
+        let p75 = sorted[min(sorted.count - 1, sorted.count * 3 / 4)]
+        return min(2.0, max(0.3, p75 * 1.2))
+    }
+
+    /// 渐进式静音：段越长收口越急（>6s 减半、>10s 四分之一），
+    /// 防快语速长段无限膨胀等待自然停顿。
+    static func progressiveSilenceFactor(tailSeconds: TimeInterval) -> Double {
+        if tailSeconds > 10 { return 0.25 }
+        if tailSeconds > 6 { return 0.5 }
+        return 1.0
+    }
     /// 本次会话是否已自动降级过（只降一次，避免循环降级）。
     private var hasAutoDegraded = false
     /// 每 5 秒一次的健康检查任务（资源快照 + 自动恢复）。
@@ -79,6 +104,8 @@ final class ASRManager: @unchecked Sendable {
             // Surface load failures so the user isn't stuck at a silent "Waiting for audio...".
             do {
                 try await self.service.preloadLiveModel()
+                // 看门狗基线：加载完成即记常驻水位（相对制泄漏检测）。
+                await MainActor.run { self.watchdog.recordBaseline() }
             } catch {
                 ErrorManager.shared.report(
                     .model, error,
@@ -142,6 +169,26 @@ final class ASRManager: @unchecked Sendable {
                     : baseSilenceThreshold
 
                 // If the whole unsealed tail is silence, seal forward and show only sealed text.
+                // 密度噪声门：非全静但语音密度 <25% 的段（音乐底噪/碎音）
+                // 不送 ASR——当静音处理，封口跳过省算力。
+                let tailSeconds = Double(tailCount) / 16000.0
+                let density = recorder.speechDensity(
+                    from: self.subtitleManager.sealedSampleCount, to: totalSamples,
+                    frameSamples: frameSamples, threshold: skipThreshold)
+                if density < 0.25, tailSeconds > 1.0 {
+                    self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
+                    lastTranscribedTotal = totalSamples
+                    recorder.trimSamples(upTo: max(0, self.subtitleManager.sealedSampleCount - contextSamples))
+                    consecutiveSilenceCount += 1
+                    let snapshot = self.subtitleManager.sealedSegments
+                    await MainActor.run {
+                        self.appState?.liveSegments = Array(snapshot.suffix(SubtitleManager.maxLiveSegments))
+                        self.throttledAutoSave()
+                    }
+                    try? await Task.sleep(for: .milliseconds(consecutiveSilenceCount >= 2 ? 1000 : 500))
+                    continue
+                }
+
                 let rms = recorder.rmsEnergy(from: self.subtitleManager.sealedSampleCount, count: tailCount)
                 guard rms > skipThreshold else {
                     self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
@@ -225,19 +272,33 @@ final class ASRManager: @unchecked Sendable {
 
                     // Advance the seal: to a trailing pause (clean), or forced once the tail has
                     // grown past the cap without one. Everything before it becomes final.
+                    // 动态停顿判定：自适应值（P75 统计）× 渐进系数（段长）。
+                    let effectiveSilenceSeconds = adaptiveSilenceSeconds
+                        * Self.progressiveSilenceFactor(tailSeconds: tailSeconds)
+                    let dynamicMinSilenceFrames = max(
+                        1, Int(effectiveSilenceSeconds / (Double(frameSamples) / 16000.0)))
                     let silenceCut = recorder.lastSilenceCut(
                         searchFrom: self.subtitleManager.sealedSampleCount, searchTo: totalSamples,
                         frameSamples: frameSamples, silenceThreshold: sealSilenceThreshold,
-                        minSilenceFrames: minSilenceFrames)
+                        minSilenceFrames: dynamicMinSilenceFrames)
                     var newSeal = self.subtitleManager.sealedSampleCount
                     var newSealClean = self.subtitleManager.sealedClean
-                    // VAD 断句：句尾停顿（≥300ms 静音）处封口成句。最低语音量
-                    // 只要 0.1s——短句（"好。""明白。"）也要能独立成句，
-                    // 否则多句连成 run-on、读不出句子边界。
                     if let cut = silenceCut, cut - self.subtitleManager.sealedSampleCount >= 1600 {
                         newSeal = cut; newSealClean = true
+                        // 记录本次停顿时长（自适应统计样本：静音段起 cut → 段尾）。
+                        silenceDurations.append(Double(totalSamples - cut) / 16000.0)
+                        if silenceDurations.count > 50 { silenceDurations.removeFirst() }
                     } else if tailCount >= Self.forceChunkSamples {
-                        newSeal = totalSamples; newSealClean = false
+                        // 谷值回溯：8s 上限不硬切——后 70% 找平滑能量谷
+                        //（谷值 < 段均值 80% = 自然停顿），无谷值才硬切。
+                        if let valley = recorder.lowestEnergyCut(
+                            searchFrom: self.subtitleManager.sealedSampleCount,
+                            searchTo: totalSamples, frameSamples: frameSamples),
+                           valley - self.subtitleManager.sealedSampleCount >= 16000 {
+                            newSeal = valley; newSealClean = true
+                        } else {
+                            newSeal = totalSamples; newSealClean = false
+                        }
                     }
 
                     if newSeal > self.subtitleManager.sealedSampleCount {
@@ -307,6 +368,14 @@ final class ASRManager: @unchecked Sendable {
         // 则保持原引擎 + 指路 toast。
         do {
             try await AppleSpeechManager.shared.prepare()
+            // 代数守卫：prepare 是异步慢操作（授权/模型加载），期间用户
+            // 可能已手动切换引擎——快照对比，不再等则放弃降级写入
+            //（避免迟到的自动降级覆盖用户刚做的选择）。
+            guard ASREngineSelection.current == current else {
+                AppLogger.shared.log(.asr,
+                    "Auto-degrade aborted: engine changed during probe (was \(current.rawValue))")
+                return
+            }
         } catch {
             AppLogger.shared.log(.asr,
                 "Auto-degrade probe failed: \(error.localizedDescription) — staying on \(current.rawValue)")

@@ -2,26 +2,24 @@ import Foundation
 
 // MARK: - FunASR 运行时抽象（FunASRRuntime）
 //
-// FunASR 模型推理的统一接口（对标规格中的 ASRRuntime 协议）：
-// - load(modelPath:)   加载 ONNX 模型（SenseVoice / Paraformer 系）；
-// - infer(pcm:)        16kHz mono Float32 推理 → 统一 ASRResult；
-// - unload()           释放模型资源。
+// FunASR 模型推理的统一接口（规格版）：
+// - isAvailable：后端可用性（xcframework 未链接/初始化失败 = false）
+// - load(modelURL:)：加载模型目录（文件清单见 FunASRModelConfig）
+// - transcribe(pcm:sampleRate:)：16kHz mono Float32 → 统一 ASRResult
+// - unload()：释放
 //
-// 后端实现（段 2）：sherpa-onnx Swift API（FunASR 官方导出的 ONNX
-// 模型在其生态内推理；macOS 有预编译 xcframework）。
-// 当前段 1 提供占位实现（明确的 unavailable 错误），保证：
-// - Provider/路由/目录/UI 全链路可编译、可选择、可下载；
-// - 选择 FunASR 模型时得到明确错误而非静默失败。
+// 后端链路（Commit 2 接入）：Swift → sherpa-onnx C API → ONNX Runtime。
+// 后端实现经 FunASRRuntimeRegistry 注册，对 Provider 透明。
 
 /// FunASR 支持的模型类型。
 enum FunASRModelType: String, CaseIterable {
-    /// SenseVoice-Small：中英日韩多语，低延迟，实时字幕默认推荐。
+    /// SenseVoice-Small：中英日韩粤，低延迟，实时字幕默认推荐。
     case senseVoiceSmall
     /// Paraformer-zh-streaming：中文流式识别（配合既有 streaming chunk 链路）。
     case paraformerStreaming
-    /// Paraformer-zh：中文离线高准确率（文件导入/会议转录）。
+    /// Paraformer-zh：中文离线高准确率（文件导入/会议转录，支持时间戳）。
     case paraformerZH
-    /// Fun-ASR-Nano：高质量多语言大型本地模型选项。
+    /// Fun-ASR-Nano：LLM-based 多语言（Phase 3，需 sherpa-onnx 最新版）。
     case funASRNano
 
     var displayName: String {
@@ -41,17 +39,23 @@ enum FunASRModelType: String, CaseIterable {
 
 /// FunASR 推理运行时协议（后端可替换：sherpa-onnx / 未来 Core ML 导出）。
 protocol FunASRRuntime: Sendable {
-    /// 加载模型（单 .onnx 文件路径；tokens 等附属文件同目录由后端解析）。
-    func load(modelPath: URL, modelType: FunASRModelType) async throws
+    /// 后端可用性（xcframework 未链接/初始化失败 = false）。
+    var isAvailable: Bool { get }
+
+    /// 加载模型目录（内含 onnx 权重 + tokens；具体文件由
+    /// FunASRModelConfig 按模型类型给出）。
+    func load(modelURL: URL) async throws
+
     /// 16kHz mono Float32 PCM → 识别结果（时间戳相对音频起点）。
-    /// 模型类型在 load 时已知，infer 无需重复传。
-    func infer(pcm: [Float]) async throws -> ASRResult
+    /// 实时链路固定 16kHz（AudioRecorder 输出），sampleRate 供后端校验。
+    func transcribe(pcm: [Float], sampleRate: Int) async throws -> ASRResult
+
     func unload() async
 }
 
-/// Runtime 后端注册中心（段 2 接入点）：
+/// Runtime 后端注册中心（Commit 2 接入点）：
 /// sherpa-onnx 后端实现 FunASRRuntime 后调用
-/// `FunASRRuntimeRegistry.register(SherpaOnnxFunASRRuntime())` 即全链路生效
+/// `FunASRRuntimeRegistry.register(SherpaONNXRuntime())` 即全链路生效
 /// ——Provider 经此取运行时，占位/真实后端对 Provider 透明。
 enum FunASRRuntimeRegistry {
     private static let lock = NSLock()
@@ -67,15 +71,17 @@ enum FunASRRuntimeRegistry {
     }
 }
 
-/// 占位运行时：sherpa-onnx 后端接入前的明确报错（不静默失败）。
+/// 占位运行时：xcframework 桥接接入前保持 runtime unavailable 状态
+/// （明确报错，不静默失败；Provider 全链路已可编译、可选择、可下载）。
 struct PlaceholderFunASRRuntime: FunASRRuntime {
-    func load(modelPath: URL, modelType: FunASRModelType) async throws {
-        throw TranscriptionError.processFailed(
-            "FunASR runtime 尚未接入（sherpa-onnx 后端开发中）；模型已可下载与选择。")
+    var isAvailable: Bool { false }
+
+    func load(modelURL: URL) async throws {
+        throw TranscriptionError.processFailed("FunASR runtime unavailable")
     }
 
-    func infer(pcm: [Float]) async throws -> ASRResult {
-        throw TranscriptionError.processFailed("FunASR runtime 尚未接入")
+    func transcribe(pcm: [Float], sampleRate: Int) async throws -> ASRResult {
+        throw TranscriptionError.processFailed("FunASR runtime unavailable")
     }
 
     func unload() async {}

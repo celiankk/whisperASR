@@ -56,7 +56,7 @@ final class FunASRProvider: @unchecked Sendable, ASRProvider {
 
     func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
         try await loadModelIfNeeded(directory: liveModelDirectory())
-        let result = try await runtime.infer(pcm: samples)
+        let result = try await runtime.transcribe(pcm: samples, sampleRate: 16000)
         return result.toTranscriptionResult()
     }
 
@@ -73,7 +73,7 @@ final class FunASRProvider: @unchecked Sendable, ASRProvider {
         let samples = try await AudioLoader.loadSamples(url: fileURL)
         try await loadModelIfNeeded(directory: modelDirectory())
         onProgress(0.3)
-        let result = try await runtime.infer(pcm: samples)
+        let result = try await runtime.transcribe(pcm: samples, sampleRate: 16000)
         onProgress(1)
         return result.toTranscriptionResult()
     }
@@ -130,7 +130,7 @@ final class FunASRProvider: @unchecked Sendable, ASRProvider {
         // 让下次重试；成功则记录 loadedPath。
         let task = Task<Void, Never> {
             do {
-                try await self.runtime.load(modelPath: directory, modelType: modelType)
+                try await self.runtime.load(modelURL: directory)
                 self.stateLock.withLock { self.loadedPath = directory.path }
             } catch {
                 self.stateLock.withLock { self.inflightLoad = nil }

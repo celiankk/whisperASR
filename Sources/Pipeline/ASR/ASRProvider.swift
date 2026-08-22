@@ -22,6 +22,8 @@ enum ASRProviderEngine: String, Sendable {
     case qwen3asr
     case online
     case apple
+    /// FunASR（SenseVoice / Paraformer 系，sherpa-onnx 后端）。
+    case funasr
 }
 
 /// Provider 状态快照。
@@ -125,6 +127,8 @@ extension ASRProvider {
 
     /// 默认实现：无状态引擎。
     var isStreamingEngine: Bool { false }
+
+    /// 文件转录默认拒绝 translate（FunASR 不支持英文转写；whisper 专属）。
 }
 
 // MARK: - 流式引擎喂音水位线（StreamingFeedWaterline）

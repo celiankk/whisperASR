@@ -23,6 +23,8 @@ final class TranscriptionService: @unchecked Sendable {
     private let onlineProvider = OnlineASRProvider()
     /// Apple Speech（macOS 26 原生 SpeechAnalyzer / SpeechTranscriber 引擎）。
     private let appleProvider = AppleSpeechManager.shared
+    /// FunASR（SenseVoice / Paraformer 系）。
+    private let funasrProvider = FunASRProvider()
 
     /// True while a live session runs on the Nemotron engine — blocks the
     /// "unload nemotron when file-transcribing with whisper" eviction below.
@@ -44,6 +46,7 @@ final class TranscriptionService: @unchecked Sendable {
         case qwen3asr(path: String)
         case online
         case apple
+        case funasr
     }
 
     /// Engine resolution: the user's ASR Engine selection takes precedence
@@ -65,6 +68,8 @@ final class TranscriptionService: @unchecked Sendable {
             return .nemotron(directory: ModelPathResolver.resolveModelPath())
         case .apple:
             return .apple
+        case .funasr:
+            return .funasr
         case .auto:
             return Self.engine(forPath: ModelPathResolver.resolveModelPath())
         }
@@ -89,6 +94,8 @@ final class TranscriptionService: @unchecked Sendable {
             return .nemotron(directory: ModelPathResolver.resolveLiveModelPath())
         case .apple:
             return .apple
+        case .funasr:
+            return .funasr
         case .auto:
             return Self.engine(forPath: ModelPathResolver.resolveLiveModelPath())
         }
@@ -202,6 +209,10 @@ final class TranscriptionService: @unchecked Sendable {
             return try await appleProvider.transcribeFile(
                 fileURL: fileURL, language: language, translate: translate, onProgress: onProgress
             )
+        case .funasr:
+            return try await funasrProvider.transcribeFile(
+                fileURL: fileURL, language: effectiveLanguage, translate: translate, onProgress: onProgress
+            )
         }
     }
 
@@ -269,6 +280,7 @@ final class TranscriptionService: @unchecked Sendable {
         case .whisper: return whisperProvider
         case .online: return onlineProvider
         case .apple: return appleProvider
+        case .funasr: return funasrProvider
         }
     }
 
@@ -287,6 +299,8 @@ final class TranscriptionService: @unchecked Sendable {
             return try await onlineProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
         case .apple:
             return try await appleProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
+        case .funasr:
+            return try await funasrProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
         }
     }
 
@@ -301,12 +315,12 @@ final class TranscriptionService: @unchecked Sendable {
         case .localOnly:
             switch engine {
             case .whisper, .nemotron, .qwen3asr: return true
-            case .online, .apple: return false
+            case .online, .apple, .funasr: return false
             }
         case .onlineOnly:
             switch engine {
             case .online: return false
-            case .whisper, .nemotron, .qwen3asr, .apple: return false
+            case .whisper, .nemotron, .qwen3asr, .apple, .funasr: return false
             }
         }
     }
@@ -331,6 +345,8 @@ final class TranscriptionService: @unchecked Sendable {
             try await nemotronProvider.prepare()
         case .qwen3asr:
             try await qwenProvider.prepare()
+        case .funasr:
+            try await funasrProvider.prepare()
         case .online:
             // 在线模式：校验配置（失败时由调用方提示，不影响本地引擎）。
             try await onlineProvider.prepare()
@@ -363,6 +379,8 @@ final class TranscriptionService: @unchecked Sendable {
             return .selectable
         case .qwen:
             return qwenAuto
+        case .funasr:
+            return .selectable
         case .auto, .whisper, .nemotron:
             if case .qwen3asr = engine(forPath: ModelPathResolver.resolveModelPath()) {
                 return qwenAuto
@@ -415,6 +433,7 @@ final class TranscriptionService: @unchecked Sendable {
         case .qwen3asr: return "arch=\(arch) engine=qwen3asr"
         case .online: return "arch=\(arch) engine=online"
         case .apple: return "arch=\(arch) engine=apple"
+        case .funasr: return "arch=\(arch) engine=funasr"
         }
     }
 #endif

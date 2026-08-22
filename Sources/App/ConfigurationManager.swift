@@ -110,6 +110,7 @@ enum ASREngineSelection: String, CaseIterable, Codable {
     case nemotron
     case online
     case apple
+    case funasr
 
     static let key = "asrEngine"
 

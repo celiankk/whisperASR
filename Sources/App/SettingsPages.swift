@@ -228,7 +228,7 @@ struct RecognitionSettingsView: View {
                 AppleSpeechSettingsSection()
             case .online:
                 OnlineASRSection(recognition: recognition)
-            case .auto, .whisper, .qwen, .nemotron:
+            case .funasr, .auto, .whisper, .qwen, .nemotron:
                 ModelCatalogSection()
                 CustomModelSection(recognition: recognition)
                 LocalModelsSection()
@@ -388,7 +388,7 @@ struct RecognitionSettingsView: View {
                 switch settings.asr.asrEngine {
                 case .online: return .online
                 case .apple: return .apple
-                case .auto, .whisper, .qwen, .nemotron: return .auto
+                case .auto, .whisper, .qwen, .nemotron, .funasr: return .auto
                 }
             },
             set: { settings.asr.asrEngine = $0 }
@@ -402,8 +402,10 @@ struct RecognitionSettingsView: View {
             return "在线：OpenAI 兼容 API（无需本地模型，识别数据发送到服务端）；需在下方启用并配置。"
         case .apple:
             return "Apple：macOS 26 原生系统语音识别（需在系统设置中授权语音识别）。"
+        case .funasr:
+            return "FunASR：阿里 FunASR 模型（SenseVoice 多语实时 / Paraformer 中文 / Fun-ASR-Nano），全部本地运行。"
         case .auto, .whisper, .qwen, .nemotron:
-            return "本地模型：按所选模型自动判定引擎（Whisper / Qwen / Nemotron），全部本地运行，不联网。"
+            return "本地模型：按所选模型自动判定引擎（Whisper / Qwen / Nemotron / FunASR），全部本地运行，不联网。"
         }
     }
 }

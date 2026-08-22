@@ -436,7 +436,24 @@ private struct ModelCatalogSection: View {
             Text("国内镜像（hf-mirror.com）适用于 Hugging Face 直连缓慢/失败的网络环境；下载中的任务不受影响。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            ForEach(ModelCatalog.all) { model in
+            // FunASR 分类组（实时推荐 / 中文实时 / 中文高精度 / 多语言）。
+            HStack {
+                Text("FunASR（阿里）").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text("SenseVoice 多语实时 · Paraformer 中文 · Nano 多语")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(.top, 2)
+            ForEach(ModelCatalog.all.filter { $0.engine == .funasr }) { model in
+                ModelRowView(model: model)
+            }
+            Divider()
+            HStack {
+                Text("Whisper / Qwen3-ASR / Nemotron").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.top, 2)
+            ForEach(ModelCatalog.all.filter { $0.engine != .funasr }) { model in
                 ModelRowView(model: model)
             }
             Text("选择已下载的模型用于转录。模型越小速度越快，但准确率越低。")

@@ -14,6 +14,9 @@ enum ModelEngine: Equatable {
     /// 注意：当前构建的 whisper.cpp 尚不支持该架构，选择后可下载，但推理需要
     /// 后续集成 ggml/Qwen3-ASR 后端（详见 TranscriptionService 中的明确报错）。
     case qwen3asr
+    /// 阿里 FunASR ONNX 模型（SenseVoice / Paraformer / Fun-ASR-Nano），
+    /// 经 sherpa-onnx 后端推理。
+    case funasr
 }
 
 /// Where a catalog model's bytes come from.
@@ -118,6 +121,55 @@ enum ModelCatalog {
             source: .file(URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin")!),
             approxBytes: 78_000_000
         ),
+        // MARK: FunASR（sherpa-onnx ONNX 模型；runtime 后端接入中）
+        WhisperModelInfo(
+            id: "sensevoice-small",
+            displayName: "SenseVoice-Small",
+            detail: "FunASR 多语实时：中英日韩，低延迟（实时推荐）",
+            fileName: "sensevoice-small.onnx",
+            source: .hfFolder(
+                repo: "FunAudioLLM/SenseVoiceSmall",
+                folder: "onnx"
+            ),
+            approxBytes: 900_000_000,
+            engine: .funasr
+        ),
+        WhisperModelInfo(
+            id: "paraformer-zh-streaming",
+            displayName: "Paraformer-zh-streaming",
+            detail: "FunASR 中文流式实时识别（低延迟）",
+            fileName: "paraformer-zh-streaming.onnx",
+            source: .hfFolder(
+                repo: "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+                folder: "."
+            ),
+            approxBytes: 250_000_000,
+            engine: .funasr
+        ),
+        WhisperModelInfo(
+            id: "paraformer-zh",
+            displayName: "Paraformer-zh",
+            detail: "FunASR 中文高准确率离线识别（文件/会议转录）",
+            fileName: "paraformer-zh.onnx",
+            source: .hfFolder(
+                repo: "csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14",
+                folder: "."
+            ),
+            approxBytes: 850_000_000,
+            engine: .funasr
+        ),
+        WhisperModelInfo(
+            id: "fun-asr-nano",
+            displayName: "Fun-ASR-Nano",
+            detail: "FunASR 高质量多语识别（大型本地模型选项）",
+            fileName: "fun-asr-nano.onnx",
+            source: .hfFolder(
+                repo: "csukuangfj/sherpa-onnx-funasr-nano-int8",
+                folder: "."
+            ),
+            approxBytes: 760_000_000,
+            engine: .funasr
+        ),
     ]
 
     static func model(id: String) -> WhisperModelInfo? {
@@ -142,7 +194,7 @@ enum ModelCatalog {
     static func isComplete(_ model: WhisperModelInfo) -> Bool {
         let base = path(for: model)
         switch model.engine {
-        case .whisper, .qwen3asr:
+        case .whisper, .qwen3asr, .funasr:
             return FileManager.default.fileExists(atPath: base.path)
         case .nemotron:
             let required = [

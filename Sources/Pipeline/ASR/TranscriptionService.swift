@@ -108,9 +108,10 @@ final class TranscriptionService: @unchecked Sendable {
         }
         // Qwen3-ASR 是单文件 GGUF：按目录中的模型名识别，避免被误当成 whisper 加载。
         let fileName = (path as NSString).lastPathComponent
-        if let catalogModel = ModelCatalog.model(fileName: fileName),
-           catalogModel.engine == .qwen3asr {
-            return .qwen3asr(path: path)
+        if let catalogModel = ModelCatalog.model(fileName: fileName) {
+            // 目录条目（nemotron/funasr）按 catalog 元数据判定引擎。
+            if catalogModel.engine == .qwen3asr { return .qwen3asr(path: path) }
+            if catalogModel.engine == .funasr { return .funasr }
         }
         // 自定义路径/非标准文件名：读取 GGUF 头部 general.architecture 判定。
         if let arch = GGUFInspector.architecture(atPath: path)?.lowercased(),

@@ -440,7 +440,7 @@ private struct ModelCatalogSection: View {
                 .foregroundStyle(.secondary)
             // 引擎分类筛选：选定引擎只显示对应模型；全部时按引擎分组。
             HStack {
-                Text("按引擎筛选")
+                Text(verbatim: "按引擎筛选")
                 Spacer()
                 Picker("", selection: $engineFilter) {
                     Text("全部").tag(ModelEngine?.none)

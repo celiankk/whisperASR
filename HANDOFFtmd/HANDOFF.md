@@ -1714,6 +1714,30 @@ VAD 增强/下载校验/自动降级/基准测试/主题/菜单栏/上下文轮�
 3. **真机验证**：模型下载（hfFolder 多文件 → 单 onnx 落盘路径需确认
    resolveModelPath 语义匹配）、runtime 报错文案。
 
+### 18.1 追加：FunASR 段 1 审查——修 4 个真 bug + 后端接入点准备
+
+审查发现并修复（commit `fix: FunASR provider hardening...`）：
+1. **modelType 恒为默认值**（严重）：catalog 选 paraformer-zh 也不切换，
+   isStreamingEngine 判断失真——改为按模型路径从 catalog 推导；
+2. **load 非原子**：实时循环与文件转录并发双加载——in-flight task
+   去重（同路径等待复用；路径变化先卸载）；
+3. **目录语义错误**：单 .onnx 文件路径被标 isDirectory:true——
+   load(modelPath:modelType:) 明确文件语义，tokens 附属文件同目录由
+   后端解析；
+4. **菜单栏引擎 ✓ 漏 funasr**。
+
+为段 2（sherpa-onnx）准备的接入点：
+- **FunASRRuntimeRegistry**：后端实现 FunASRRuntime 后一行
+   `register()` 全链路生效（Provider 经 Registry 取运行时，占位/真实
+   对 Provider 透明）；协议简化：infer(pcm:)（模型类型 load 时已知）；
+- **ASRModelType** 统一枚举（规格第三节）：whisper×3 / qwen3ASR /
+   nemotron / senseVoiceSmall / paraformerStreaming / paraformerZH /
+   funASRNano → engine 映射；设置页 FunASR 分组排序可用
+   isRealtimeRecommended。
+
+死代码清理：空 extension、悬空注释、infer 冗余参数。
+测试 106/106；release 打包重启通过。
+
 ### 一句话总结（第 18 节）
 
 FunASR 以 Provider 形态接入既有管线（非独立系统）：四模型目录/路由/UI/

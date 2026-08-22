@@ -139,8 +139,9 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
                     }
                 }
 
-                // Run transcription
-                let result = samples.withUnsafeBufferPointer { buf in
+                // Run transcription（输入桶化：0.5s 量子对齐稳定推理形状）。
+                let input = InputBucketing.padded(samples)
+                let result = input.withUnsafeBufferPointer { buf in
                     whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
                 }
 

@@ -156,6 +156,25 @@ extension ASRProvider {
     var isStreamingEngine: Bool { false }
 }
 
+// MARK: - 输入补零桶化（InputBucketing）
+//
+// 推理输入长度对齐 0.5s 整数倍桶：GPU 推理对随机输入形状会触发
+// kernel 重选与显存池扩张（周期性延迟毛刺）；桶化后形状集合有限，
+// 长时运行复用已调优执行路径。代价：平均每段多算 ~0.25s 尾部静音
+//（补在语音之后的尾部零，不诱发幻觉）。仅无状态引擎的 chunk 路径；
+// 流式引擎禁用（补零破坏流语义）；文件转录一次性推理无需。
+
+enum InputBucketing {
+    /// 0.5s @16kHz。
+    static let quantumSamples = 8000
+
+    static func padded(_ samples: [Float]) -> [Float] {
+        let remainder = samples.count % quantumSamples
+        guard remainder != 0 else { return samples }
+        return samples + [Float](repeating: 0, count: quantumSamples - remainder)
+    }
+}
+
 // MARK: - 流式引擎喂音水位线（StreamingFeedWaterline）
 //
 // 绝对采样坐标（AudioRecorder.accumulatedSampleCount 坐标系）上的

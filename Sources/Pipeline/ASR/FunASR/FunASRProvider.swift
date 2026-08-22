@@ -72,7 +72,11 @@ final class FunASRProvider: @unchecked Sendable, ASRProvider {
             AppLogger.shared.log(.asr, "FunASR language hot-switch → hint=\(hint)")
         }
         try await loadModelIfNeeded(directory: liveModelDirectory())
-        let result = try await runtime.transcribe(pcm: samples, sampleRate: 16000)
+        // 输入桶化：仅无状态 offline 模型（SenseVoice/paraformer-zh）；
+        // 流式模型禁用（补零破坏流语义）。
+        let input: [Float] = modelType == .paraformerStreaming
+            ? samples : InputBucketing.padded(samples)
+        let result = try await runtime.transcribe(pcm: input, sampleRate: 16000)
         return result.toTranscriptionResult()
     }
 

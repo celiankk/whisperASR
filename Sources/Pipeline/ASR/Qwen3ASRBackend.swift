@@ -63,7 +63,8 @@ final class Qwen3ASRBackend {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionResult, Error>) in
             queue.async {
                 do {
-                    let text = try self.runOnSession(samples: samples)
+                    // 输入桶化：0.5s 量子对齐稳定推理形状。
+                    let text = try self.runOnSession(samples: InputBucketing.padded(samples))
                     continuation.resume(returning: TranscriptionResult(
                         text: text,
                         segments: Self.estimateSegments(

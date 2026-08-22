@@ -28,14 +28,10 @@ enum L10n {
         "menubar.passthrough": ("字幕浮层鼠标穿透", "Subtitle Overlay Click-through"),
         "menubar.obsWindow": ("OBS 字幕窗", "OBS Subtitle Window"),
         "menubar.asrLanguage": ("识别语言", "Recognition Language"),
-        "menubar.asrLanguage.apple": ("由 Apple Speech 语言包决定", "Determined by Apple Speech language pack"),
         "menubar.translation": ("翻译语言", "Translation Language"),
         "menubar.quit": ("退出 WhisperASR", "Quit WhisperASR"),
         "menubar.engine.switched": ("识别引擎已切换", "ASR engine switched"),
         // 通用
-        "common.settings": ("设置", "Settings"),
-        "common.cancel": ("取消", "Cancel"),
-        "common.done": ("完成", "Done"),
         "common.back": ("返回转录", "Back to Transcripts"),
     ]
 

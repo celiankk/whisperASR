@@ -43,7 +43,7 @@ final class ObsSubtitleWindowController: NSObject {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: ObsSubtitleView(viewModel: viewModel))
+        panel.contentView = ObsSubtitleHostingView(rootView: ObsSubtitleView(viewModel: viewModel))
         panel.orderFrontRegardless()
         self.panel = panel
         AppLogger.shared.log(.window, "OBS subtitle window presented")
@@ -54,6 +54,16 @@ final class ObsSubtitleWindowController: NSObject {
         panel = nil
         viewModel = nil
         AppLogger.shared.log(.window, "OBS subtitle window dismissed")
+    }
+}
+
+// MARK: - OBS 窗承载视图（背景拖拽）
+
+/// SwiftUI 层 allowsHitTesting(false)（文字不挡事件），NSView 层转发
+/// 背景 mouseDown 到 performDrag —— 原生窗口拖动（Finder 式）。
+private final class ObsSubtitleHostingView: NSHostingView<ObsSubtitleView> {
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
     }
 }
 

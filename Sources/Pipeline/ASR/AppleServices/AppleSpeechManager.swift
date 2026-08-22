@@ -118,6 +118,8 @@ final class AppleSpeechManager: @unchecked Sendable, ASRProvider {
         set { stateLock.withLock { speechEngineStorage = newValue } }
     }
     private var speechEngineStorage: Any?
+    /// 上次会话的 locale（语言热切换检测：变化即重建会话）。
+    private var liveSessionLocale: String? = nil
 
     // MARK: - ASRProvider
 
@@ -147,6 +149,7 @@ final class AppleSpeechManager: @unchecked Sendable, ASRProvider {
 
     /// 释放资源：先摘除会话引用再停止，避免 stop 期间新会话被旧值覆盖。
     func unloadModel() async {
+        liveSessionLocale = nil
         if #available(macOS 26, *) {
             let engine = speechEngine
             speechEngine = nil
@@ -179,16 +182,23 @@ final class AppleSpeechManager: @unchecked Sendable, ASRProvider {
         }
         let preprocessed = Self.preprocess(samples)
         let engine: AppleSpeechEngine
-        if let existing = speechEngine, existing.isRunning {
+        let currentLocale = Self.localeIdentifier
+        if let existing = speechEngine, existing.isRunning,
+           liveSessionLocale == currentLocale {
             engine = existing
         } else {
-            // 首次 chunk / 旧会话已结束：懒启动新会话（新会话时间轴从空开始）。
+            // 首次 chunk / 旧会话结束 / **语言热切换**（locale 变化）：
+            // 停旧会话、按新 locale 启动——录制不中断，本 chunk 喂新会话。
             if let stale = speechEngine {
                 await stale.stop()
             }
             engine = AppleSpeechEngine()
-            try await engine.start(localeIdentifier: Self.localeIdentifier)
+            try await engine.start(localeIdentifier: currentLocale)
             speechEngine = engine
+            if let previous = liveSessionLocale, previous != currentLocale {
+                AppLogger.shared.log(.asr, "Apple locale hot-switch \(previous) → \(currentLocale)")
+            }
+            liveSessionLocale = currentLocale
         }
         engine.append(samples: preprocessed)
         // 等待窗口：尾部静音（断句点）→ 1s 取完整句；正常说话 → 0.25s。

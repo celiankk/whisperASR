@@ -21,6 +21,9 @@ final class FunASRProvider: @unchecked Sendable, ASRProvider {
         set { stateLock.withLock { modelTypeStorage = newValue } }
     }
     private var modelTypeStorage: FunASRModelType = .senseVoiceSmall
+    /// 上次加载时的语言提示（语言热切换检测：变化即重载 recognizer——
+    /// hint 绑定在 config 构造上，重建即生效，模型加载 ~1-2s 后恢复）。
+    private var loadedLangHint: String? = nil
 
     /// 推理运行时：经注册中心取（sherpa-onnx 后端注册前为占位）。
     private var runtime: FunASRRuntime { FunASRRuntimeRegistry.current() }
@@ -55,6 +58,19 @@ final class FunASRProvider: @unchecked Sendable, ASRProvider {
     // MARK: - 实时分块
 
     func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+        // 语言热切换：有效提示变化 → 卸载重载（ SenseVoice hint 在
+        // recognizer config 上；paraformer 系无语言参数，提示变化无感）。
+        let hint = SherpaONNXRuntime.senseVoiceLanguageHint(
+            ConfigurationManager.shared.asr.effectiveASRLanguage)
+        if hint != loadedLangHint, modelType != .paraformerStreaming {
+            await runtime.unload()
+            stateLock.withLock {
+                loadedPath = nil
+                inflightLoad = nil
+                loadedLangHint = hint
+            }
+            AppLogger.shared.log(.asr, "FunASR language hot-switch → hint=\(hint)")
+        }
         try await loadModelIfNeeded(directory: liveModelDirectory())
         let result = try await runtime.transcribe(pcm: samples, sampleRate: 16000)
         return result.toTranscriptionResult()

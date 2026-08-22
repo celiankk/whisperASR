@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-23 06:35 CST（第 23.3 节为最新交接）
+- 交接时间：2026-08-23 06:50 CST（第 23.4 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -2061,6 +2061,31 @@ action 先于 didClose。依赖 didClose 复位状态后立刻在 action 里做
 部分写入后再跑第二个替换脚本，新旧实现并存会产生孤儿代码块——
 编译错误只是表象，正确做法是 sed -n 读损坏区域全文、以实际文本为锚
 清理，而不是凭记忆再补一刀（本轮孤儿尾巴就是这么来的）。
+
+### 23.4 追加：菜单栏语言改动主窗口不同步（Observable 依赖缺口）+ 转录记录持久化
+
+1. **语言不同步真根因**：设置页 body 对 asrLanguage/targetLanguage **没有
+   读取依赖**——Picker selection 的双向绑定只在用户交互时写值；外部
+   （菜单栏）写入时 body 不重渲染，Picker 显示旧值。引擎切换之所以
+   同步正常，是因为 body 里 switch recognition.asrEngine 显式读了该属性。
+   修复：body 内 `let _ = recognition.asrLanguage` / `let _ =
+   translation.targetLanguage` 显式建立 Observable 追踪。
+
+2. **转录记录开关持久化**：AppState.enableLiveTranscription 从普通
+   var 改为 UserDefaults-backed computed property
+   （key "enableTranscriptRecord"，默认 true）——选择 App 页/通用设置/
+   菜单栏三处写同一键，重启保留。语义不变（只控历史生成，实时字幕
+   始终进行）。
+
+测试 123/123；release 打包重启通过。
+验证：菜单栏切语言 → 设置页 Picker 立即变（无需重新进页面）；选 App
+页关「转录记录」→ 重启应用 → 开关仍为关。
+
+### 新坑 35：@Observable 外部写入需要 body 有读取依赖
+
+SwiftUI + @Observable：Picker(selection:) 的绑定不建立对外部写入的
+刷新订阅——body 必须显式读取该属性（let _ = x）才会因外部变化重渲染。
+"交互同步、外部不同步"的 UI 症状先查这个。
 
 ### 一句话总结（第 20–23 节）
 

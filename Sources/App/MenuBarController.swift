@@ -196,8 +196,12 @@ final class MenuBarController: NSObject {
         // 走配置对象（didSet 持久化 + @Observable 通知）——主窗口设置页
         // 与菜单栏双向同步；直接写 UserDefaults 会绕过 UI 通知。
         settings.asr.asrEngine = engine
-        // 菜单已随选择关闭：此时重建结构安全（识别语言子菜单需跟随引擎）。
-        rebuildMenu()
+        // 结构重建需在菜单完全关闭后：子菜单 action 早于 menuDidClose
+        // 派发，此刻 isMenuOpen 仍为 true、直接 rebuild 会被守卫拦截
+        // （识别语言子菜单不同步的根因）。延迟到下一 runloop 执行。
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildMenu()
+        }
         appState?.showToast("\(L10n.t("menubar.engine.switched"))：\(engine == .apple ? "Apple" : engine == .online ? L10n.t("menubar.engine.online") : L10n.t("menubar.engine.local"))")
     }
 

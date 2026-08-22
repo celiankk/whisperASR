@@ -63,6 +63,7 @@ final class ObsSubtitleWindowController: NSObject {
 /// 背景 mouseDown 到 performDrag —— 原生窗口拖动（Finder 式）。
 private final class ObsSubtitleHostingView: NSHostingView<ObsSubtitleView> {
     override func mouseDown(with event: NSEvent) {
+        AppLogger.shared.log(.window, "OBS window drag begin")
         window?.performDrag(with: event)
     }
 }
@@ -100,6 +101,9 @@ private struct ObsSubtitleView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .allowsHitTesting(false)   // 纯显示：指针事件全部穿过（拖动靠窗口层）
+        // 注意：不能加 allowsHitTesting(false)——会让 SwiftUI 内容退出
+        // hit-test，NSView 层收不到 mouseDown，performDrag 永远不触发
+        //（"OBS 浮窗不能拖动"的根因）。文字无交互需求，命中后统一走拖动。
+
     }
 }

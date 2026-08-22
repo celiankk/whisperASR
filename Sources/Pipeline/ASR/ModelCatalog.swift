@@ -136,11 +136,13 @@ enum ModelCatalog {
             approxBytes: 230_000_000,
             engine: .funasr
         ),
+        // Paraformer-zh-streaming：目录（encoder/decoder int8 + tokens），
+        // 中英双语流式（OnlineRecognizer + 端点检测）。
         WhisperModelInfo(
             id: "paraformer-zh-streaming",
             displayName: "Paraformer-zh-streaming",
-            detail: "FunASR 中文流式实时识别（低延迟）",
-            fileName: "paraformer-zh-streaming.onnx",
+            detail: "FunASR 中文流式实时识别（中英双语，低延迟）",
+            fileName: "streaming-paraformer-bilingual-zh-en",   // 目录语义
             source: .hfFolder(
                 repo: "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en",
                 folder: "."
@@ -148,11 +150,12 @@ enum ModelCatalog {
             approxBytes: 250_000_000,
             engine: .funasr
         ),
+        // Paraformer-zh：离线高精度（支持时间戳），文件转录场景。
         WhisperModelInfo(
             id: "paraformer-zh",
             displayName: "Paraformer-zh",
-            detail: "FunASR 中文高准确率离线识别（文件/会议转录）",
-            fileName: "paraformer-zh.onnx",
+            detail: "FunASR 中文高准确率离线识别（时间戳，文件/会议转录）",
+            fileName: "paraformer-zh-2023-09-14",   // 目录语义
             source: .hfFolder(
                 repo: "csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14",
                 folder: "."
@@ -160,16 +163,17 @@ enum ModelCatalog {
             approxBytes: 850_000_000,
             engine: .funasr
         ),
+        // Fun-ASR-Nano（LLM 多语）：目录（encoder-adaptor/llm/embedding/tokenizer）。
         WhisperModelInfo(
             id: "fun-asr-nano",
             displayName: "Fun-ASR-Nano",
-            detail: "FunASR 高质量多语识别（大型本地模型选项）",
-            fileName: "fun-asr-nano.onnx",
+            detail: "FunASR 高质量多语识别（LLM，大型本地模型选项）",
+            fileName: "fun-asr-nano-2512-int8",   // 目录语义
             source: .hfFolder(
-                repo: "csukuangfj/sherpa-onnx-funasr-nano-int8",
+                repo: "csukuangfj/sherpa-onnx-funasr-nano-2512-int8",
                 folder: "."
             ),
-            approxBytes: 760_000_000,
+            approxBytes: 900_000_000,
             engine: .funasr
         ),
     ]

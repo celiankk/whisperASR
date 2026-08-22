@@ -140,13 +140,9 @@ final class FunASRProvider: @unchecked Sendable, ASRProvider {
         await task.value
     }
 
-    /// 模型路径 → 类型（按 catalog displayName/id 匹配；未登记回落 SenseVoice）。
+    /// 模型路径 → 类型：统一走 FunASRModelConfig（目录名 + 文件特征探测），
+    /// Provider 不重复维护映射。
     static func modelType(for modelURL: URL) -> FunASRModelType {
-        switch modelURL.lastPathComponent {
-        case "paraformer-zh-streaming.onnx": return .paraformerStreaming
-        case "paraformer-zh.onnx": return .paraformerZH
-        case "fun-asr-nano.onnx": return .funASRNano
-        default: return .senseVoiceSmall
-        }
+        FunASRModelConfig.config(for: modelURL).modelType
     }
 }

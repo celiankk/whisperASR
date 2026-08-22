@@ -104,12 +104,19 @@ final class TranscriptionService: @unchecked Sendable {
     private static func engine(forPath path: String) -> ResolvedEngine {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+            // 目录模型：先按 catalog 元数据判引擎（FunASR 目录 → .funasr，
+            // 否则回落 Nemotron——曾把 SenseVoice 目录误判为 Nemotron，
+            // 报 metadata.json not found）。
+            let dirName = (path as NSString).lastPathComponent
+            if let catalogModel = ModelCatalog.model(fileName: dirName),
+               catalogModel.engine == .funasr {
+                return .funasr
+            }
             return .nemotron(directory: path)
         }
         // Qwen3-ASR 是单文件 GGUF：按目录中的模型名识别，避免被误当成 whisper 加载。
         let fileName = (path as NSString).lastPathComponent
         if let catalogModel = ModelCatalog.model(fileName: fileName) {
-            // 目录条目（nemotron/funasr）按 catalog 元数据判定引擎。
             if catalogModel.engine == .qwen3asr { return .qwen3asr(path: path) }
             if catalogModel.engine == .funasr { return .funasr }
         }

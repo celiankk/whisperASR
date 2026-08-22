@@ -78,3 +78,46 @@ final class TranslationParsingTests: XCTestCase {
         XCTAssertEqual(TranslationService.stripSingleLineNoise("  普通译文  "), "普通译文")
     }
 }
+
+
+// MARK: 复读机检测（小模型循环输出防护）
+final class RepetitionDetectionTests: XCTestCase {
+
+    func testShortTextNeverRepetitive() {
+        XCTAssertFalse(TranslationService.hasRepetition("短文本不会误判"))
+        XCTAssertFalse(TranslationService.hasRepetition(""))
+    }
+
+    func testLoopOutputDetected() {
+        // 典型循环：同一短语反复（≥3 次相同 8 字片段）。
+        let loop = String(repeating: "今天天气真好我们去", count: 8)
+        XCTAssertTrue(TranslationService.hasRepetition(loop))
+    }
+
+    func testNormalLongTextNotFlagged() {
+        // 正常多样长文本（无周期重复）。
+        let text = """
+        会议讨论了三个议题：首先是项目进度，团队完成了百分之七十的开发工作；         其次是测试安排，下周进入集成测试阶段；最后是发布计划，预计月底交付首个版本。         各团队负责人确认了风险清单与应对方案，下周例会同步最新进展。
+        """
+        XCTAssertFalse(TranslationService.hasRepetition(text))
+    }
+}
+
+// MARK: 输入补零桶化（可配置）
+final class InputBucketingConfigTests: XCTestCase {
+
+    func testZeroDisables() {
+        UserDefaults.standard.set(0.0, forKey: "asrPadSeconds")
+        defer { UserDefaults.standard.removeObject(forKey: "asrPadSeconds") }
+        let samples: [Float] = [0.1, 0.2, 0.3]
+        XCTAssertTrue(InputBucketing.padded(samples).elementsEqual(samples),
+                      "0 = 禁用，原样返回")
+    }
+
+    func testCustomQuantum() {
+        UserDefaults.standard.set(1.0, forKey: "asrPadSeconds")   // 1s = 16000
+        defer { UserDefaults.standard.removeObject(forKey: "asrPadSeconds") }
+        let padded = InputBucketing.padded([Float](repeating: 0.1, count: 9_000))
+        XCTAssertEqual(padded.count, 16_000, "1s 桶补到 16000")
+    }
+}

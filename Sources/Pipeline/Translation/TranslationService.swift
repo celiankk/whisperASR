@@ -499,11 +499,16 @@ enum TranslationService {
         // 自定义翻译系统提示词（设置 → 翻译 → 系统提示词）为空时用默认指令。
         let customPrompt = (UserDefaults.standard.string(forKey: ConfigKeys.systemPrompt) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // 三铁律（无论默认/自定义模板都生效）：
+        // 1) 只输出一条最佳译文（禁止备选/注释/解释）；
+        // 2) 专名与品牌名保留原文不译；
+        // 3) 依据上下文与常识纠正 ASR 识别错误（容错下沉到 LLM 层）。
+        let ironRules = " Output ONLY one best translation per line — no alternatives, no parenthetical notes, no explanations. Keep proper nouns and brand names in the original language. Silently fix obvious ASR misrecognitions using context and common sense."
         let baseInstruction: String
         if customPrompt.isEmpty {
-            baseInstruction = "You are a translator for a live transcription. Translate each numbered line to \(languageName). If a line is already in \(languageName), output it unchanged."
+            baseInstruction = "You are a translator for a live transcription. Translate each numbered line to \(languageName). If a line is already in \(languageName), output it unchanged." + ironRules
         } else {
-            baseInstruction = customPrompt
+            baseInstruction = customPrompt + ironRules
         }
         let formatInstruction: String
         if segmentTexts.count > 1 {
@@ -513,12 +518,26 @@ enum TranslationService {
         }
         let systemContent = baseInstruction + formatInstruction + contextSection
 
+        // 上下文双路径：自定义模板含 {context} 占位符 → 历史嵌入 system
+        //（contextSection 已含）；否则历史转 user/assistant 交替多轮消息
+        //（对话形态 token 效率更高，LLM 指代消解更强）。
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": systemContent],
+        ]
+        if customPrompt.contains("{context}"), !previousTranslations.isEmpty {
+            // 占位符路径：contextSection 已在 system 内，无需多轮。
+        } else if !previousTranslations.isEmpty {
+            let history = previousTranslations.suffix(10)
+            for pair in history {
+                messages.append(["role": "user", "content": pair.original])
+                messages.append(["role": "assistant", "content": pair.translated])
+            }
+        }
+        messages.append(["role": "user", "content": numberedInput])
+
         var body: [String: Any] = [
             "model": effectiveModel,
-            "messages": [
-                ["role": "system", "content": systemContent],
-                ["role": "user", "content": numberedInput]
-            ],
+            "messages": messages,
             "temperature": temperature,
             "stream": stream
         ]
@@ -548,8 +567,26 @@ enum TranslationService {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = Self.extractContent(from: message) else {
+              let message = firstChoice["message"] as? [String: Any] else {
+            throw TranslationError.parseError
+        }
+        // #8 空 completion 诊断：有 tokens 消耗但内容空 = reasoning 烧光
+        // max_tokens 预算（思考模型常见），明确指路而非笼统 parseError。
+        if let content = Self.extractContent(from: message), !content.isEmpty {
+            // #7 复读机检测：长输出的周期性重复（小模型循环输出）。
+            if Self.hasRepetition(content) {
+                AppLogger.shared.log(.translation,
+                    "Repetition detected (\(content.count) chars) — possible model loop, treating as failure")
+                throw TranslationError.apiFailed("翻译模型输出重复循环，请重试或更换模型")
+            }
+        } else if let usage = json["usage"] as? [String: Any],
+                  let completionTokens = usage["completion_tokens"] as? Int,
+                  completionTokens > 0 {
+            AppLogger.shared.log(.translation,
+                "Empty translation but \(completionTokens) completion tokens — max_tokens likely consumed by reasoning; adjust thinking mode or increase max tokens")
+            throw TranslationError.apiFailed("译文为空：思考过程耗尽了输出预算（请调整思考模式或增大 max_tokens）")
+        }
+        guard let content = Self.extractContent(from: message) else {
             throw TranslationError.parseError
         }
 
@@ -558,6 +595,25 @@ enum TranslationService {
             return array
         }
         return Self.parseNumberedLines(content, count: segmentTexts.count)
+    }
+
+    /// 复读机检测：≥40 字输出中，8 字片段重复 ≥3 次 **且重复覆盖文本 ≥30%**
+    /// 才判循环输出（循环输出覆盖通常 >80%；正常文本偶现短语重复不达标）。
+    static func hasRepetition(_ text: String, minLength: Int = 40,
+                              chunkSize: Int = 8, repeats: Int = 3,
+                              coverageRatio: Double = 0.3) -> Bool {
+        let chars = Array(text)
+        guard chars.count >= minLength else { return false }
+        var counts: [String: Int] = [:]
+        for start in 0...(chars.count - chunkSize) {
+            let chunk = String(chars[start..<(start + chunkSize)])
+            counts[chunk, default: 0] += 1
+        }
+        let maxCount = counts.values.max() ?? 0
+        guard maxCount >= repeats else { return false }
+        // 覆盖率：该片段（非重叠）铺开占文本比例。
+        let coverage = Double(maxCount * chunkSize) / Double(chars.count)
+        return coverage >= coverageRatio
     }
 
     /// 翻译输入归一化：NFKC 兼容分解（全角→半角、上标/连字标准化）+ 首尾 trim。

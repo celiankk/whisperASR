@@ -239,6 +239,79 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    /// 语音密度：区间内能量高于阈值的帧占比（0–1）。
+    /// 噪声门用——整段密度 < 0.25（>75% 低置信块）时丢弃，不浪费 ASR 算力。
+    func speechDensity(from startIndex: Int, to endIndex: Int,
+                       frameSamples: Int, threshold: Float) -> Float {
+        pcmState.withLock { state in
+            let bufStart = max(0, startIndex - state.trimOffset)
+            let bufEnd = min(endIndex - state.trimOffset, state.buffer.count)
+            guard frameSamples > 0, bufEnd - bufStart >= frameSamples else { return 0 }
+            let frameCount = (bufEnd - bufStart) / frameSamples
+            guard frameCount > 0 else { return 0 }
+            var speechFrames = 0
+            for f in 0..<frameCount {
+                let s = bufStart + f * frameSamples
+                var sumSquares: Float = 0
+                for i in s..<(s + frameSamples) {
+                    let v = state.buffer[i]
+                    sumSquares += v * v
+                }
+                // 与主循环封口判定同源的联合 VAD。
+                let frame = state.buffer[s..<(s + frameSamples)]
+                let isSpeech = !VAD.isNonSpeech(
+                    rms: (sumSquares / Float(frameSamples)).squareRoot(),
+                    zcr: VAD.zeroCrossingRate(frame),
+                    silenceThreshold: threshold)
+                if isSpeech { speechFrames += 1 }
+            }
+            return Float(speechFrames) / Float(frameCount)
+        }
+    }
+
+    /// 最低能量切点（谷值回溯）：在区间后 70% 找帧 RMS 平滑（5 帧滑窗）
+    /// 最低点，且谷值 < 段均值 80% 才有效（切在自然停顿而非词中间）。
+    /// 返回绝对采样位置；无有效谷值返回 nil（调用方硬切兜底）。
+    func lowestEnergyCut(searchFrom startIndex: Int, searchTo endIndex: Int,
+                         frameSamples: Int) -> Int? {
+        pcmState.withLock { state in
+            let bufStart = max(0, startIndex - state.trimOffset)
+            let bufEnd = min(endIndex - state.trimOffset, state.buffer.count)
+            guard frameSamples > 0, bufEnd - bufStart >= frameSamples * 4 else { return nil }
+            let frameCount = (bufEnd - bufStart) / frameSamples
+            var frameRMS = [Float](repeating: 0, count: frameCount)
+            var mean: Float = 0
+            for f in 0..<frameCount {
+                let s = bufStart + f * frameSamples
+                var sumSquares: Float = 0
+                for i in s..<(s + frameSamples) {
+                    let v = state.buffer[i]
+                    sumSquares += v * v
+                }
+                frameRMS[f] = (sumSquares / Float(frameSamples)).squareRoot()
+                mean += frameRMS[f]
+            }
+            mean /= Float(frameCount)
+            // 5 帧滑窗平滑（去单帧噪声）。
+            let smoothed = (0..<frameCount).map { f -> Float in
+                let lo = max(0, f - 2), hi = min(frameCount - 1, f + 2)
+                var sum: Float = 0
+                for i in lo...hi { sum += frameRMS[i] }
+                return sum / Float(hi - lo + 1)
+            }
+            // 后 70% 区间找全局最低点（避免切得太靠前丢句首）。
+            let searchLo = frameCount * 3 / 10
+            var bestFrame = -1
+            var bestRMS: Float = .greatestFiniteMagnitude
+            for f in searchLo..<frameCount where smoothed[f] < bestRMS {
+                bestRMS = smoothed[f]
+                bestFrame = f
+            }
+            guard bestFrame >= 0, bestRMS < mean * 0.8 else { return nil }
+            return state.trimOffset + bufStart + bestFrame * frameSamples
+        }
+    }
+
     /// Clears the accumulated PCM sample buffer (called when recording ends).
     private func clearPCMBuffer() {
         pcmState.withLock { state in

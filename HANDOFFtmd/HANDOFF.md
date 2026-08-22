@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-22 10:20 CST（第 18 节为最新交接）
+- 交接时间：2026-08-23 02:00 CST（第 19 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -1743,3 +1743,69 @@ VAD 增强/下载校验/自动降级/基准测试/主题/菜单栏/上下文轮�
 FunASR 以 Provider 形态接入既有管线（非独立系统）：四模型目录/路由/UI/
 流式语义声明全通，runtime 占位报错；存量工作区先行清理提交。下一步
 sherpa-onnx 后端实现。
+
+---
+
+## 19. 第十一轮会话（2026-08-23 01:40–02:00）：sherpa-onnx 后端全链路接入（4 commit）
+
+按确认决策（B 方案自建 xcframework + 官方 C API）完成规格四 commit：
+
+### Commit `feat: add FunASR runtime backend interface`
+接口对齐规格签名（isAvailable / load(modelURL:) / transcribe(pcm:sampleRate:) /
+unload）；FunASRModelConfig（模型文件清单+完整性）；SherpaONNXRuntime 骨架。
+
+### Commit `feat: add sherpa onnx bridge`
+- **xcframework 构建**（本地 /tmp/sherpa-build，过程可复现）：
+  官方 release `v1.13.6 osx-arm64-static-no-tts-lib`（18MB 包，12 个 .a
+  自包含 onnxruntime）→ libtool 合并 82MB libSherpaONNX.a →
+  xcodebuild -create-xcframework + headers（c-api.h 经 jsdelivr CDN 取
+  v1.13.6 tag，167KB）+ module.modulemap（module SherpaONNX）；
+- Package.swift binaryTarget + 启动注册（WhisperASRApp onAppear 内，
+  `FunASRRuntimeRegistry.register(SherpaONNXRuntime())`）；
+- 启动日志验证 "SherpaONNX runtime available"，app 无符号缺失。
+
+### Commit `feat: integrate FunASR inference runtime (SenseVoice, Phase 1)`
+- **重要发现**：v1.13.6 的 c-api.h 是**新版驼峰 API**
+  （SherpaOnnxCreateOfflineRecognizer / AcceptWaveformOffline /
+  DecodeOfflineStream / GetOfflineStreamResult），与旧 snake_case 完全
+  不同——按新版重写桥接；
+- SherpaONNXRuntime 完整实现：SenseVoice 配置（model.int8.onnx +
+  tokens.txt + use_itn + 2 线程 cpu）、strdup C 字符串生命周期管理、
+  NSLock 串行化、时间戳透传；错误语义按规格第八节（runtime
+  unavailable / model load failed / inference failed，不静默不自动换）；
+- create 返回非 Optional（新版约定）——文件预检兜底路径错误。
+
+### Commit `test: verify FunASR realtime transcription runtime`
+- 模型就位：hf-mirror 下载 SenseVoice int8（228MB + tokens 308KB）至
+  catalog 目录（HF 直连不通，镜像可用——下载源设置已支持）；
+- **独立冒烟 PASS**：sherpa-onnx 1.13.6 / onnxruntime 1.27.1，
+  recognizer 创建 ✓ 推理路径 ✓（440Hz 正弦→"I." 合理）释放 ✓；
+- `Scripts/funasr-smoke.sh` 可复用冒烟工具；
+- catalog 修正：SenseVoice 源从 FunAudioLLM 原始仓（fp32）改为官方
+  int8 转换版 csukuangfj/sherpa-onnx-sense-voice-...（目录语义，
+  isComplete 检 model.int8.onnx）。
+
+### 踩坑记录（新坑 27）
+
+1. **heredoc 写 Swift 的 `\\(` 陷阱**：cat <<'SWIFT' 内容里插值写了
+   双反斜杠导致解析错位（报成 extra argument / T 推断失败等假错误）——
+   heredoc 后必须 grep 检查 `\\(`；
+2. **新版 C API 是驼峰**：网上资料多为旧 snake_case（sherpa_onnx_...），
+   以 xcframework 内 c-api.h 实际为准；
+3. **静态库冒烟需 -lc++**；**xcframework 生成需 DEVELOPER_DIR=/Applications/Xcode.app**
+   （xcodebuild 在 CommandLineTools 下不可用）；
+4. **raw.githubusercontent 直连失败**，jsdelivr CDN（cdn.jsdelivr.net/gh/
+   repo@tag/path）可用。
+
+### 待用户真机验证（Commit 4 测试 2/3）
+
+1. 实时：设置选 SenseVoice → 录制 → 字幕浮层出字（链路：AudioRecorder
+   → ASRManager chunk → 水位线（SenseVoice 声明无状态，不裁剪）→
+   FunASRProvider → SherpaONNXRuntime → SubtitleManager）；
+2. 文件：拖入中文音频 → 历史 items 出 SenseVoice 转录。
+
+### 下一步（Phase 2/3）
+
+- Paraformer-zh-streaming（OnlineRecognizer 流式接口 + isStreaming
+  语义已有水位线支持）；Paraformer-zh（时间戳）；Fun-ASR-Nano
+  （LLM 配置结构 c-api.h 已含 FunASRNanoModelConfig）。

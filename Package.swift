@@ -44,6 +44,13 @@ let package = Package(
                 .linkedFramework("Foundation"),
                 .linkedLibrary("c++"),
             ]
+        ),
+        // 纯逻辑单元测试（字幕断句/累积/去重/分割等，见 HANDOFF 坑 13——
+        // 此前项目没有任何测试；2026-08-22 会话补齐核心逻辑的回归保护）。
+        .testTarget(
+            name: "WhisperASRTests",
+            dependencies: ["WhisperASR"],
+            path: "Tests/WhisperASRTests"
         )
     ]
 )

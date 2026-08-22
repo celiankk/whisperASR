@@ -434,6 +434,9 @@ final class FloatingLetterOverlayHost {
     static let shared = FloatingLetterOverlayHost()
 
     private var viewModel: FloatingLetterViewModel?
+
+    /// 当前浮层 ViewModel（OBS 字幕窗共享同源渲染状态用）。
+    var activeViewModel: FloatingLetterViewModel? { viewModel }
     private var binder: FloatingLetterOverlayBinder?
 
     private init() {}

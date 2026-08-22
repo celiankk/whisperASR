@@ -652,12 +652,13 @@ final class FloatingLetterViewModel {
         sentenceDeduplicator.record(trimmed)
 
         // 显示原文，进入 Translating（不阻塞下一句）；清空上一句的译文区。
+        // 最短停留：上一句显示不满 1.5s 时延迟顶替（防跳变闪读）。
         recognitionText = trimmed
         translationText = nil
         showingTranslation = false
         translationRenderer.clear()
         subtitleState = .translating
-        renderText(trimmed)
+        renderSentenceWithMinDisplay(trimmed)
         // 记录本次翻译请求的句子：译文按此接收（Apple 引擎 partial 持续
         // 覆盖 recognitionText，不能用 recognitionText 校验译文归属）。
         streamingTranslationText = ""   // 新句子：重置流式译文累积
@@ -670,6 +671,31 @@ final class FloatingLetterViewModel {
     /// 流式译文增量（LLM streaming）：累积渲染逐字上屏。
     @ObservationIgnored private var streamingTranslationText = ""
     @ObservationIgnored private var lastStreamRenderDate = Date.distantPast
+    /// 句子最短停留：新句子替换显示后至少 1.5s 内不被下一句顶掉
+    ///（过快更新排队等待，防字幕跳变闪读）。打字增长不受限（同句追加）。
+    @ObservationIgnored private var sentenceShownAt = Date.distantPast
+    @ObservationIgnored private var pendingSentenceTask: Task<Void, Never>?
+    private static let minSentenceDisplay: TimeInterval = 1.5
+
+    /// 句子级渲染（最短停留调度）：不满 1.5s 的新句子排队，到点渲染；
+    /// 打字增长（同句追加）不受限。后到的句子顶掉排队中的前一句。
+    private func renderSentenceWithMinDisplay(_ text: String) {
+        pendingSentenceTask?.cancel()
+        let now = Date()
+        let elapsed = now.timeIntervalSince(sentenceShownAt)
+        guard elapsed < Self.minSentenceDisplay else {
+            sentenceShownAt = now
+            renderText(text)
+            return
+        }
+        let wait = Self.minSentenceDisplay - elapsed
+        pendingSentenceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard let self, !Task.isCancelled else { return }
+            self.sentenceShownAt = Date()
+            self.renderText(text)
+        }
+    }
 
     /// 流式翻译增量入口（桥接层注入的 delta 回调）。
     /// 首个增量即进入「译文生长」显示态（不等完整响应）。

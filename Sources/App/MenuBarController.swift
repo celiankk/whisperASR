@@ -36,6 +36,7 @@ final class MenuBarController: NSObject {
     /// 销毁正在显示的菜单是未定义行为 → 状态项图标消失）。
     private var recordItem: NSMenuItem?
     private var passthroughItem: NSMenuItem?
+    private var obsItem: NSMenuItem?
     private var engineItems: [(item: NSMenuItem, engine: ASREngineSelection)] = []
     private var asrLanguageItems: [(item: NSMenuItem, code: String)] = []
     private var targetLanguageItems: [(item: NSMenuItem, id: String)] = []
@@ -79,6 +80,14 @@ final class MenuBarController: NSObject {
         self.passthroughItem = passthrough
         menu.addItem(passthrough)
 
+        // OBS 纯净字幕窗（面向录制；与主浮层共享渲染状态）。
+        let obs = NSMenuItem(
+            title: L10n.t("menubar.obsWindow"),
+            action: #selector(toggleObsWindow), keyEquivalent: "")
+        obs.target = self
+        obsItem = obs
+        menu.addItem(obs)
+
         menu.addItem(.separator())
         let quit = NSMenuItem(title: L10n.t("menubar.quit"), action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
@@ -102,6 +111,10 @@ final class MenuBarController: NSObject {
         let recording = audioRecorder?.state == .recording || audioRecorder?.state == .saving
         recordItem?.title = recording ? L10n.t("menubar.record.stop") : L10n.t("menubar.record.start")
         passthroughItem?.isEnabled = FloatingLetterOverlayController.shared.isVisible
+        if let obsItem {
+            let base = obsItem.title.replacingOccurrences(of: " ✓", with: "")
+            obsItem.title = ObsSubtitleWindowController.shared.isVisible ? base + " ✓" : base
+        }
 
         let currentEngine = ASREngineSelection.current
         for (item, engine) in engineItems {
@@ -215,6 +228,14 @@ final class MenuBarController: NSObject {
 
     @objc private func togglePassthrough() {
         FloatingLetterOverlayController.shared.togglePassthroughFromMenu()
+    }
+
+    @objc private func toggleObsWindow() {
+        guard let viewModel = FloatingLetterOverlayHost.shared.activeViewModel else {
+            appState?.showToast("请先开始录制（OBS 窗需字幕浮层运行）")
+            return
+        }
+        ObsSubtitleWindowController.shared.toggle(viewModel: viewModel)
     }
 
     /// 识别语言子菜单：**每次打开时重建**（跟随所选服务变化）——

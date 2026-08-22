@@ -26,6 +26,7 @@ enum L10n {
         "menubar.engine.online": ("在线", "Online"),
         "menubar.engine.apple": ("Apple", "Apple"),
         "menubar.passthrough": ("字幕浮层鼠标穿透", "Subtitle Overlay Click-through"),
+        "menubar.obsWindow": ("OBS 字幕窗", "OBS Subtitle Window"),
         "menubar.asrLanguage": ("识别语言", "Recognition Language"),
         "menubar.asrLanguage.apple": ("由 Apple Speech 语言包决定", "Determined by Apple Speech language pack"),
         "menubar.translation": ("翻译语言", "Translation Language"),

@@ -109,6 +109,11 @@ final class FloatingLetterOverlayController: NSObject {
     private var lastSavedFrame: NSRect?
 
     var isVisible: Bool { panel.isVisible }
+
+    /// 浮窗 frame（可见时；分区条带判定用——NSRect 无私有类型问题）。
+    var visiblePanelFrame: NSRect? {
+        panel.isVisible ? panel.frame : nil
+    }
     /// 字幕浮层当前区域（选择弹窗判断“空白处返回”时排除浮层本身）。
     var overlayFrame: NSRect? { panel.isVisible ? panel.frame : nil }
 
@@ -461,6 +466,14 @@ final class FloatingLetterOverlayController: NSObject {
         viewModel?.registerInteraction()
     }
 
+    /// 光标是否在浮窗底部功能区条带（全局屏幕坐标）。
+    private static func isInControlsBand(point: NSPoint) -> Bool {
+        guard let frame = FloatingLetterOverlayController.shared.visiblePanelFrame else { return false }
+        let bandHeight: CGFloat = 44
+        return point.x >= frame.minX && point.x <= frame.maxX
+            && point.y >= frame.minY && point.y <= frame.minY + bandHeight
+    }
+
     /// 穿透模式停留检测：进入 3 秒 → 显示控制栏（临时可交互，仅控制层可点）；
     /// 离开 1.5 秒 → 隐藏控制栏并恢复穿透。
     private func handlePassthroughHover(inside: Bool) {
@@ -470,6 +483,13 @@ final class FloatingLetterOverlayController: NSObject {
 
         if inside {
             guard viewModel?.controlVisibility != .visible else { return }
+            // 分区快速呼出：光标位于底部功能区条带（~44pt）→ 立即呼出
+            /// 控制栏可交互（想操作的人直接把鼠标移到底部，无需等 3 秒）；
+            /// 停留在字幕主体 → 维持 3 秒停留判定。
+            if Self.isInControlsBand(point: NSEvent.mouseLocation) {
+                showPassthroughControls()
+                return
+            }
             passthroughHoverTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(3))
                 guard let self, let vm = self.viewModel,

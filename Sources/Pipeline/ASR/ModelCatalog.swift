@@ -122,16 +122,18 @@ enum ModelCatalog {
             approxBytes: 78_000_000
         ),
         // MARK: FunASR（sherpa-onnx ONNX 模型；runtime 后端接入中）
+        // SenseVoice：sherpa-onnx 官方 int8 转换版（目录含 model.int8.onnx
+        // + tokens.txt；Phase 1 已验证链路）。
         WhisperModelInfo(
             id: "sensevoice-small",
             displayName: "SenseVoice-Small",
-            detail: "FunASR 多语实时：中英日韩，低延迟（实时推荐）",
-            fileName: "sensevoice-small.onnx",
+            detail: "FunASR 多语实时：中英日韩粤，低延迟（实时推荐）",
+            fileName: "sense-voice-zh-en-ja-ko-yue",   // 目录语义
             source: .hfFolder(
-                repo: "FunAudioLLM/SenseVoiceSmall",
-                folder: "onnx"
+                repo: "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+                folder: "."
             ),
-            approxBytes: 900_000_000,
+            approxBytes: 230_000_000,
             engine: .funasr
         ),
         WhisperModelInfo(
@@ -194,8 +196,12 @@ enum ModelCatalog {
     static func isComplete(_ model: WhisperModelInfo) -> Bool {
         let base = path(for: model)
         switch model.engine {
-        case .whisper, .qwen3asr, .funasr:
+        case .whisper, .qwen3asr:
             return FileManager.default.fileExists(atPath: base.path)
+        case .funasr:
+            // 目录语义：目录存在且含主权重即视为完整（tokens 同目录约定）。
+            return FileManager.default.fileExists(
+                atPath: base.appendingPathComponent("model.int8.onnx").path)
         case .nemotron:
             let required = [
                 "metadata.json",

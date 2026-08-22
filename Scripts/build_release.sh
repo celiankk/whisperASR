@@ -154,6 +154,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>WhisperASR needs microphone access to record audio for transcription.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>WhisperASR needs speech recognition to transcribe audio with Apple Speech.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>WhisperASR needs to control other applications for screen recording.</string>
     <key>CFBundleURLTypes</key>

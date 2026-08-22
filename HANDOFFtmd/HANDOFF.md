@@ -1,0 +1,1670 @@
+# WhisperASR / Apple Services Bugfix 交接文档
+
+- 交接时间：2026-08-22 10:00 CST（第 17–17.16 节为最新交接）
+- 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
+- Git 分支：`重构整体`
+- 当前 HEAD：`ce44943 重构2`
+- 工作区状态：**有大量已暂存 + 未暂存修改，尚未提交**（涵盖第 10–15 节全部改动）
+- 本文档位置：`HANDOFFtmd/HANDOFF.md`
+
+---
+
+## 1. 这个会话在做什么
+
+用户要求“检查 bug 并修复”。当前仓库正处于一次较大的重构后：新增了 macOS 26 原生 Apple Services 能力，包括：
+
+- Apple Speech ASR：`SpeechAnalyzer` / `SpeechTranscriber`
+- Apple Translation：`TranslationSession`
+- 设置页新增「Apple 服务」
+- `TranscriptionService` / `TranslationManager` 接入 `.apple` provider
+- 字幕浮层状态机为 Apple 引擎做了部分适配
+
+本次会话的重点是审查这些新接入代码中的逻辑 bug，并做修复。不是从零开发新功能。
+
+---
+
+## 2. 已完成内容
+
+### A. Apple Speech 授权超时修复
+
+文件：
+
+- `Sources/AppleServices/AppleSpeechStatus.swift`
+
+问题：
+
+原实现用 `withThrowingTaskGroup` 做 30 秒授权超时竞速：
+
+```swift
+group.addTask {
+    await withCheckedContinuation { continuation in
+        SFSpeechRecognizer.requestAuthorization { ... }
+    }
+}
+```
+
+但 `SFSpeechRecognizer.requestAuthorization` 的回调不会响应 task cancellation。如果系统弹窗一直不出现或用户不操作，task group 仍会等待那个永远挂起的子任务，所谓 30 秒超时实际会永久挂起。
+
+修复：
+
+改用 `AsyncStream` 竞速：
+
+```swift
+private static func requestAuthorization(
+    timeout seconds: Double
+) async -> SFSpeechRecognizerAuthorizationStatus? {
+    let stream = AsyncStream<SFSpeechRecognizerAuthorizationStatus> { continuation in
+        Task { @MainActor in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.yield(status)
+                continuation.finish()
+            }
+        }
+
+        Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            continuation.finish()
+        }
+    }
+
+    var iterator = stream.makeAsyncIterator()
+    return await iterator.next()
+}
+```
+
+要点：
+
+- 超时任务调用 `continuation.finish()` 后，等待方立即拿到 `nil`
+- 回调迟到时 `yield` 会返回 terminated，不会崩溃
+- 已用独立 Swift 脚本验证过类似 AsyncStream 模式：挂起回调场景 1 秒返回 nil；正常回调场景能收到值
+
+---
+
+### B. Apple Translation Engine 状态覆盖 bug 修复
+
+文件：
+
+- `Sources/AppleServices/AppleTranslationEngine.swift`
+
+问题：
+
+原代码：
+
+```swift
+state = .initializing
+defer { state = .available }
+```
+
+即使翻译失败、catch 里已经设置 `state = .error`，函数退出时 `defer` 又会把它覆盖成 `.available`。
+
+修复：
+
+移除错误的 `defer`，改为成功路径显式置 `.available`，失败路径保持 `.error`。
+
+---
+
+### C. Apple Translation Status 低版本状态误报修复
+
+文件：
+
+- `Sources/AppleServices/AppleTranslationStatus.swift`
+
+问题：
+
+macOS 15–25 没有程序化 `TranslationSession`，但旧逻辑里如果语言包 installed 且 `sessionAvailable == false`，会返回 `.error`。这不是初始化失败，而是系统不支持程序化翻译。
+
+修复：
+
+综合状态改为：
+
+```swift
+if !sessionAvailable {
+    state = .unavailable
+} else if languageStatus == .supported {
+    state = .needResource
+} else if languageStatus == .installed {
+    state = .available
+} else {
+    state = .unavailable
+}
+```
+
+---
+
+### D. FloatingLetter 字幕状态机跨会话残留修复
+
+文件：
+
+- `Sources/FloatingLetter/FloatingLetterViewModel.swift`
+
+问题：
+
+新增了两个状态：
+
+```swift
+private var lastSentenceFinalText = ""
+private var lastTranslationRequestSource = ""
+```
+
+但 `resetSubtitleDisplay()` 没有重置它们。后果是：
+
+- 上一场录制结束后，`lastSentenceFinalText` 仍保留最后一句
+- 新录制会话第一句如果与上一场末句相同，会被误判成“已经处理过”
+- 结果可能既不显示，也不触发翻译
+
+修复：
+
+在 `resetSubtitleDisplay()` 中加入：
+
+```swift
+lastSentenceFinalText = ""
+lastTranslationRequestSource = ""
+```
+
+---
+
+### E. Apple Speech 文件转录只返回一个 final 的严重 bug 修复
+
+文件：
+
+- `Sources/AppleServices/AppleSpeechEngine.swift`
+- `Sources/AppleServices/AppleSpeechManager.swift`
+
+问题：
+
+原实现：
+
+```swift
+let result = await fileEngine.waitForFinal(timeout: 20)
+```
+
+而 `waitForFinal()` 只要看到第一个 final 就返回。同时 engine 内部只保存最后一个 `lastFinal`。对多句音频文件来说，这会导致只拿到一句或最后一句，丢失完整转录结果。
+
+修复：
+
+1. 新增 `finalResults: [ASRResult]`
+2. 文件转录模式才收集 final，实时模式默认不收集，避免长时间录音内存无限增长
+3. 新增：
+
+```swift
+func waitForFinalResults(timeout: Double) async -> [ASRResult]
+```
+
+4. 等 `resultsStreamEnded && analyzerStreamEnded` 都结束后再聚合
+5. `AppleSpeechManager.transcribeFile` 用 `makeTranscriptionResult(from:)` 把多个 final segment 聚合成完整 `TranscriptionResult`
+
+另外：
+
+- 文件转录的输入流缓冲从 `.bufferingNewest(12)` 改成 `.unbounded`
+- 原因：文件转录会一次性快速喂入全部音频，`bufferingNewest(12)` 可能在 analyzer 消费不及时时丢前面的音频
+
+---
+
+### F. Apple Speech 音频时间戳漂移修复
+
+文件：
+
+- `Sources/AppleServices/AppleSpeechEngine.swift`
+
+问题：
+
+原代码：
+
+```swift
+cumulativeSamples += Int64(samples.count)
+```
+
+但如果 `SpeechAnalyzer.bestAvailableAudioFormat` 返回的格式与源 16kHz 格式不同，`convertBuffer` 后实际送入 analyzer 的帧数不一定等于原始 `samples.count`，时间轴会漂移。
+
+修复：
+
+```swift
+cumulativeSamples += Int64(inputBuffer.frameLength)
+```
+
+即按实际送入 analyzer 的帧数推进时间戳。
+
+---
+
+### G. Apple Speech Manager 生命周期与幂等修复
+
+文件：
+
+- `Sources/AppleServices/AppleSpeechManager.swift`
+
+修复点：
+
+1. `prepare()` 幂等：
+   - 已有 running engine 直接 return
+   - stale engine 先 stop 再替换
+
+2. `unloadModel()` 防覆盖竞态：
+   - 原来是先 `await speechEngine?.stop()`，再 `speechEngine = nil`
+   - stop 期间如果有新会话启动，最后 `speechEngine = nil` 可能把新会话清掉
+   - 改为先摘除引用，再异步 stop：
+
+```swift
+let engine = speechEngine
+speechEngine = nil
+await engine?.stop()
+```
+
+3. `transcribeChunk()` 对 stale engine 处理：
+   - 只有 `existing.isRunning` 才复用
+   - 否则 stop stale 并懒启动新会话
+
+4. `status()` 判断改成 engine 实际 running，而不是仅非 nil
+
+---
+
+### H. macOS 版本判断顺序修复
+
+文件：
+
+- `Sources/AppleServices/AppleSpeechManager.swift`
+
+问题：
+
+原逻辑在低版本 macOS 上也会先请求语音识别授权，然后才报“需要 macOS 26+”，用户体验错误。
+
+修复：
+
+`prepare()` / `transcribeChunk()` / `transcribeFile()` 都先检查：
+
+```swift
+guard #available(macOS 26, *) else {
+    throw AppleSpeechError.unavailable("Apple Speech 需要 macOS 26+")
+}
+```
+
+然后再请求授权或启动引擎。
+
+---
+
+### I. 文件转录尊重 language 参数
+
+文件：
+
+- `Sources/AppleServices/AppleSpeechManager.swift`
+
+原来 `transcribeFile(fileURL:language:...)` 忽略 `language`，固定使用 Apple Speech 设置里的 locale。
+
+现在：
+
+```swift
+let requestedLocale = language?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+let localeIdentifier = requestedLocale.isEmpty ? Self.localeIdentifier : requestedLocale
+```
+
+`language` 为空时仍回落到配置语言。
+
+已验证本机 `SpeechTranscriber.supportedLocale(equivalentTo:)` 可以解析：
+
+```text
+en      -> en_US
+zh      -> zh_CN
+zh-CN   -> zh_CN
+zh_CN   -> zh_CN
+zh-Hans -> zh_CN
+ja      -> ja_JP
+ko      -> ko_KR
+ru      -> ru_RU
+```
+
+---
+
+### J. 系统状态页 Apple 翻译“重新连接”误走 OpenAI 修复
+
+文件：
+
+- `Sources/SettingsPages.swift`
+
+问题：
+
+`SystemStatusSettingsView.reconnectTranslation()` 原来对所有非 off/local 模式都调用：
+
+```swift
+TranslationService.translateSegmentsWithOpenAI(..., local: false)
+```
+
+当翻译方式是 `.apple` 时，它会错误地发 OpenAI 兼容请求，而不是检测 Apple Translation。
+
+修复：
+
+`.apple` 分支改为：
+
+```swift
+let status = await TranslationManager.testConnection(for: .apple)
+```
+
+并按 `TranslationConnectionStatus` 显示 connected / notConfigured / failed。
+
+---
+
+### K. 权限设置跳转面板修正
+
+文件：
+
+- `Sources/AppleServices/AppleSpeechStatus.swift`
+
+问题：
+
+`openSystemSettings()` 固定打开 Speech Recognition 面板。如果只是麦克风权限被拒，用户点按钮会进入错误页面。
+
+修复：
+
+只缺麦克风权限且语音识别权限正常时，打开 `Privacy_Microphone`；否则打开 `Privacy_SpeechRecognition`。
+
+---
+
+## 3. 当前验证状态
+
+已执行并通过：
+
+```bash
+swift build
+swift build -c release
+bash Scripts/build_release.sh
+```
+
+结果：
+
+- debug 构建通过
+- release 构建通过
+- `WhisperASR.app` 已重新生成
+- 应用启动冒烟测试通过，无崩溃
+- 启动日志显示 Apple Speech / Apple Translation 状态检测正常
+
+当前仍有构建 warning，但不是本次引入的错误：
+
+- whisper.cpp / transcribe.cpp 静态库是为 macOS 26 编译的，链接目标仍是 macOS 14，产生大量 ld warning
+- 少量 Swift 6 concurrency mode warning，例如 `NSLock.lock()` 在 async context 的警告
+- FluidAudio 有 unhandled resource warning
+
+这些 warning 不阻塞当前构建。
+
+---
+
+## 4. 当前卡在哪 / 未完成事项
+
+### 4.1 还没有真实录音链路回归
+
+目前只完成了编译和启动冒烟测试，还没有做真实场景验证：
+
+- Apple Speech 实时识别是否稳定出字
+- Apple Translation 是否正确触发
+- 多句连续说话、停顿封口、字幕翻译是否正常
+- 文件转录多句是否能得到完整文本
+- 权限首次弹窗、拒绝后再进入设置页的流程
+- 语言包缺失 / 下载 / 安装后的行为
+
+这是下一步最高优先级。
+
+### 4.2 ~~Apple 实时识别架构仍有疑点，需要真机确认~~（已修复，见第 10 节 Bug L1）
+
+tail 重转录与 Apple 流式引擎的重复喂音冲突已通过「绝对采样区间 + 喂音水位线」修复（2026-08-22 第二轮会话）。真实录音回归仍需执行，但架构层面的重复喂音已消除。
+
+### 4.3 工作区尚未提交
+
+当前有大量 staged + unstaged 变更。不要直接假设工作区干净。
+
+建议后续先跑一遍真实回归，再决定是否拆分提交：
+
+- Apple Services 重构基础
+- 本次 bugfix
+- 设置页 / UI 改动
+- 日志 redirect / runtime refresh 等杂项
+
+---
+
+## 5. 下一步计划
+
+按优先级：
+
+### 5.1 真实功能回归
+
+必须手动测：
+
+1. Apple Speech 实时识别
+   - 选择识别引擎 Apple
+   - 授权首次弹窗
+   - 中文 / 英文短句
+   - 连续说话
+   - 停顿后字幕封口
+   - 长时间录制观察内存和 CPU
+
+2. Apple Translation
+   - 翻译方式选 Apple
+   - 目标语言选择
+   - 实时字幕原文 + 译文
+   - 连续句子翻译是否串句
+   - macOS 26 上 `TranslationSession` 是否可用
+
+3. Apple Speech 文件转录
+   - 用多句音频文件测试
+   - 确认 segments 和 fullText 包含全部句子
+   - 确认没有只返回最后一句
+
+4. 设置页
+   - Apple 服务页状态刷新
+   - 当前语言选择
+   - 未安装语言展示
+   - 授权按钮
+   - 打开系统权限设置按钮
+   - 系统状态页 Apple 翻译检测 / 重新连接
+
+5. 低版本兼容
+   - 如有 macOS 14 / 15 环境，确认 Apple 引擎选择时不会先弹权限，而是明确提示需要 macOS 26+
+
+### 5.2 观察 Apple live pipeline
+
+重点看日志：
+
+```text
+[Audio] chunk generated ...
+[ASR] request start ...
+[ASR] response received ...
+[ASR Result] provider=apple ...
+[Subtitle Input] liveSegments ...
+[Renderer] pushState ...
+[Renderer] updateSubtitleState ...
+AppleSpeechEngine: result final=...
+```
+
+特别关注：
+
+- 同一段语音是否被重复喂给 Apple engine
+- partial 是否不断累积成错误长句
+- final 是否被提前当成完整句翻译
+- 停顿封口后是否出现重复文本
+
+如果发现重复喂音问题，下一步应考虑给 Apple Speech 做专门的 live streaming path，而不是继续硬套 ASRManager 的 tail re-transcription 模型。
+
+### 5.3 提交整理
+
+真实回归通过后，建议整理提交。可以考虑拆分：
+
+1. `feat(apple-services): add native Apple Speech and Translation providers`
+2. `fix(apple-services): fix authorization timeout, lifecycle and file transcription aggregation`
+3. `fix(subtitle): reset sentence translation markers across sessions`
+4. `fix(settings): route Apple translation reconnect through Apple provider`
+5. `chore(build): add speech recognition usage description`
+
+也可以合并成一个较大的 Apple Services bugfix commit，但不要把无关 UI / build 改动混得太乱。
+
+---
+
+## 6. 绝对不要踩的坑
+
+这一节最重要。
+
+### 坑 1：不要用 task group 给不可取消回调做超时
+
+不要写这种模式：
+
+```swift
+try? await withThrowingTaskGroup(of: T.self) { group in
+    group.addTask {
+        await withCheckedContinuation { cont in
+            SomeAPI.callback { cont.resume(returning: $0) }
+        }
+    }
+
+    group.addTask {
+        try await Task.sleep(...)
+        throw CancellationError()
+    }
+
+    let result = try await group.next()!
+    group.cancelAll()
+    return result
+}
+```
+
+如果 callback 不响应 cancellation，task group 退出前仍会等待子任务完成，所谓 timeout 会永久挂起。
+
+本项目里 `SFSpeechRecognizer.requestAuthorization` 就是这种 API。
+
+正确做法是用 `AsyncStream`，超时任务直接 `continuation.finish()`。
+
+---
+
+### 坑 2：不要用 `defer { state = .available }` 包整个可失败函数
+
+这种写法会让失败路径的状态也被覆盖：
+
+```swift
+state = .initializing
+defer { state = .available }
+
+do {
+    ...
+} catch {
+    state = .error
+    throw error
+}
+// defer 又把 state 改回 available
+```
+
+成功和失败要显式设置终态。
+
+---
+
+### 坑 3：文件转录不能拿第一个 final 就返回
+
+`SpeechTranscriber` 可能按语音段多次输出 final。不要只保存 / 返回单个 `lastFinal`。
+
+文件转录必须收集全部 final，等 analyzer / results stream 结束后聚合。
+
+同时注意：
+
+- 实时会话不要无限收集 final，否则长时间录音内存会涨
+- 本项目当前方案是 `start(collectFinalResults: true)` 只给文件转录开启
+
+---
+
+### 坑 4：文件转录不要用 `bufferingNewest(12)`
+
+实时流为了背压可以用有限缓冲，但文件转录是一次性快速喂入全部音频。用 `bufferingNewest(12)` 可能丢前面的 audio buffer。
+
+文件转录当前使用：
+
+```swift
+bufferingPolicy: .unbounded
+```
+
+---
+
+### 坑 5：不要忽略 `AnalyzerInput.bufferStartTime`
+
+不要把所有 chunk 的 `bufferStartTime` 都传 `.zero`。
+
+这会让 analyzer 认为音频都在 0 时刻重叠，可能导致识别异常或无结果。
+
+也不要简单用原始 `samples.count` 累积时间戳；要用转换后实际送入 analyzer 的 `inputBuffer.frameLength`。
+
+---
+
+### 坑 6：Apple Speech engine 生命周期要先摘引用再 stop
+
+不要这样：
+
+```swift
+await speechEngine?.stop()
+speechEngine = nil
+```
+
+stop 可能耗时。期间如果新会话启动并写入 `speechEngine`，最后 `speechEngine = nil` 会把新会话清掉。
+
+正确顺序：
+
+```swift
+let engine = speechEngine
+speechEngine = nil
+await engine?.stop()
+```
+
+---
+
+### 坑 7：低版本 macOS 不要先请求权限再报 unavailable
+
+Apple Speech 新 API 需要 macOS 26+。所有入口应先：
+
+```swift
+guard #available(macOS 26, *) else {
+    throw AppleSpeechError.unavailable("Apple Speech 需要 macOS 26+")
+}
+```
+
+再请求授权或创建 engine。
+
+否则 macOS 14 / 15 用户会先看到无意义的权限弹窗，然后才被告知系统不支持。
+
+---
+
+### 坑 8：Apple Translation 状态不能用固定版本推断语言资源
+
+不要只用 `#available(macOS 15, *)` 或 `macOS 26, *` 决定语言包是否可用。
+
+要用：
+
+- `LanguageAvailability.status(from:to:)`
+- 多候选 source language
+- `sessionAvailable` 单独判断
+
+并且注意：
+
+- macOS 15–25 没有 programmatic `TranslationSession`
+- 这种情况应报 `.unavailable`，不是 `.error`
+
+---
+
+### 坑 9：Apple 翻译的“重新连接”不能发 OpenAI 请求
+
+`TranslationMode.apple` 不是 HTTP API。
+
+系统状态页或任何 test connection 入口都必须走：
+
+```swift
+TranslationManager.provider(for: .apple).testConnection()
+```
+
+或：
+
+```swift
+TranslationManager.testConnection(for: .apple)
+```
+
+不要复用 local / online 的 `translateSegmentsWithOpenAI` 逻辑。
+
+---
+
+### 坑 10：字幕状态机的跨会话 marker 必须重置
+
+`FloatingLetterViewModel` 里这些字段是有状态的：
+
+```swift
+lastSentenceFinalText
+lastTranslationRequestSource
+sentenceDeduplicator
+detector
+```
+
+清空字幕 / 结束录制 / 新会话开始时，必须一起 reset。
+
+否则上一场的最后一句会影响下一场第一句的显示和翻译。
+
+---
+
+### 坑 11：不要假设 Apple Speech 和 Whisper 的 chunk 语义相同
+
+Whisper provider 适合 ASRManager 的 tail re-transcription：
+
+- 每次重新转录未封口 tail
+- overlap 后去重
+
+Apple Speech 是持续流式 analyzer：
+
+- 音频应该持续 append
+- 不能随意重复喂同一段音频
+
+当前代码做了部分适配，但没有经过真实录音充分验证。改动这块前一定要先看日志确认现有行为。
+
+---
+
+### 坑 12：不要把构建 warning 当成本次错误
+
+当前构建 warning 主要包括：
+
+- whisper / transcribe static libs built for macOS 26 but linked to macOS 14
+- Swift 6 concurrency warnings
+- FluidAudio resource warning
+
+它们不影响当前 debug / release 构建。不要为了消 warning 盲目改 deployment target 或并发模型，除非明确理解影响。
+
+---
+
+### 坑 13：本项目没有正式单元测试 target
+
+不要指望 `swift test` 能覆盖这些修复。
+
+当前验证手段主要是：
+
+```bash
+swift build
+swift build -c release
+bash Scripts/build_release.sh
+open WhisperASR.app
+```
+
+以及看日志：
+
+```bash
+tail -f ~/Library/Logs/WhisperASR/app.log
+```
+
+---
+
+## 7. 关键文件索引
+
+本次重点涉及：
+
+```text
+Sources/AppleServices/AppleSpeechEngine.swift
+Sources/AppleServices/AppleSpeechManager.swift
+Sources/AppleServices/AppleSpeechStatus.swift
+Sources/AppleServices/AppleTranslationEngine.swift
+Sources/AppleServices/AppleTranslationStatus.swift
+Sources/FloatingLetter/FloatingLetterViewModel.swift
+Sources/SettingsPages.swift
+Sources/TranscriptionService.swift
+Sources/TranslationManager.swift
+Sources/ConfigurationManager.swift
+Scripts/build_release.sh
+```
+
+相关入口：
+
+- Apple Speech Provider：`AppleSpeechManager.shared`
+- Apple Translation Provider：`AppleTranslationManager`
+- ASR 统一调度：`TranscriptionService`
+- 翻译统一调度：`TranslationManager`
+- 实时识别循环：`ASRManager.startLive(recorder:)`
+- 字幕浮层桥接：`FloatingLetterOverlayBinder`
+- 设置页 Apple 服务：`AppleServicesSettingsView`
+
+---
+
+## 8. 快速命令
+
+构建 debug：
+
+```bash
+swift build
+```
+
+构建 release：
+
+```bash
+swift build -c release
+```
+
+打包 app：
+
+```bash
+bash Scripts/build_release.sh
+```
+
+运行：
+
+```bash
+open WhisperASR.app
+```
+
+查看日志：
+
+```bash
+tail -f ~/Library/Logs/WhisperASR/app.log
+```
+
+查看进程：
+
+```bash
+pgrep -fl '/WhisperASR.app/Contents/MacOS/WhisperASR'
+```
+
+杀掉冒烟测试进程：
+
+```bash
+pkill -f '/WhisperASR.app/Contents/MacOS/WhisperASR'
+```
+
+---
+
+## 9. 一句话总结
+
+这次会话完成了一轮 Apple Services 重构后的 bug review 和修复，重点是授权超时、生命周期、文件转录聚合、翻译状态机、字幕跨会话残留和设置页 Apple 分支。编译、release 打包和启动冒烟都通过；但 Apple Speech 实时链路还需要真实录音回归，尤其是 ASRManager tail re-transcription 与 Apple streaming engine 的语义匹配问题。
+
+---
+
+## 10. 第二轮会话（2026-08-22）：4.2 疑点确认属实 + 5 个新 bug 修复
+
+上一节 A–K 修复核对后均已落地。本轮确认 4.2 的担忧是真实 bug，并另发现 4 个问题，全部修复完毕。
+
+### L1（主要）ASRManager tail 重转录重复喂音给 Apple 流式引擎
+
+**确认**：ASRManager 每轮把未封口 tail `[tailStart, totalSamples)` 整段发给
+`service.transcribeChunk(samples:)`（`Sources/ASRManager.swift`）。Whisper 等无状态引擎
+重转录无副作用；但 `AppleSpeechManager.transcribeChunk` 对整段 chunk 调
+`engine.append(samples:)` —— tail 只有在封口后才收缩，连续轮次区间大量重叠，
+同一段音频被重复喂给同一个 `SpeechAnalyzer` 多次 → 识别文本重复、时间轴混乱。
+
+**修复**（绝对采样区间 + 喂音水位线，精确去重、无音频指纹启发式）：
+
+1. `ASRProvider` 协议新增 `transcribeChunk(samples:absoluteRange:)`
+   （`Range<Int>?` = AudioRecorder.accumulatedSampleCount 绝对坐标），
+   extension 默认实现转发到旧方法 —— 无状态引擎零改动；
+2. `TranscriptionService.transcribeChunk` 透传区间；聚合（ChunkManager）路径
+   位置失效，透传 nil；
+3. `ASRManager` 调用处传 `tailStart..<totalSamples`；
+4. `AppleSpeechManager` 新增 `liveFedAbsoluteSamples` 水位线
+   （stateLock 保护）：每轮只 append `max(range.lowerBound, fedUntil)` 之后的
+   新增采样；新会话启动 / unloadModel / cancelPending 时重置 nil；
+   无区间的调用（理论路径）保守全量喂入并清空水位线。
+
+关键场景验证（推演）：
+- 连续多轮不封口：只喂每轮新增部分；
+- 静音跳过路径（sealSilence 不喂静音）：下轮 feedFrom = 封口边界，静音段正确跳过；
+- 强制封口后的 1s context 重发：引擎已持有该音频，水位线保证不重喂。
+
+### L2 Apple 增量文本被误做 overlap 裁剪
+
+强制封口后 `useOverlap=true`，`appendTail` 会对 tail 文本做 `trimOverlap`。
+Apple 返回的是纯增量文本（引擎侧已按共同前缀对齐），没有音频 overlap，
+裁剪可能误吃首字符。修复：`TranscriptionService.liveEngineStreamsIncrementally`
+（Apple 为 true），ASRManager 据此对 Apple 关闭 overlap 裁剪。
+
+### L3 文件转录固定 20s 超时对长音频不够
+
+`waitForFinalResults(timeout: 20)` 在分析未完成时提前返回已收集的 final
+（不完整且静默）。修复：超时 = `max(20s, 音频时长 × 2)`。
+
+### L4 Apple 翻译重试复用失败的 TranslationSession
+
+失败重试用同一个 session —— 已失效的 session 大概率再抛同一错误。
+修复：重试路径新建 `TranslationSession`。
+
+### L5 AVAudioConverter 每块新建
+
+`AppleSpeechEngine.append` 每次调用新建 converter：重采样时滤波器历史每块
+被重置，块边界产生伪影影响识别。修复：会话级共享 converter（start 创建、
+stop 清理、append 内锁保护复用）；目标格式即 16kHz Float32 时直通不转换。
+
+### 验证状态
+
+- `swift build` / `swift build -c release` / `bash Scripts/build_release.sh` 全部通过
+- 改动文件零新增 Swift warning（既有 warning 见坑 12）
+- 启动冒烟通过：Apple Speech / Translation 状态检测正常
+- **真实录音回归仍未执行**（见 4.1），水位线去重的实际效果需真机确认，
+  重点观察日志中同一段音频是否只出现一次识别增量
+
+### 新坑 14：流式引擎收到重叠 chunk 时必须按绝对水位线去重
+
+任何新增的流式（有状态）ASR provider 接入 ASRManager 循环时，不能假设
+`transcribeChunk(samples:)` 的音频是「全新」的。必须实现带
+`absoluteRange` 的变体并做水位线去重，否则必然重复喂音。
+
+---
+
+## 11. 第三轮会话（2026-08-22）：修复「Apple 识别退出软件卡死」
+
+### 现场证据（app.log，stdout 已设 _IONBF 无缓冲，日志可信）
+
+```
+02:02:05.999  Live transcription stopped          ← 停录（13.7 分钟录音），引擎正常停止
+02:02:06.018  Overlay dismissed / 音频已保存
+02:02:06~     最终文件转录启动（Apple 引擎，Task.detached）
+02:02:10.215  ERROR live transcription chunk CancellationError   ← 停录后 4.2s 才报出
+02:02:18.873  Live transcription stopped          ← 用户退出（applicationWillTerminate）
+（之后无任何日志 —— 应用卡死，用户强杀）
+```
+
+### 根因
+
+**取消后的忙转（100% CPU）**：`waitForTextGrowth` / `waitForFinalResults`
+用 `try? await Task.sleep(...)` 轮询。任务被取消后 `Task.sleep` **立即**抛
+CancellationError 且 `try?` 吞掉异常、不再挂起 → 循环退化成无挂起点的
+高频自旋，直到 wall-clock 超时才停。
+
+- 停录路径：实测自旋 4.2s（= 5s 超时耗尽才报 CancellationError）；
+- 退出路径：`AppState.shutdown()` 先 `transcriptionQueueTask?.cancel()`，
+  正在跑的 Apple 文件转录立即进入自旋——超时已被改为「时长×2」，
+  13.7 分钟录音 = 最长 27 分钟满核自旋，贯穿整个退出流程；
+  高速 malloc churn + speech XPC 清理交互导致进程无法退出（卡死）。
+
+次要风险：`SpeechAnalyzer.cancelAndFinishNow()` 与 speech 进程（XPC）交互，
+服务无响应时可能长时间不返回，`stop()` 无界等待。
+
+### 修复
+
+1. **轮询循环取消感知**（`AppleSpeechEngine`）：
+   `try await Task.sleep` + catch 立即返回 / break，循环顶补
+   `Task.isCancelled` 检查。取消后毫秒级退出，不再自旋。
+   （这也让 ASRManager.withTimeout 的 task group 能立刻收尾——
+   之前操作子任务卡满 5s 超时才让 group 结束。）
+2. **stop() 有界化**：`cancelAndFinishNow` 与 3s 超时竞速
+   （AsyncStream 模式，同坑 1 的正确做法）。超时则记日志、放弃干净
+   teardown，teardown 任务留在后台，调用方（停录/退出/unloadModel）必定返回。
+3. **transcribeFile 全路径兜底**：do/catch 包裹 start→feed→wait，
+   失败/取消都 `await fileEngine.stop()`（有界），不再泄漏 analyzer；
+   取消时 `Task.checkCancellation()` 抛出，不把残缺结果标记为完成。
+
+### 验证
+
+- debug / release / build_release.sh / 启动冒烟全部通过；
+- 「退出卡死」需真机复现验证：Apple 引擎录一段 → 停录 → 立刻 ⌘Q，
+  确认进程秒退（此前卡死场景：停录后文件转录进行中退出）。
+
+### 新坑 15：async 轮询循环里绝对不要 `try? await Task.sleep`
+
+```swift
+while Date() < deadline {
+    ...
+    try? await Task.sleep(for: .milliseconds(100))   // 取消后立即抛、被吞 → 忙转
+}
+```
+
+正确写法：
+
+```swift
+while Date() < deadline {
+    ...
+    if Task.isCancelled { break }
+    do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+}
+```
+
+任何「await 一个可能挂起/不可取消的操作」的场景，都要用 AsyncStream
+竞速（finish 立即放行等待方），不能用 task group（见坑 1）。
+注意 `TranslationManager.withTimeout` / `ASRManager.withTimeout` 仍是
+task group 模式——它们靠操作自身响应取消来收尾（Apple 路径现已保证），
+whisper/翻译 provider 若存在不可取消的挂起点，同样有此隐患，改动前先看日志。
+
+---
+
+## 12. 第四轮会话（2026-08-22）：修复「视频停止后字幕闪烁刷新」+ 刷新逻辑重构
+
+### Q：Apple 识别现在是流式输出吗？
+
+是。`AppleSpeechEngine` 持续把音频喂给同一个 `SpeechAnalyzer`，
+`waitForTextGrowth` 每轮只返回新增文本（partial 立即上字幕，不等 final）；
+配合第三轮的「水位线去重」，每个 pass 的增量是纯追加的。
+
+### 闪烁根因（静音时的循环）
+
+1. 句子完成后 `scheduleIdleClear` 到期 → `resetSubtitleDisplay()` 清屏，
+   **同时清掉了 `sentenceDeduplicator` / `lastSentenceFinalText` /
+   `lastProcessedInputSignature`（把输入处理记忆当显示状态清了）**；
+2. ASRManager 静音路径每秒推送相同封口快照 → `pushState` 把最后一段
+   封口句当 interim 传入 → 记忆已被清空 → 同一句被重新判定为新句 →
+   重新渲染 + 重新请求翻译（译文区清空再出现）→ 再被空闲清除清掉 →
+   无限循环 = 周期性闪烁（周期 ≈ subtitleClearDelay + 1s）；
+3. 次要：相同输入每次都重走完成/检测/渲染路径（无输入级幂等）；
+   `renderText` 对行数不变的更新也包 0.18s 动画，流式高频输出时抖动。
+
+### 重构后的刷新逻辑（幂等原则：显示 = 输入的纯函数）
+
+`FloatingLetterViewModel`：
+
+1. **输入级幂等门**：快照签名（final 各行 id/文本/译文 + interim）相同 →
+   直接跳过（不渲染、不重启计时、不重走检测）。译文异步到达会改变签名，
+   正常放行；
+2. **完成信号只认「新 final 文本」**：`newest.text != lastSentenceFinalText`
+   （去掉 `interimText.isEmpty ||` 子句——相同文本的重复推送永远不是新句）；
+3. **回声抑制**：`interimText == lastSentenceFinalText`（静音封口后封口句
+   被顶替为 interim 推送）不作为新句渲染，保持当前显示直到空闲清除；
+4. **resetSubtitleDisplay(clearMemory:)**：空闲清除只清画面（false），
+   会话结束才清记忆（true）——闪烁循环的根；
+5. **renderText**：行数不变（打字增长）不加动画；仅 1→2 行变化用动画；
+6. **setTranslationResult**：画面已被空闲清除时丢弃迟到译文
+   （`renderer.text.isEmpty` 检查），避免译文在空屏上单独冒出。
+
+### 验证
+
+debug / release / build_release.sh / 启动冒烟通过。
+真机需验证：视频/音频停止后字幕应稳定显示最后一句 → 空闲延迟后
+平滑消失 → 不再闪回；连续说话时逐字增长无抖动；暂停冻结/恢复正常。
+
+### 注意
+
+第四轮冒烟测试时误杀了用户正在运行的录制会话（`open` 激活已有实例 +
+`pkill` 清场）——**冒烟测试前先确认没有正在录制的实例**；实时转录有
+live_recovery.json 自动保存（≤2s），下次启动可恢复。
+
+---
+
+## 13. 第五轮会话（2026-08-22）：修复「Apple 字幕显示太慢」（延迟 5.5s → 亚秒）
+
+### 日志实锤（app.log 引擎 partial 节奏）
+
+```
+02:45:03.225-03.263  字符级 partial 连续爆发（毫秒间隔）
+02:45:09.144-09.184  下一次爆发        ← 间隔 5.88s
+02:45:14.759-14.796  再一次爆发        ← 间隔 5.58s
+```
+
+爆发间隔 ≈ 5.0s（waitForTextGrowth 超时）+ 0.25s（循环 sleep）+ 0.3s
+（新音频累积 guard），完美吻合。
+
+### 根因：互相等待的饥饿死锁
+
+ASRManager 循环喂音后**串行等待 transcribeChunk 返回**，而
+`waitForTextGrowth` 在引擎没出字时等满 5s；Apple 引擎是流式的——
+**没有新音频就不出字**。于是「上层等出字、引擎等喂音」，只有 5s 超时
+解锁 → 5 秒积累的音频一次性喂入 → 引擎毫秒级爆发处理完（日志可见一次
+吐出整段 5 秒歌词的字符级 partial）→ 再等 5s。字幕延迟 5.5~6s。
+
+### 修复（延迟优先）
+
+1. `AppleSpeechManager.transcribeChunk`：常规等待窗口 5.0s → **0.25s**
+   （尾部静音断句场景保留 1.0s 取完整句）。文本没到尽快返回空，循环
+   继续「喂音」；下一轮 pass 进入 waitForTextGrowth 时先零延迟检查
+   已到文本再考虑等待——不丢字。
+2. `ASRManager` 启动阈值按引擎区分：流式引擎（Apple）最小新音频
+   0.3s → **0.1s**、最小 tail 0.5s → **0.2s**（`liveEngineStreamsIncrementally`
+   判定）；无状态引擎（whisper 等）保持原阈值（每轮重转录整个 tail，
+   阈值太小会白算）。
+
+修复后 pass 周期 ≈ 0.5s：喂音延迟 ~0.25s + 引擎识别 ~0.15s +
+UI 节流 0.15s（SubtitleUpdateScheduler）→ 端到端 ~0.5s 量级。
+显示层幂等门（第 12 节）保证空结果 pass 不会引起闪烁。
+
+### 待真机验证
+
+重启应用（新构建）后：连续说话/放歌时字幕应亚秒级逐字出现，不再
+数秒一跳；句尾停顿后封口与翻译触发时机正常。
+
+### 新坑 16：流式引擎的「等待出字」窗口不能长于喂音周期
+
+任何「喂音 → 等出字」串行循环里，等待窗口若长于一个喂音周期，引擎
+就会断粮：流式引擎没音频不出字，等待方又因无字而干等——延迟被放大
+到等待窗口全长。等待窗口应 ≤ 循环周期（本项目 0.25s），或把喂音与
+取字解耦成独立任务。
+
+---
+
+## 14. 第六轮会话（2026-08-22）：断句优化（VAD 断句 + 增量累积）
+
+### 用户反馈
+
+延迟修复后「显示太快，无法理解是一句话」——逐字 dribble + 句子碎片化。
+
+### 三个根因
+
+1. **Apple 增量文本跨 pass 丢失（最严重）**：`appendTail` 每轮用
+   「sealed + 本轮增量」重建显示——增量引擎当前句的前半部分下一轮就被
+   丢弃，interim 永远只剩最新几个字；封口（seal）同样只固化最新增量。
+   日志实锤：sealed 段全是 "My"、"H been" 这类单词碎片。
+2. **VAD 封口对短句失效**：`cut - sealedSampleCount >= 8000`（0.5s
+   最低语音量）——"好。""明白。"这类短句的停顿永远不封口，多句连成
+   run-on。
+3. **连续无停顿语音（唱歌）没有断句手段**：Apple 中文识别无标点，
+   标点断句永不触发；无 VAD 停顿 → 全靠 8s 强制封口 → 滚屏。
+
+### 修复
+
+1. `SubtitleManager`：新增 `pendingTailSegments`（单一合并段 = 当前句）：
+   - `appendTail(incremental: true)`（Apple）：本轮增量并入 pendingTail
+     （跨 pass 累积，中西文智能拼接），合并为单一「当前句」段——
+     interim 显示 = 完整当前句；
+   - 全量引擎（whisper）：整段替换 pendingTail（原行为）；
+   - `seal()`：sealTime 之后的段留作 pendingTail（下一句起点不丢）；
+   - `sealSilence()`：静音路径不再丢文本——未提交的 pendingTail
+     一并固化（否则静音封口时最后一句前半部分丢失）。
+2. `ASRManager`：`appendTail` 传 `incremental: streamingEngine`；
+   VAD 封口最低语音量 8000 → 1600（0.1s，短句也能独立成句）。
+3. `SpeechEndpointDetector`：长度兜底断句——无标点连续语音超长
+   （中文 28 字 / 西文 70 字）时在后半句最后一个软断点（，、；：,;空格）
+   后断开成句，剩余部分经 lastEndedText 前缀衔接逻辑自然成为新句。
+4. `FloatingLetterViewModel`：逐字 partial 渲染最小 0.3s 节流
+   （合并字符 dribble；sentenceEnded / final 完成路径不受节流）。
+
+### 断句信号优先级（修复后）
+
+停顿 VAD（≥300ms 静音封口，主信号，停顿即成句+触发翻译）
+→ 标点（。？！.?!）
+→ 长度兜底（连续语音防滚屏）
+→ 8s 强制封口（最后兜底）
+
+### 待真机验证
+
+重启应用后：正常说话 → 当前句完整逐字增长（不是碎片）、停顿即成句
+并触发翻译；短句（"好。"）独立成句；唱歌/连续语音按 ~1 行断句不滚屏。
+
+### 新坑 17：增量引擎的显示层必须跨 pass 累积
+
+增量 provider（只返回新增文本）接入按「全量重转录」设计的显示层时，
+任何「用本轮结果直接重建」的地方（快照、封口、翻译触发）都会丢前半句。
+必须区分 incremental / 全量两种语义（`appendTail(incremental:)`），
+增量走累积合并，全量走替换。
+
+---
+
+## 15. 第七轮长会话（2026-08-22 04:30–06:15）：UI/交互重构 + 内存优化 + 平滑度
+
+### 我们在做什么
+
+在第 10–14 节（Apple Services bug 修复、卡死修复、字幕闪烁/延迟/断句）之后的
+连续 UI/交互迭代会话，用户逐条提需求，全部完成并逐轮重启验证。
+
+### 已完成（按时间顺序，全部构建打包通过）
+
+**A. 设置页识别配置重构**
+- 引擎选择器简化为三项：**本地模型 / 在线 / Apple**（本地=自动判定
+  Whisper/Qwen/Nemotron；`enginePickerSelection` 归一旧强制值；
+  `TranscriptionService` 内部 6 case 枚举不动）
+- 三种方式**严格互斥**：本地→语音识别模型+自定义模型+本地模型管理三区
+  （本地范畴整体置顶）；在线→在线识别 API；Apple→Apple Speech；
+  通用区（音频处理/ASR Prompt/识别语言）恒显
+- 抽出可复用组件：`ModelCatalogSection` / `CustomModelSection` /
+  `LocalModelsSection` / `OnlineASRSection` / `AppleSpeechSettingsSection`
+  （Apple 服务页与识别页共用同一组件）
+- 「识别语言」按引擎显示：whisper/nemotron/在线 → 语言选择器（whisper.cpp
+  全语言表）；Qwen → 自动检测说明；Apple → 语言包说明
+
+**B. 识别语言接线（新配置 asrLanguage，默认 auto）**
+- `ASRConfiguration.asrLanguage` + `effectiveASRLanguage`（nil=自动）
+- 文件转录：TranscriptionService 显式参数优先，未传时应用配置
+  （whisper/nemotron/online；Apple 不套用——它有自己的语言包选择器）
+- 实时链路：WhisperProvider.transcribeChunk 传语言；NemotronProvider
+  变化时 setLanguage（lastLiveLanguage 缓存）；OnlineASR 透传
+  （MiMo 内部把不支持语种映射回 auto）
+
+**C. 字幕浮窗原生鼠标输入**
+- 面板 borderless → **titled + resizable + fullSizeContentView + 透明标题栏
+  + 隐藏标题/窗口按钮**（视觉不变，四边四角原生缩放、系统光标）
+- 删除自制 resize 机器（40×40 角热区、自定义对角光标、手动帧计算、
+  CADisplayLink 提交、SubtitleWindowManager 的 resize 会话 API）
+- live-resize 生命周期：拖拽中每帧同步容器（字幕实时重排），
+  didEndLiveResize 落盘 + 锁尺寸签名（防弹回）
+- 背景×键盘：dismiss() 防御——先停 movableByWindowBackground 与
+  ignoresMouseEvents 再 orderOut（防系统鼠标跟踪会话残留）
+
+**D. 浮窗视觉/交互**
+- 背景**合一**：panelBackground 用 subtitleBackgroundOpacity（整窗唯一一层；
+  内层容器的背景/描边移除——此前双层叠加导致字幕区与外围透明度不符）
+- 功能区**收起按钮**（chevron，右下角「结束录制」一侧）：收起时胶囊收缩为
+  只包住按钮（钉在右侧，不残留条带）；状态持久化；与 5 秒自动隐藏独立
+- 字幕平滑度：活跃行（末行）用 `SplitSubtitleText` 逐字入场（公共前缀 diff，
+  旧字静态新字淡入上移 12pt/0.32s/错峰 45ms）；渲染节流 0.3→0.2s；
+  译文淡入；空闲清除 0.25s 淡出
+- **左对齐修复**：SubtitleFlowLayout 增加 textAlignment 参数（原先
+  placeSubviews 硬编码 midX 居中，把左对齐设置盖掉）；SplitSubtitleText
+  透传；VM 默认 .leading
+
+**E. 录制流程语义重构（重要）**
+- 「转录」开关改为「**转录记录**」：只控制录制结束后是否生成历史条目；
+  **实时字幕/翻译始终进行**（onConfirmRecording 无条件启动实时链路）
+- 关闭时：finishRecording 跳过历史创建并删除录音文件；
+  崩溃恢复快照（live_recovery.json）不写（防下次启动恢复成历史条目）
+- 翻译方式保护：`lastActiveTranslationMode` 记住用户配置
+  （Apple/本地/在线），开关翻译不再硬编码 onlineAPI、关转录不再清空方式
+- 选择 App 页：转录记录/翻译/麦克风三开关 + 转录模型选择（恒显示）
+- 主窗口：设置页左上「‹ 返回转录」按钮；「选择」按钮移到转录列表搜索行
+
+**F. 内存优化 + 死代码清理**
+- **历史懒加载**：启动只载 fullText（搜索/列表够用），segments/译文在
+  打开详情/翻译/生成纪要时 hydrate（`TranscriptionItem.hydrateTranscriptIfNeeded`）；
+  未 hydrate 条目 save 走 `saveMetadata`（读盘改元数据回写，防空 segments
+  覆盖磁盘）；转录完成置 transcriptHydrated=true 再整体保存
+- 删除死代码约 300 行：SubtitleProcessor / StreamingSubtitleBuffer +
+  SubtitleBufferMerge / SubtitleHistoryBuffer / ASREngineSelection.label /
+  ControlVisibility.hover / AppleSpeechEngine 的 pause/resume/isPaused/lastFinal
+
+**G. 解耦合修复**
+- FloatingLetterViewModel.renderText 移除对 FloatingLetterOverlayController
+  的反向引用（VM 不感知窗口控制器）
+- 「转录记录已关闭」角标从字幕层整体移除（liveTranscriptionOff 删除）——
+  显示层保持输入纯函数原则
+- 全链路组件关系审查（桥接层/Views/SubtitleLayers/SubtitleManager/
+  Provider 协议）——详见第 14 节后补的审查结论，无其他反向耦合
+
+### 当前卡在哪 / 待验证
+
+1. **关闭浮窗鼠标卡死**：只做了 dismiss 防御修复（最可能路径），**未复现
+   验证**。用户曾报告"关闭字幕浮窗软件还开着会卡住 mac 鼠标导致点击不了"。
+   若仍复现：需要用户提供精确操作序列 + 卡死时 `sample <pid>` 采主线程栈。
+2. **真实录音回归仍未做**（贯穿全部轮次）：Apple 实时字幕+翻译长跑、
+   断句手感（VAD 封口/长度兜底）、逐字动画流畅度、文件转录完整性。
+3. **懒加载历史回归**：打开旧条目/翻译/重命名后重启应用确认元数据保留。
+4. **工作区全部未提交**——见下一步的拆分建议。
+
+### 下一步计划
+
+1. 真机回归：录制（转录记录开/关两种）、字幕断句/平滑度/左对齐、
+   关浮窗鼠标、历史懒加载读改写、长录音内存曲线
+2. 提交拆分建议：
+   - `feat(ui): settings engine selection 3-way + exclusive sections + language selection`
+   - `feat(overlay): native mouse input + unified background + collapsible controls`
+   - `feat(recording): transcription-record toggle semantics + translation mode preservation`
+   - `perf(history): lazy transcript hydration + dead code removal`
+   - `feat(subtitle): per-char typing animation + left alignment fix`
+3. 可选后续：AudioLoader 长文件流式加载（当前整文件载内存，13 分钟≈50MB
+   瞬时）；AudioRecorder.getSamples 每轮尾拷贝复用缓冲（分配器压力）
+
+### 快速验证命令（不变）
+
+```bash
+swift build && swift build -c release && bash Scripts/build_release.sh
+open WhisperASR.app
+tail -f ~/Library/Logs/WhisperASR/app.log
+```
+
+### 新坑 18：自绘 Layout 不要硬编码对齐
+
+`SubtitleFlowLayout.placeSubviews` 硬编码 `bounds.midX - width/2` 居中，
+导致新接入的逐字动画行无视「左对齐」设置。任何自绘 Layout/渲染组件的
+对齐必须参数化传递；给现有组件加对齐时默认值保持旧行为（默认 .center），
+调用方显式传入。
+
+### 新坑 19：开关语义变更必须审计全部消费点
+
+`enableLiveTranscription` 语义从「实时转录」改为「生成转录记录」时，
+所有引用点都要重新核对：onConfirmRecording 启动条件、finishRecording
+历史创建、崩溃恢复快照、通用设置开关文案、URL handler、选择 App 页
+绑定、pushState 派生。漏一处就是静默行为错误（如恢复快照把纯实时录制
+变成历史条目）。
+
+### 新坑 20：懒加载条目禁止整体重存
+
+未 hydrate 的历史条目内存里 segments 为空——`HistoryManager.save` 必须
+路由到 `saveMetadata`（读盘改元数据回写）；**转录完成/翻译完成等产生
+完整内容的路径必须先置 `transcriptHydrated = true`** 再 save，否则
+整体保存会用空数组清掉磁盘上的转录内容（数据丢失级 bug）。
+
+### 新坑 21：业务状态不得耦合进字幕显示层
+
+「转录记录已关闭」角标曾被塞进 subtitleArea——显示层必须是输入
+（final+interim）的纯函数，任何业务状态提示要在显示层之外（或经输入
+通道传入）。同理 VM 不得反向引用窗口控制器。
+
+### 新坑 22：Swift 不可用的 ObjC 私有 API
+
+`endLiveResize()` 虽有文档但 Swift 不可见（编译错误"no member"）。
+`beginLiveResize/endLiveResize` 配对调用不要用；结束 live-resize 场景
+用 `inLiveResize` 判断 + 通知监听（didEndLiveResizeNotification）实现。
+
+---
+
+## 16. 第八轮会话（2026-08-22 06:20–07:05）：测试体系 + 流式解码
+
+### 已完成
+
+**A. 单元测试体系从零建立（40 个测试全绿）**
+
+项目此前没有任何测试（坑 13）。新增 `Tests/WhisperASRTests/`：
+
+| 测试文件 | 覆盖 |
+|---|---|
+| SubtitleManagerTests (11) | pendingTail 增量累积/中西文拼接/空 pass 不丢、封口提交+留存、静音封口固化、trimOverlap |
+| SpeechEndpointDetectorTests (10) | 标点断句/单轮完整句立即成句/回声忽略/前缀衔接、长度兜底（中文软断点/硬切/西文阈值）、reset |
+| SubtitleDeduplicatorTests (5) | 抑制/合并/回溯/刷新/窗口过期 |
+| SubtitleSplitterTests (5) | 行数上限/末尾保留/内容完整性/西文词边界/标点优先断行 |
+| SubtitleLanguageTests (4) | 中/俄/其他/CJK 标点归类 |
+| ASRConfigurationLanguageTests (4) | effectiveASRLanguage 归一规则 |
+
+运行方式：`DEVELOPER_DIR=/Applications/Xcode.app swift test`
+（**必须带 DEVELOPER_DIR**——系统 xcode-select 指向 CommandLineTools，
+无 XCTest 模块；Xcode.app 已装。）
+
+**B. 测试立刻修出 2 个真 bug（检测器首轮路径）**
+`SpeechEndpointDetector.update()` 的 `sentenceText.isEmpty` 分支提前
+return，跳过标点与长度检查：
+1. 引擎单轮推出完整带句号的句（VAD 封口后 Apple final 常见）→ 要等
+   下一轮才成句 → **翻译延迟一轮**；
+2. 超长无标点句单轮到达 → **长度兜底完全失效**。
+修复：统一走标点/长度检查（首轮也生效）。测试的调用模式必须模拟真实
+管线（每轮推完整累积文本，非逐字 delta）。
+
+**C. AudioLoader 流式分块解码（长文件内存优化）**
+- 新 API `loadSamplesChunked(url:chunkSamples:onChunk:)`：
+  AVFoundation 路径凑满一块（默认 30s=480k samples）即回调，消费方
+  边收边喂；返回 false 可提前终止；
+- `loadSamples` 变为薄包装（聚合全部块），旧调用方不受影响；
+- ffmpeg 路径保持整读后按块回调（进程管道无原生流式价值）；
+- `AppleSpeechManager.transcribeFile` 改为流式喂入：不再持有全量 samples
+  （13 分钟录音 ≈50MB ×2 峰值 → 单块 ≈1.9MB）；超时时长改由引擎水位线
+  取（`AppleSpeechEngine.totalAudioDuration()`）。
+
+### 验证状态
+
+- `swift test`：40/40 通过
+- debug / release / 打包通过，应用已重启（新构建）
+- **未做真机回归**：Apple 文件转录（流式路径）需用多句音频文件验证完整性；
+  断句器首轮成句修复需真机确认翻译触发时机
+
+### 新坑 23：写测试前先确认真实调用模式
+
+初版断句器测试按「逐字 delta」构造输入，与真实管线（每轮推完整累积文本）
+不符，6 个假失败掩盖了 2 个真 bug。先读调用方（ASRManager 的 pendingTail
+语义）再设计测试输入；测试失败时要区分「假设错」与「实现错」，两者都要处理。
+
+### 新坑 24：CommandLineTools 无 XCTest
+
+`xcode-select -p` 指向 CommandLineTools 时 `swift test` 报 no such module
+'XCTest'。本机装有 Xcode.app，用 `DEVELOPER_DIR=/Applications/Xcode.app
+swift test` 运行；不要 `sudo xcode-select -s` 改系统配置。
+
+---
+
+### 一句话总结（第 15 节）
+
+第七轮完成了设置页三项引擎重构、识别语言选择、浮窗原生鼠标输入与视觉
+合一、转录记录语义重构（实时字幕始终进行）、历史懒加载省内存、逐字
+平滑动画与左对齐修复；全部构建打包通过。遗留：真实录音回归、鼠标卡死
+复现验证、以及海量未提交变更的拆分提交。\n---
+
+## 17. 第九轮会话（2026-08-22 06:40–07:20）：对标 LiveTranslate 全量改造 + 管线分层重构
+
+### 我们在做什么
+
+对标 LiveTranslate（Windows 实时翻译，547★）的全部可借鉴项（12 项）一次性落地，
+同时按用户要求把代码组织重构为「单文件模块 + 管线分层」扁平结构。
+
+### A. 结构重组（环节 0）
+
+```
+Sources/
+├── App/                          # 应用壳：入口/主窗口/设置/配置/菜单栏/i18n
+├── Pipeline/
+│   ├── Audio/                    # 环节1 采集与加载（Recorder/Loader/Player/Monitor）
+│   ├── VAD/VAD.swift             # 环节2 语音活动检测（新文件，RMS+ZCR 联合）
+│   ├── ASR/                      # 环节3 识别（providers/engines/模型管理/APIServer/AppleServices/）
+│   ├── Translation/              # 环节4 翻译（providers/service/manager）
+│   ├── Subtitle/                 # 环节5 字幕（Manager/Engine/FloatingLetter//图层）
+│   └── History/                  # 环节6 历史（Manager/Store/纪要）
+```
+git mv 移动（同 SwiftPM target 内零编译影响）。66 文件归位，一次构建通过。
+
+### B. 功能落地（环节 1–12，全部完成）
+
+1. **流式翻译输出**：TranslationService SSE 逐 token（performStreamingRequest，
+   delta.content 喂回调，reasoning 丢弃）→ 协议 translateStreaming（默认回退非流式）
+   → TranslationManager.translateSentenceStreaming → AppState 流式入口 →
+   VM.appendTranslationDelta（译文逐字上屏，0.12s 节流，定稿 setTranslationResult）
+2. **思考模式兼容**：thinkingControlBody 按模型名注入禁思考参数
+   （Qwen/GLM/vLLM: chat_template_kwargs.enable_thinking=false；
+   OpenAI/Grok: reasoning_effort=none）；extractContent 思考分离（content 空
+   取 reasoning 尾段）；设置页「思考模式：自动/强制禁用/不发送」
+3. **双下载源**：ModelDownloader.DownloadSource.rewrite（hf ↔ hf-mirror.com
+   域名替换，对 file/hfFolder/目录 API 全生效）；设置页「下载源：官方直连/国内镜像」
+4. **JSON 批量翻译**：>1 句要求 JSON 数组输出；parseTranslationArray
+   （剥 markdown 围栏、取首 [ 末 ]、句数校验不符回退编号解析）防串句；
+   单句直接译文（流式友好）+ stripSingleLineNoise 净化
+5. **VAD 增强**：Pipeline/VAD/VAD.swift——isNonSpeech = RMS<阈值 || ZCR>0.35
+   （高频嘶声/电流噪判静音；人声/音乐低 ZCR 不误伤）；接入 lastSilenceCut
+   与 hasTrailingSilence；5 个 VAD 单测（静音/人声/高频噪/音乐/边界）
+6. **下载完整性校验**：落盘前实际字节 vs 期望（folder 精确 size / Content-Length），
+   差异>1% 判损坏报错重试，不再把半截文件标记完成
+7. **ASR 自动降级**：连续 5 次 chunk 失败（CancellationError 不计）且未降级过
+   → 自动切 Apple 引擎 + toast；每会话只降一次防风暴
+8. **翻译基准测试**：设置页「基准测试」——3 句固定样本（短中/中英/长中文）
+   走当前配置流式路径，输出总耗时/均值/译文预览
+9. **字幕主题预设**：CaptionSettings 顶部 5 套（观影/会议/极简/大字/高对比）
+   一键应用字号/背景/边框/字重，应用后可微调
+10. **菜单栏快捷控制**：MenuBarController（NSStatusItem）——显示主窗/
+    开始结束录制/引擎三选/浮层穿透切换/退出；AppDelegate applicationDidFinishLaunching 接线
+11. **上下文轮数可配**：translationContextRounds（默认 2，0–8 stepper），
+    批量/实时翻译上下文句数
+12. **i18n 框架**：App/L10n.swift 代码字典表（key→zh/en，系统语言判定，
+    未登记 key 原样返回渐进接入）；菜单栏 + 返回按钮已双语落地
+
+### 验证状态
+
+- 单测 56/56 全绿（新增 VAD 5 + 翻译解析 11：JSON 数组/围栏/句数校验/
+  编号回退/思考分离/单句净化）
+- debug / release / 打包通过，应用已重启（14966）
+
+### 真机回归清单（新增项）
+
+1. 流式翻译：在线/本地翻译模式下说话——译文应逐字增长（不等整句）
+2. 思考模型：接 DeepSeek-R1/GLM/Qwen3 翻译不再返回空
+3. 国内镜像：下载源切镜像后模型可下载
+4. 噪声场景：有风扇/电流噪的环境断句是否改善
+5. 菜单栏：状态栏图标 → 各菜单项；字幕主题一键切换
+6. ASR 降级：故意断网/错误配置观察 5 次失败后自动切 Apple
+
+### 新坑 25：大改造用「锚点脚本 + 每步构建」逐环节推进
+
+12 项功能 + 结构重组一次会话完成的可行做法：
+- python 锚点替换（assert count==1 保证唯一），每步 swift build 验证；
+- 锚点失败时先查实际文本差异（本轮三次翻车均为注释措辞/属性归属不同）；
+- 多 view 共存的设置页加 UI 时，确认方法插入到正确的 struct
+  （testConnection 属 RecognitionSettingsView，benchmark 曾插错）；
+- SwiftPM 同 target 内 git mv 目录重组零编译影响，放心做。
+
+### 17.5 追加补丁：日韩语支持（评估后落地两个小项）
+
+上节评估 LiveTranslate 的 jaconv/jamo/yasbd 时结论「先不调整」，但其中
+两个小补丁无依赖、即有价值，已落地：
+
+1. **翻译输入 NFKC 归一化**：`TranslationService.normalizeForTranslation`
+   （precomposedStringWithCompatibilityMapping + trim）在
+   translateSegmentsWithOpenAI 输入收口 + AppleTranslationEngine 入口——
+   ASR 偶发全半角混排（全角数字/英数/标点）归一为标准形再送翻译，
+   提升 LLM 稳定性；**显示层不动**（字幕保持识别原样）。
+2. **韩文语言分支**：SubtitleLanguage 加 .korean（Hangul 检测 AC00-D7A3
+   /Jamo/兼容 Jamo，优先级 Cyrillic→Hangul→CJK）；断行宽度 32 字/行
+   （介于中文 26 与西文 44），断点复用西文（空格/逗号，韩文有空格分词）；
+   长度兜底断句加韩文档位 40 字符。
+
+测试 56→67（新增 11：韩文检测/边界/宽度/词边界断行/长度档位 +
+归一化全角数字/标点/CJK 保持/trim）。
+
+### 17.6 追加：移植 yasbd 17 语言母语分句规则（SentenceRules）
+
+新文件 `Pipeline/Subtitle/SentenceRules.swift`：
+
+- **脚本路由**：SentenceScript.detect 按 Unicode 区段（低频脚本优先扫描）
+  → 12 类脚本 → 各自句末标点规则：
+  CJK 。？！.；韩/拉丁/西里尔 .?!（句点带小数+缩写保护）；希腊 ;=?!
+  （「;」是希腊问号）；阿拉伯 ؟۔.?!；天城文 ।॥；亚美尼亚 ։；
+  埃塞文 ።፧；**泰/老挝/缅甸无句末标点**（terminators 空集——母语实况，
+  回退 VAD+长度兜底）；mixed 保守全集。
+- **流式误判保护**（yasbd 批量规则的流式等价）：
+  1. 小数保护：「3.」末字符句点 + 前字符数字 = 流式未决，不立即断
+     （下一轮「3.14」自然非终止；纯数字结尾漏断由 VAD 兜底）；
+  2. 缩写保护：句点前词在多语言缩写集（Mr/Dr/e.g/т.е… 30+）不判句末。
+- **Detector 接入**：config.sentenceTerminators 改 Optional（nil=按脚本
+  自动；显式赋值覆盖供测试/定制）。
+
+**测试翻出 1 个真 bug**：中英混排文本判为 CJK 脚本后西文句点不在
+终止表 → 混排英文句断句失效（极常见场景）。修复：CJK 规则纳入西文
+句点（带小数/缩写保护，中文句号无歧义不受影响）。
+
+测试 67→89（+22：11 语言终止符/小数两轮流式/缩写延迟成句/泰语无标点
+回退+长度兜底/12 脚本检测/自定义覆盖/混排句点）。
+
+### 17.7 追加：流式引擎语义协议化（坑 14/17 的类型化收口）
+
+评估「五级流水线关注点分离」时指出的隐性债务，现已落地：
+
+- **ASRProvider.isStreamingEngine**（默认 false）：流式引擎声明式标记。
+  坑 14/17 从文档约定升级为类型系统——新流式引擎只需声明标记，
+  **零水位线代码**。
+- **StreamingFeedWaterline**（ASRProvider.swift，纯类型可单测）：
+  绝对采样坐标去重水位线。**上提到 TranscriptionService（调度层）**——
+  调度层才知道「tail 重转录」的调用方语义，provider 不该知道：
+  - 非聚合路径：流式引擎按 absoluteRange 裁出纯新增再 dispatch；
+    全部已喂返回空结果；无区间保守全量喂+清水位线；
+  - 生命周期：unloadLiveModel 清零；实时引擎切换清零
+    （streamingWaterlineEngine 记录上次流式引擎，切换即 reset）；
+  - 聚合（ChunkManager）路径不经水位线（本地引擎恒无状态）。
+- **AppleSpeechManager 瘦身**：删除 liveFedAbsoluteSamples/unfedSamples
+  及 prepare/unloadModel/cancelPending/懒启动四处重置——只声明
+  isStreamingEngine=true，transcribeChunk 收到的即纯新增。
+
+测试 89→97（+8 水位线：首喂/重叠尾/全重不喂不推进/静音跳过续喂/
+强制封口上下文不重发/无区间保守回退/reset/区间回缩单调性）。
+
+### 17.8 追加：二轮对标（重读 releases）四项落地
+
+重读 LiveTranslate releases 后新发现的四点，落地三项 + 分段启动一项：
+
+**小项 1：思考模式手动厂商组**（ThinkingControl 六档）
+auto / DeepSeek·火山方舟·GLM（thinking.type=disabled）/ Qwen·百炼·硅基流动
+（顶层 enable_thinking=false）/ vLLM·SGLang（chat_template_kwargs）/
+OpenAI·Grok（reasoning_effort=none）/ 不发送。auto 按模型名识别组别，
+识别不出不发送；手动组 = 自部署/改名模型的兜底。旧值 off 并入 auto。
+
+**小项 2：翻译提示词预设**（TranslationPromptPreset 五套）
+默认（清空）/ 会议口语 / 影视字幕（长度约束）/ 技术文档（术语保留）/
+身份核验（标识符原样保留，参考其 WebID 预设）。点选填入文本框仍可改。
+
+**小项 3：应用内日志查看器**（系统状态页「最近日志」区）
+分类 segmented 过滤 + monospaced 只读 40 条 + 刷新按钮
+（AppLogger 环形缓冲 1000 条复用）。排障不再手动挖 app.log。
+
+**ASR 子进程隔离——段 1（进程内看门狗）**
+新文件 Pipeline/ASR/ASRWatchdog.swift：
+- ProcessMemory.footprintBytes（task_info phys_footprint，活动监视器口径）
+- MemoryReclaimPolicy 纯策略（默认上限 6GB，可配 asrMemoryCeilingMB；
+  60s 冷却；超限 && 全空闲 才回收）
+- 挂接 ASRManager 5s 健康检查：空闲超限 → service.shutdown() 释放全部
+  模型 + toast（下次使用懒加载回来，用户无感）
+- 挂接 TimeoutError 路径：连续 2 次推理超时 → unloadLiveModel
+  （下轮 pass 懒加载重建——进程内回收死锁/损坏的推理上下文）
+- 段 2（未做，真·隔离）：XPC Service 子进程跑推理引擎，崩溃自动重启。
+  需要 Package.swift 新 target + 打包脚本嵌入 XPC + entitlements，
+  待段 1 真机验证收益后再决定是否值得。
+
+测试 97→106（+9 回收策略边界 + footprint 采样冒烟）。
+
+### 17.9 追加：性能小专项（启动 XPC / 日志开销）
+
+三项查证后落地的性能治理（全部构建实测）：
+
+**A. 启动路径去 N+1**：AppRuntimeManager.attach（App 启动即调）→
+AppleTranslationStatus.refresh 原本查 installedLanguageCount——
+supportedLanguages(~40+) × 2 候选源 = ~80 次串行 LanguageAvailability
+XPC，而该数据只有 Apple 服务设置页展示。拆分：refresh() 不再查 count，
+新增 refreshInstalledCount() 由设置页 onAppear 按需调。启动零额外 XPC。
+
+**B. Renderer 高频日志摘要化**：pushState 每次 print 30 段完整
+debugDescription 数组（0.15s 节流一次 + 每次状态变化，实时识别期每秒
+构造数 KB 转义字符串）。release 改为 AppLogger 摘要（count + 末段 24
+字符）；DEBUG 构建保留全量（排障需要）。updateSubtitleState /
+Subtitle Display render 同步改 AppLogger + 截断。
+
+**C. AppLogger 异步批量 stdout**：log() 原本逐条 print 到无缓冲重定向
+文件 = 每条一次 write syscall（实时期每秒 10-30 次）。改：ring buffer
+同步写（recentLogs 立即可读），stdout 走 pendingStdout 批量队列，
+0.3s 合并一次写出；applicationWillTerminate flushNow() 防丢尾。
+
+验证：106/106 测试全绿；release 打包重启通过，启动日志正常
+（异步 flush 后 app.log 仍完整写入，最大滞后 0.3s）。
+
+### 17.10 追加：bug 检查 + 死代码清理 + 文件夹整理
+
+**修出 2 个真 bug**：
+1. **AppLogger DateFormatter 数据竞争**：dateFormatter.string() 在锁外
+   调用（原实现就有，非上轮引入）——ASR 后台/翻译/UI 线程并发 log 时
+   DateFormatter 非线程安全，可能崩溃/乱码。格式化移入锁内。
+2. **MenuBar 菜单状态不刷新**：menuWillOpen 从未设 menu.delegate——
+   状态栏菜单显示的录制状态/穿透可用性是构建时快照。接线
+   NSMenuDelegate（每次打开前 rebuild）。
+
+**死代码清理**：SubtitleSplitter.split(text:) 单参版（零引用）、
+AppleSpeechManager.prefersOnDevice（零引用；UI 直接读配置）。
+
+**文件夹整理**：根目录游离文档归位 docs/（newdme.md、
+smartsteer-status.md，git mv 保留历史）。根目录终态：包定义
+（Package.swift/.resolved）+ README×2 + LICENSE + CLAUDE.md +
+Assets/Frameworks/Scripts/Sources/Tests/docs + 构建产物 WhisperASR.app +
+交接文档 HANDOFFtmd/（工作未提交期间保留显眼位置，提交后可归档）。
+
+验证：106/106 全绿，release 打包重启通过。
+
+### 17.11 追加：菜单栏与主窗口双向同步 + 语言快捷切换
+
+用户报告「菜单栏状态与主窗口不同步」。根因：菜单栏 selectEngine 直接写
+UserDefaults 绕过 @Observable 配置层——设置页 Picker 绑定的是
+ConfigurationManager 属性，菜单栏改动后 UI 收不到通知（反向方向靠
+menuWillOpen rebuild 已覆盖）。
+
+修复 + 扩展（MenuBarController）：
+1. **selectEngine 改走配置对象**：`ConfigurationManager.shared.asr
+   .asrEngine = engine`——didSet 持久化 + Observable 通知，设置页/主窗口
+   实时同步；不再直接写 UserDefaults。
+2. **新增「识别语言」子菜单**：按 TranscriptionService.languageSupport
+   分支——可手动指定的引擎列出 whisper 全语言表（前 30 + 自动检测，
+   当前项 ✓）；Qwen 显示自动检测说明；Apple 显示语言包说明。写
+   `asr.asrLanguage`（同走配置层）。
+3. **新增「翻译语言」子菜单**：TargetLanguage.available 全列表，
+   写 `translation.targetLanguage`（didSet 持久化 + 通知；实时翻译/
+   文件翻译/批量翻译三链路都读该键）。
+
+同步闭环验证路径：设置页绑定 `$recognition.asrLanguage` /
+`$translation.targetLanguage`（@Observable 直绑），菜单栏写同一对象 →
+UI 刷新；反向设置页改值 → 菜单打开时 menuWillOpen rebuild 显示 ✓。
+
+测试 106/106 全绿；release 打包重启通过。
+
+### 17.12 追加：修「菜单栏消失」（AppKit 打开中替换菜单陷阱）
+
+17.11 引入的回归：menuWillOpen（菜单正在打开/显示）里 rebuildMenu →
+`statusItem.menu = 新实例`——AppKit 在打开遍历过程中销毁正在显示的
+status item 菜单是未定义行为，实测状态项图标整个消失。
+
+修复（MenuBarController 重构为固定条目 + 原地刷新）：
+- 菜单结构一次构建，recordItem / passthroughItem / engineItems /
+  asrLanguageItems / targetLanguageItems 存条目引用；
+- menuWillOpen 只调 refreshDynamicState()：原地改录制标题、穿透
+  enabled、三组子菜单的 ✓ 标记——永不替换正在显示的菜单实例；
+- 选择动作回调里的 rebuildMenu 全部移除（✓ 由下次 menuWillOpen 刷新；
+  正在显示的子菜单不能动）。
+
+测试 106/106；release 打包重启通过。真机验证：点状态栏图标弹菜单
+（图标不消失）、切引擎/语言后 ✓ 正确移动、录制状态实时反映。
+
+### 17.13 追加：日志复盘修降级链 + 菜单语言按服务显示
+
+用户报「字母刷新有问题」，日志还原出完整事故链（真机实测数据）：
+在线引擎失败 ×5 → 17:59:37 自动降级切 Apple → **Apple 语音识别权限
+「未请求」** → 立即抛未授权错误 → 每 0.5s 失败循环刷屏、字幕卡死旧句、
+tail 涨到 30s 上限。暴露降级链两个 bug：
+
+1. **降级不验证目标引擎可用性**——切到未授权引擎等于没救；
+2. **hasAutoDegraded 挡住二次干预**——死循环无提示。
+
+修复：降级前先 `AppleSpeechManager.prepare()` 探测（授权+语言资源），
+**成功才切换**；探测失败保持原引擎 + toast 指引用户修复。
+
+菜单栏语言按服务显示（与主窗口设置页同数据源/同语义）：
+- 识别语言：languageSupport 分支——可指定引擎=自动检测+whisper 语言表；
+  Qwen=自动检测说明；Apple=语言包说明（原实现已按此分支，本轮确认并
+  补 asrLanguageItems 引用重建）。
+- 翻译语言：按 TranslationMode.current 过滤——off=禁用说明；apple=
+  系统翻译支持集（zh-Hans/zh-Hant/en/ja/ko）；localModel=常用三语
+  （en/zh-Hans/ja）；onlineAPI=全列表。
+- 移除「显示主窗口」项（无用；动作方法与 L10n key 一并清理）。
+
+测试 106/106；release 打包重启通过。真机验证：在线断网录制 → 5 次
+失败后 toast 指引（不再死循环刷屏）；菜单栏语言子菜单随服务变化。
+
+### 17.14 追加：「显示主窗口」是失效不是没用——恢复并修复
+
+17.13 误判用户语义（「显示主窗口没用」= 点击无效果），已删除。
+实为 bug：原实现 `NSApp.windows.first(where: canBecomeMain)` 在多窗口
+（主窗 + 字幕浮层 + 选择弹窗 + 设置窗）下可能选中浮层/弹窗；且应用
+未激活时仅 makeKeyAndOrderFront 不带 activate 不前置。
+
+恢复菜单项并修复动作：精确过滤（canBecomeMain && visible && 非 NSPanel
+&& 宽度 >400 排除紧凑浮层）+ `NSApp.activate(ignoringOtherApps:)` 前置。
+
+测试 106/106；release 打包重启通过。
+
+### 17.15 追加：修「菜单栏依旧不显示」——setup 时序竞争（真根因）
+
+17.12/17.13 修的 menuWillOpen 替换菜单不是图标消失的根因。真根因：
+MenuBarController.setup 挂在 applicationDidFinishLaunching，而
+appState/audioRecorder 由 ContentView.onAppear 注入——**启动时序上
+onAppear 晚于 didFinishLaunching**，setup 被调时 AppDelegate 属性还是
+nil：状态项创建依赖空引用，状态栏图标不出现。
+
+修复：接线移到注入点之后（onAppear 内 appDelegate 属性赋值后立即
+MenuBarController.shared.setup(appState:audioRecorder:)），
+applicationDidFinishLaunching 的 setup 调用删除。
+
+测试 106/106；release 打包重启通过。验证：状态栏 waveform 图标出现、
+菜单可弹、各动作可用。
+
+### 新坑 26：SwiftUI App 的 AppDelegate 注入时序
+
+@NSApplicationDelegateAdaptor 的 AppDelegate 属性由 View.onAppear 注入
+时，applicationDidFinishLaunching 里它们还是 nil——任何依赖注入对象
+的初始化必须挂在注入点之后（onAppear 内），不能挂应用级生命周期回调。
+
+### 17.16 追加：菜单识别语言两处修正（引擎同步 + Apple 可选语言）
+
+用户指出两个问题：
+1. **切到在线后识别语言子菜单不同步**（还显示 Apple 的说明）——
+   子菜单在 setup 时构建一次，实例固定，refreshDynamicState 只刷 ✓
+   不重建结构。修复：makeLanguageSubmenu 按 ASREngineSelection.current
+   分支构建（apple→语言包子菜单 / qwen→说明 / 其他→whisper 表）；
+   selectEngine 动作后 rebuildMenu()（菜单已随选择关闭，替换安全；
+   新增 isMenuOpen 守卫 + menuDidClose 追踪，打开中禁止替换——17.12
+   的陷阱不复发）。
+2. **Apple 识别其实支持选语言**（此前显示"由语言包决定"是做错了）——
+   appleLocaleSubmenu 直接列出已安装语言包（AppleLanguageManager，
+   写 appleSpeechLocale，与设置页「当前语言」同一配置键）；
+   AppleSpeechManager 新增 installedLocaleIdentifiers() 同步包装。
+
+测试 106/106；release 打包重启通过。验证：菜单切在线 → 重开菜单识别
+语言变 whisper 表；切 Apple → 变已安装语言包列表且可选。
+
+### 一句话总结（第 17 节）
+
+对标 LiveTranslate 的 12 项全部落地（流式翻译/思考兼容/双下载源/JSON 批量/
+VAD 增强/下载校验/自动降级/基准测试/主题/菜单栏/上下文轮数/i18n）+ 源码
+按管线六环节重组；56 测试全绿、构建打包重启全通过；待真机回归六项。

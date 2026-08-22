@@ -1,0 +1,4 @@
+module SherpaONNX {
+    header "c-api.h"
+    export *
+}

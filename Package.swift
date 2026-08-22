@@ -20,11 +20,18 @@ let package = Package(
             name: "CTranscribe",
             path: "Frameworks/CTranscribe.xcframework"
         ),
+        // sherpa-onnx v1.13.6 no-tts 精简静态库（自包含 onnxruntime）：
+        // Swift → C API（c-api.h）→ ONNX Runtime；FunASR 推理后端。
+        .binaryTarget(
+            name: "SherpaONNX",
+            path: "Frameworks/SherpaONNX.xcframework"
+        ),
         .executableTarget(
             name: "WhisperASR",
             dependencies: [
                 "CWhisper",
                 "CTranscribe",
+                "SherpaONNX",
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "FlyingFox", package: "FlyingFox"),
                 .product(name: "FlyingSocks", package: "FlyingFox"),

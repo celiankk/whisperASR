@@ -55,6 +55,9 @@ struct WhisperASRApp: App {
                     // 菜单栏快捷控制：必须在注入完成后 setup（此前触发时
                     // appState/audioRecorder 还是 nil → 状态项不出现）。
                     MenuBarController.shared.setup(appState: appState, audioRecorder: audioRecorder)
+                    // FunASR sherpa-onnx 后端注册（Provider 经 Registry 透明取用）。
+                    FunASRRuntimeRegistry.register(SherpaONNXRuntime())
+                    AppLogger.shared.log(.asr, "SherpaONNX runtime available (xcframework linked)")
                     // Recover live transcription from a previous crash/hang
                     if appState.hasLiveRecoveryData {
                         appState.importRecoveredTranscription()

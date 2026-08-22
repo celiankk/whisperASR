@@ -416,6 +416,8 @@ struct RecognitionSettingsView: View {
 private struct ModelCatalogSection: View {
     /// 下载源（hf 直连 / 国内镜像）；下载 URL 域名按此重写。
     @State private var downloadSource = UserDefaults.standard.string(forKey: "modelDownloadSource") ?? "hf"
+    /// 引擎筛选（nil = 全部，按引擎分组显示；选定引擎只显示该引擎模型）。
+    @State private var engineFilter: ModelEngine? = nil
 
     var body: some View {
         Section("语音识别模型") {
@@ -436,25 +438,41 @@ private struct ModelCatalogSection: View {
             Text("国内镜像（hf-mirror.com）适用于 Hugging Face 直连缓慢/失败的网络环境；下载中的任务不受影响。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            // FunASR 分类组（实时推荐 / 中文实时 / 中文高精度 / 多语言）。
+            // 引擎分类筛选：选定引擎只显示对应模型；全部时按引擎分组。
             HStack {
-                Text("FunASR（阿里）").font(.caption).foregroundStyle(.secondary)
+                Text("引擎分类")
                 Spacer()
-                Text("SenseVoice 多语实时 · Paraformer 中文 · Nano 多语")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                Picker("", selection: $engineFilter) {
+                    Text("全部").tag(ModelEngine?.none)
+                    Text("Whisper").tag(ModelEngine?.some(.whisper))
+                    Text("Qwen3").tag(ModelEngine?.some(.qwen3asr))
+                    Text("Nemotron").tag(ModelEngine?.some(.nemotron))
+                    Text("FunASR").tag(ModelEngine?.some(.funasr))
+                }
+                .labelsHidden()
+                .frame(width: 130)
+                .pickerStyle(.menu)
             }
-            .padding(.top, 2)
-            ForEach(ModelCatalog.all.filter { $0.engine == .funasr }) { model in
-                ModelRowView(model: model)
-            }
-            Divider()
-            HStack {
-                Text("Whisper / Qwen3-ASR / Nemotron").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.top, 2)
-            ForEach(ModelCatalog.all.filter { $0.engine != .funasr }) { model in
-                ModelRowView(model: model)
+            let groups: [(name: String, engine: ModelEngine)] = [
+                ("FunASR（阿里）· SenseVoice 多语实时 · Paraformer 中文 · Nano 多语", .funasr),
+                ("Whisper 模型", .whisper),
+                ("Qwen3-ASR 模型", .qwen3asr),
+                ("Nemotron 模型", .nemotron),
+            ]
+            ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                if engineFilter == nil || engineFilter == group.engine {
+                    if index > 0 && engineFilter == nil {
+                        Divider()
+                    }
+                    HStack {
+                        Text(group.name).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.top, 2)
+                    ForEach(ModelCatalog.all.filter { $0.engine == group.engine }) { model in
+                        ModelRowView(model: model)
+                    }
+                }
             }
             Text("选择已下载的模型用于转录。模型越小速度越快，但准确率越低。")
                 .font(.caption)

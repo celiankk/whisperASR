@@ -518,11 +518,25 @@ private struct LocalModelsSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(localModelManager.models) { model in
-                    LocalModelRowView(model: model)
+                // 按引擎分组显示（Whisper/Qwen3/FunASR/Nemotron 各组标题）。
+                let grouped = Dictionary(grouping: localModelManager.models, by: \.engine)
+                let order: [ModelEngine] = [.funasr, .qwen3asr, .nemotron, .whisper]
+                ForEach(order, id: \.self) { engine in
+                    if let models = grouped[engine], !models.isEmpty {
+                        HStack {
+                            Text(LocalModelInfo.engineGroupName(engine))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.top, 2)
+                        ForEach(models) { model in
+                            LocalModelRowView(model: model)
+                        }
+                    }
                 }
             }
-            Text("本地扫描不联网；在线下载与 LM Studio 探测仍由模型管理器负责。悬停模型行可直接启用（自定义路径优先级最高，同时只生效一个）。")
+            Text("本地扫描不联网；按引擎分组（.onnx→FunASR、目录→Nemotron、GGUF 架构→Qwen3/Whisper）。悬停模型行可直接启用（自定义路径优先级最高，同时只生效一个）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

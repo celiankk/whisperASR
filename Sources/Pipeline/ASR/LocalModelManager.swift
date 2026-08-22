@@ -20,6 +20,42 @@ struct LocalModelInfo: Identifiable, Equatable {
     var sizeText: String {
         ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
     }
+
+    /// 引擎归属（按扩展名 + GGUF 架构 + catalog 元数据判定）：
+    /// .onnx→funasr；目录→nemotron；.gguf 读架构（qwen3_asr→qwen3asr，
+    /// 其余→whisper）；.bin→whisper；catalog fileName 命中优先。
+    var engine: ModelEngine {
+        let url = URL(fileURLWithPath: path)
+        let fileName = url.lastPathComponent
+        if let catalogModel = ModelCatalog.model(fileName: fileName) {
+            return catalogModel.engine
+        }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            return .nemotron
+        }
+        switch url.pathExtension.lowercased() {
+        case "onnx": return .funasr
+        case "gguf":
+            if let arch = GGUFInspector.architecture(atPath: path)?.lowercased(),
+               arch.contains("qwen3_asr") || arch.contains("qwen3-asr") {
+                return .qwen3asr
+            }
+            return .whisper
+        default: return .whisper   // .bin 及其他（whisper ggml 系）
+        }
+    }
+
+    /// 引擎显示名（分组标题用）。
+    static func engineGroupName(_ engine: ModelEngine) -> String {
+        switch engine {
+        case .whisper: return "Whisper 模型"
+        case .qwen3asr: return "Qwen3 模型"
+        case .nemotron: return "Nemotron 模型"
+        case .funasr: return "FunASR 模型"
+        }
+    }
 }
 
 @Observable
@@ -35,7 +71,7 @@ final class LocalModelManager {
         }
     }
 
-    private let supportedExtensions: Set<String> = ["gguf", "bin", "whisper"]
+    private let supportedExtensions: Set<String> = ["gguf", "bin", "whisper", "onnx"]
 
     private init() {
         directoryPath = UserDefaults.standard.string(forKey: "localModelDirectory") ?? ""

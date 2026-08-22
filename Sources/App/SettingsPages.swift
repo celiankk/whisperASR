@@ -2275,6 +2275,22 @@ private struct ModelRowView: View {
             Spacer()
 
             if isDownloaded {
+                // 千问同款启用按钮：开启（点击选用）/ 使用中（当前模型高亮）。
+                Button {
+                    manager.select(model)
+                } label: {
+                    Text(isSelected ? "使用中" : "开启")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule().fill(isSelected
+                                ? Color.accentColor
+                                : Color.accentColor.opacity(0.14)))
+                }
+                .buttonStyle(.plain)
+                .help(isSelected ? "当前转录模型" : "开启并使用此模型")
                 Button {
                     confirmDelete = true
                 } label: {

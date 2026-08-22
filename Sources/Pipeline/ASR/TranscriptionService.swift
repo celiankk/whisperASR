@@ -388,7 +388,18 @@ final class TranscriptionService: @unchecked Sendable {
         case .qwen:
             return qwenAuto
         case .funasr:
-            return .selectable
+            // 按所选 FunASR 模型细分：SenseVoice/Nano 支持语言提示
+            //（asrLanguage → sense_voice.language hint）；
+            // Paraformer 系中英双语内置，无需指定。
+            let modelPath = ModelPathResolver.resolveModelPath()
+            let funasrType = FunASRModelConfig.config(
+                for: URL(fileURLWithPath: modelPath, isDirectory: true)).modelType
+            switch funasrType {
+            case .paraformerStreaming, .paraformerZH:
+                return .autoOnly("Paraformer 中英双语内置，无需指定语言。")
+            case .senseVoiceSmall, .funASRNano:
+                return .selectable
+            }
         case .auto, .whisper, .nemotron:
             if case .qwen3asr = engine(forPath: ModelPathResolver.resolveModelPath()) {
                 return qwenAuto

@@ -228,6 +228,28 @@ final class MenuBarController: NSObject {
         switch engine {
         case .apple:
             return appleLocaleSubmenu()
+        case .funasr:
+            // 按所选 FunASR 模型细分（与主窗口 languageSupport 同源）：
+            // SenseVoice/Nano → 语言提示（whisper 表）；
+            // Paraformer → 双语内置说明。
+            let modelPath = ModelPathResolver.resolveModelPath()
+            let funasrType = FunASRModelConfig.config(
+                for: URL(fileURLWithPath: modelPath, isDirectory: true)).modelType
+            switch funasrType {
+            case .paraformerStreaming, .paraformerZH:
+                let container = NSMenuItem(title: L10n.t("menubar.asrLanguage"), action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                submenu.autoenablesItems = false
+                let item = NSMenuItem(
+                    title: "Paraformer 中英双语内置，无需指定语言",
+                    action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                submenu.addItem(item)
+                container.submenu = submenu
+                return container
+            case .senseVoiceSmall, .funASRNano:
+                return whisperLanguageSubmenu()
+            }
         case .qwen:
             let container = NSMenuItem(title: L10n.t("menubar.asrLanguage"), action: nil, keyEquivalent: "")
             let submenu = NSMenu()

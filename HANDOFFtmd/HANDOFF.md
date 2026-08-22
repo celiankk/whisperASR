@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-23 05:40 CST（第 22 节为最新交接）
+- 交接时间：2026-08-23 06:00 CST（第 23 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -1974,3 +1974,39 @@ release 打包重启通过。
 - 远程 ASR Provider（对标 Remote Whisper，HTTP 二进制协议）。
 
 ### 一句话总结（第 18 节）
+
+---
+
+## 23. 第十五轮会话（2026-08-23 05:50–06:00）：OBS 原生鼠标输入 + 终扫
+
+### OBS 字幕窗原生鼠标输入（用户点名）
+
+- 面板 borderless → **titled + resizable + fullSizeContentView +
+  透明标题栏**（与主浮层同方案）：原生边缘/四角缩放 + 系统光标，观感
+  不变；minSize 360×90；
+- **背景拖拽**：自定义 ObsSubtitleHostingView（private，NSView 层）
+  mouseDown → performDrag——SwiftUI 层 allowsHitTesting(false) 只挡
+  文字命中，不阻断 NSView 拖拽转发；
+- 菜单栏「OBS 字幕窗」开关带 ✓ 状态刷新。
+
+### bug 终扫结果
+
+- 主浮层穿透模式 styleMask remove(.resizable) 后恢复路径确认正确
+  （interactive 分支重新 insert）——无问题；
+- 运行日志无新错误；123/123 测试全绿；release 打包重启通过。
+
+### 死代码清理
+
+L10n 未用 key ×4（menubar.asrLanguage.apple / common.settings /
+common.cancel / common.done）。
+
+### 新坑 31：private 类型的泛型父类必须同 private
+
+`class X: NSHostingView<PrivateView>` 报"must be declared private"——
+泛型参数引用 private 类型时子类可见性不得更宽。
+
+### 一句话总结（第 20–23 节）
+
+第 20–23 节完成：引擎分类事故修复与复盘、LiveTranslate 深度报告对标
+（可靠性/VAD/桶化/翻译/显示/补零可调/OBS 窗，共 15+ 项）、四轮 bug
+检查与死代码清理。测试 106→123。git 历史干净按功能分 commit。

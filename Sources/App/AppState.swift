@@ -33,7 +33,12 @@ class AppState {
     // Live transcription state
     var liveSegments: [TranscriptionSegment] = []
     var isLiveTranscribing = false
-    var enableLiveTranscription = true
+    /// 「录制后生成转录记录」开关（持久化）：只影响录制结束是否生成
+    /// 历史条目/保留音频；实时字幕与翻译始终进行。
+    var enableLiveTranscription: Bool {
+        get { UserDefaults.standard.object(forKey: "enableTranscriptRecord") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "enableTranscriptRecord") }
+    }
 
     // Inline error banners surfaced in the unified floating overlay. Nil when no error.
     var liveError: String?

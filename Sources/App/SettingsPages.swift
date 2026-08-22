@@ -345,6 +345,9 @@ struct RecognitionSettingsView: View {
             Section("识别语言") {
                 // 按当前引擎显示：支持手动指定的（whisper / nemotron / 在线）
                 // 显示语言选择器；Qwen 自动检测；Apple 按语言包设置。
+                // 显式读取建立 Observable 依赖：菜单栏改 asrLanguage 时
+                // 本页 Picker 同步刷新（languageSupport 是 static 不参与追踪）。
+                let _ = recognition.asrLanguage
                 switch TranscriptionService.languageSupport {
                 case .selectable:
                     Picker("识别语言", selection: $recognition.asrLanguage) {
@@ -742,6 +745,8 @@ struct TranslationSettingsView: View {
     var body: some View {
         @Bindable var translation = settings.translation
         let mode = translation.mode
+        // 显式读取建立 Observable 依赖（菜单栏改 targetLanguage 时本页同步）。
+        let _ = translation.targetLanguage
 
         Form {
             Section("翻译") {

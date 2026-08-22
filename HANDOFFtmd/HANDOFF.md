@@ -1,6 +1,6 @@
 # WhisperASR / Apple Services Bugfix 交接文档
 
-- 交接时间：2026-08-23 06:20 CST（第 23.2 节为最新交接）
+- 交接时间：2026-08-23 06:35 CST（第 23.3 节为最新交接）
 - 项目目录：`/Users/hyj/Desktop/whisperASR_副本`
 - Git 分支：`重构整体`
 - 当前 HEAD：`ce44943 重构2`
@@ -2038,6 +2038,29 @@ selectEngine 执行 rebuildMenu() 时 isMenuOpen 仍为 true，被
 
 action 先于 didClose。依赖 didClose 复位状态后立刻在 action 里做
 "菜单已关闭"假设的操作会全部落空；跨该时序的操作用 async 延迟一拍。
+
+### 23.3 追加：async 一拍仍不够 + MiMo 语言边界
+
+1. **上轮 async 延迟仍失效**：下一 runloop tick 仍在 menuDidClose 之前
+   （关闭动画窗口期）。加固：延迟 0.4s（> 收起动画）+ 显式复位
+   isMenuOpen 后强制重建；menuDidClose 再兜底一次幂等重建
+   （buildMenu 全量、重复无害）。三重保险覆盖所有时序。
+2. **MiMo 中英边界**：在线引擎下 API 类型=小米 MiMo 时，识别语言表
+   只列 自动/中文/英文（菜单栏 whisperLanguageSubmenu 分支 +
+   TranscriptionService.languageSupport 同步），与其
+   asr_options.language 能力一致；其他在线端点保持全表。
+
+修复过程中一次替换脚本把函数头换新实现后旧函数体残留造成结构损坏——
+已清理。测试 123/123；release 打包重启通过。
+
+验证：本地→在线（MiMo）切引擎 → 识别语言变中英三项；openai 端点 →
+全语言表；Apple → 语言包列表。
+
+### 新坑 34：锚点替换脚本失败后必须回读全文再续写
+
+部分写入后再跑第二个替换脚本，新旧实现并存会产生孤儿代码块——
+编译错误只是表象，正确做法是 sed -n 读损坏区域全文、以实际文本为锚
+清理，而不是凭记忆再补一刀（本轮孤儿尾巴就是这么来的）。
 
 ### 一句话总结（第 20–23 节）
 

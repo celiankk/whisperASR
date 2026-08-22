@@ -172,6 +172,9 @@ final class MenuBarController: NSObject {
 
     @objc func menuDidClose(_ menu: NSMenu) {
         isMenuOpen = false
+        // 兜底：任何路径（含 selectEngine 的 0.4s 前窗口期）漏掉的结构
+        // 重建，在关闭后统一补一次——幂等（buildMenu 全量重建）。
+        rebuildMenu()
     }
 
     @objc private func toggleRecording() {
@@ -196,11 +199,13 @@ final class MenuBarController: NSObject {
         // 走配置对象（didSet 持久化 + @Observable 通知）——主窗口设置页
         // 与菜单栏双向同步；直接写 UserDefaults 会绕过 UI 通知。
         settings.asr.asrEngine = engine
-        // 结构重建需在菜单完全关闭后：子菜单 action 早于 menuDidClose
-        // 派发，此刻 isMenuOpen 仍为 true、直接 rebuild 会被守卫拦截
-        // （识别语言子菜单不同步的根因）。延迟到下一 runloop 执行。
-        DispatchQueue.main.async { [weak self] in
-            self?.rebuildMenu()
+        // 结构重建必须在菜单完全关闭后：action 先于 menuDidClose 派发，
+        // async 一拍仍在关闭动画窗口内（isMenuOpen 未复位）会被守卫拦截。
+        // 延迟 0.4s（> 收起动画）强制重建，并在 menuDidClose 兜底再刷一次。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, ASREngineSelection.current == engine else { return }
+            self.isMenuOpen = false   // 选择路径：明确已不在打开态
+            self.rebuildMenu()
         }
         appState?.showToast("\(L10n.t("menubar.engine.switched"))：\(engine == .apple ? "Apple" : engine == .online ? L10n.t("menubar.engine.online") : L10n.t("menubar.engine.local"))")
     }
@@ -319,16 +324,28 @@ final class MenuBarController: NSObject {
         return container
     }
 
-    /// 非 Apple 引擎：whisper 全语言表（自动检测 + 前 30）。
+    /// 非 Apple 引擎：whisper 全语言表（自动检测 + 前 30）；
+    /// 在线 + 小米 MiMo 时仅列中英（模型能力边界，与主窗口一致）。
     private func whisperLanguageSubmenu() -> NSMenuItem {
         let container = NSMenuItem(title: L10n.t("menubar.asrLanguage"), action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let current = UserDefaults.standard.string(forKey: "asrLanguage") ?? "auto"
         asrLanguageItems.removeAll()
-        let autoItem = languageItem("自动检测", code: "auto", current: current)
-        asrLanguageItems.append((item: autoItem, code: "auto"))
-        submenu.addItem(autoItem)
+
+        // MiMo 能力边界：仅中英。
+        if ASREngineSelection.current == .online,
+           OnlineASRApiType.current == .mimo {
+            for (title, code) in [("自动检测", "auto"), ("中文（zh）", "zh"), ("英文（en）", "en")] {
+                let item = languageItem(title, code: code, current: current)
+                asrLanguageItems.append((item: item, code: code))
+                submenu.addItem(item)
+            }
+            container.submenu = submenu
+            return container
+        }
+        asrLanguageItems.append((item: languageItem("自动检测", code: "auto", current: current), code: "auto"))
+        submenu.addItem(asrLanguageItems[0].item)
         submenu.addItem(.separator())
         for lang in TranscriptionService.availableLanguages().prefix(30) {
             let item = languageItem("\(lang.name)（\(lang.code)）",

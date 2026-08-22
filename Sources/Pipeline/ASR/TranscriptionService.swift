@@ -384,6 +384,11 @@ final class TranscriptionService: @unchecked Sendable {
         case .apple:
             return .appleLocale
         case .online:
+            // 小米 MiMo 仅支持中英（asr_options.language=auto/zh/en）——
+            // 语言选择器只列中英 + 自动；其余在线端点全表。
+            if OnlineASRApiType.current == .mimo {
+                return .autoOnly("小米 MiMo 仅支持中英双语（自动/中文/英文）。")
+            }
             return .selectable
         case .qwen:
             return qwenAuto

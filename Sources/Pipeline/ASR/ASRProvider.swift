@@ -165,13 +165,23 @@ extension ASRProvider {
 // 流式引擎禁用（补零破坏流语义）；文件转录一次性推理无需。
 
 enum InputBucketing {
-    /// 0.5s @16kHz。
-    static let quantumSamples = 8000
+    /// 默认 0.5s @16kHz；用户可配 asrPadSeconds（0 = 禁用桶化，
+    /// 恢复原始随机形状；1 = 1s 粗桶——形状更少、尾部多算更多）。
+    static var configuredPadSeconds: Double {
+        let stored = UserDefaults.standard.object(forKey: "asrPadSeconds")
+        return (stored as? NSNumber)?.doubleValue ?? 0.5
+    }
+
+    static var quantumSamples: Int {
+        max(0, Int(configuredPadSeconds * 16000))
+    }
 
     static func padded(_ samples: [Float]) -> [Float] {
-        let remainder = samples.count % quantumSamples
+        let quantum = quantumSamples
+        guard quantum > 0 else { return samples }   // 0 = 禁用
+        let remainder = samples.count % quantum
         guard remainder != 0 else { return samples }
-        return samples + [Float](repeating: 0, count: quantumSamples - remainder)
+        return samples + [Float](repeating: 0, count: quantum - remainder)
     }
 }
 

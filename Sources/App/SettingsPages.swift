@@ -267,6 +267,23 @@ struct RecognitionSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                HStack {
+                    Text("输入补零")
+                    Spacer()
+                    Picker("", selection: padSecondsBinding) {
+                        Text("禁用").tag(0.0)
+                        Text("0.25s").tag(0.25)
+                        Text("0.5s（默认）").tag(0.5)
+                        Text("1s").tag(1.0)
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                    .pickerStyle(.menu)
+                }
+                Text("推理输入补零对齐到固定时长桶：稳定 GPU 推理形状、减少延迟毛刺；禁用则恢复原始输入长度。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("ASR Prompt（热词提示）") {
@@ -377,6 +394,17 @@ struct RecognitionSettingsView: View {
     private func refreshPromptPreview() {
         ASRPromptManager.shared.refresh()
         promptPreview = ASRPromptManager.shared.currentPrompt ?? ""
+    }
+
+    /// 输入补零时长（UserDefaults "asrPadSeconds"；nil = 默认 0.5）。
+    private var padSecondsBinding: Binding<Double> {
+        Binding(
+            get: {
+                UserDefaults.standard.object(forKey: "asrPadSeconds") == nil
+                    ? 0.5 : UserDefaults.standard.double(forKey: "asrPadSeconds")
+            },
+            set: { UserDefaults.standard.set($0, forKey: "asrPadSeconds") }
+        )
     }
 
     /// 引擎选择器（UI 三项）：本地 = 自动/Whisper/Qwen/Nemotron 归一显示

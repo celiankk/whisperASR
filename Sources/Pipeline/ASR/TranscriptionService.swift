@@ -511,4 +511,17 @@ final class TranscriptionService: @unchecked Sendable {
         }
     }
 #endif
+
+    /// 按模型路径解析引擎标识（能力查询用；与 resolveEngine 的本地档
+    /// 同一判定事实源——目录/GGUF 架构/catalog 元数据）。
+    static func engineType(forModelPath path: String) -> ASREngineType {
+        switch engine(forPath: path) {
+        case .whisper: return .whisper
+        case .nemotron: return .nemotron
+        case .qwen3asr: return .qwen3asr
+        case .online: return .online
+        case .apple: return .apple
+        case .funasr: return .funasr
+        }
+    }
 }

@@ -216,6 +216,13 @@ struct RecognitionSettingsView: View {
                 Text(engineHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // 能力清单：统一能力描述层动态渲染（UI 不感知具体引擎）。
+                HStack(alignment: .top, spacing: 8) {
+                    Text("能力")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ASRCapabilitySummaryView(engine: currentCapabilityEngine)
+                }
             }
 
             // 选中哪个方式，只显示该方式的配置区（严格互斥）：
@@ -426,9 +433,22 @@ struct RecognitionSettingsView: View {
         )
     }
 
-    /// 引擎选择提示（按当前选择给出说明）。
-    private var engineHint: String {
+    /// 当前选择对应的能力查询引擎（ASREngineType）：
+    /// 在线/Apple/FunASR 直接映射；本地三项按模型路径自动判定
+    /// （与 TranscriptionService.resolveEngine 同一事实源）。
+    private var currentCapabilityEngine: ASREngineType {
         switch settings.asr.asrEngine {
+        case .online: return .online
+        case .apple: return .apple
+        case .funasr: return .funasr
+        case .auto, .whisper, .qwen, .nemotron:
+            return TranscriptionService.engineType(
+                forModelPath: ModelPathResolver.resolveModelPath())
+        }
+    }
+
+    /// 引擎选择提示（按当前选择给出说明）。
+    private var engineHint: String {        switch settings.asr.asrEngine {
         case .online:
             return "在线：OpenAI 兼容 API（无需本地模型，识别数据发送到服务端）；需在下方启用并配置。"
         case .apple:
@@ -504,6 +524,13 @@ private struct ModelCatalogSection: View {
                         ModelRowView(model: model)
                     }
                 }
+            }
+            // 能力清单：当前本地模型解析出的引擎（能力描述层动态渲染）。
+            VStack(alignment: .leading, spacing: 4) {
+                Text("当前模型能力").font(.caption).foregroundStyle(.secondary)
+                ASRCapabilitySummaryView(
+                    engine: TranscriptionService.engineType(
+                        forModelPath: ModelPathResolver.resolveLiveModelPath()))
             }
             Text("选择已下载的模型用于转录。模型越小速度越快，但准确率越低。")
                 .font(.caption)
@@ -614,6 +641,8 @@ private struct OnlineASRSection: View {
         Section("在线识别 API") {
             Toggle("启用在线识别", isOn: $recognition.onlineASREnabled)
             if recognition.onlineASREnabled {
+                // 能力清单（统一能力描述层动态渲染）。
+                ASRCapabilitySummaryView(engine: .online)
                 Picker("API 类型", selection: $recognition.onlineASRApiType) {
                     ForEach(OnlineASRApiType.allCases, id: \.self) { type in
                         Text(type.label).tag(type)
@@ -1879,6 +1908,8 @@ struct AppleSpeechSettingsSection: View {
         @Bindable var asr = settings.asr
 
         Section("Apple Speech（系统语音识别）") {
+            // 能力清单（统一能力描述层动态渲染，UI 不感知引擎细节）。
+            ASRCapabilitySummaryView(engine: .apple)
             StatusRow(title: "授权",
                       text: authText,
                       level: authLevel)
@@ -2200,6 +2231,31 @@ private struct StatusRow: View {
                 .foregroundStyle(level.color)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
+        }
+    }
+}
+
+/// 引擎能力清单（统一能力描述层的设置页渲染）：
+/// 数据来自 ASRCapabilityRegistry.capability(for:).summaryEntries，
+/// 本视图不感知具体引擎（无 if engine == .xxx 分支）；新引擎只需
+/// 在注册表补注册，UI 自动显示。
+struct ASRCapabilitySummaryView: View {
+    let engine: ASREngineType
+
+    var body: some View {
+        let entries = ASRCapabilityRegistry.shared.capability(for: engine).summaryEntries
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                HStack(spacing: 5) {
+                    Image(systemName: entry.supported ? "checkmark" : "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(entry.supported ? .green : .secondary)
+                        .frame(width: 12)
+                    Text(entry.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }

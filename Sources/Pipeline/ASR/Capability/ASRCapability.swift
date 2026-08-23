@@ -44,4 +44,33 @@ struct ASRCapability: Equatable, Sendable {
     /// 引擎是否支持手动指定识别语言（supportedLanguages 非空即可选；
     /// 空 + autoDetectOnly=false 表示仅系统/内置语言策略）。
     var supportsLanguageSelection: Bool { !supportedLanguages.isEmpty }
+
+    /// 推荐场景标签。
+    var modeLabel: String {
+        switch recommendedMode {
+        case .realtime: return "实时优先"
+        case .balanced: return "均衡"
+        case .accuracy: return "精度优先"
+        }
+    }
+
+    /// 设置页能力清单（✓/△ 行数据源）：UI 按此渲染，
+    /// 不感知具体引擎。supported 为 false 渲染为 △（弱支持/视配置而定）。
+    var summaryEntries: [(label: String, supported: Bool)] {
+        var entries: [(String, Bool)] = [
+            ("推荐场景：\(modeLabel)", true),
+            ("实时出字", supportsPartialResult),
+            ("原生时间戳", supportsTimestamp),
+        ]
+        if supportedLanguages.isEmpty {
+            entries.append(("多语言自动检测", true))
+        } else if supportedLanguages.count > 4 {
+            entries.append(("多语言（\(supportedLanguages.count) 种可选）", true))
+        } else {
+            let names = supportedLanguages.joined(separator: "/")
+            entries.append(("语言：\(names)", true))
+        }
+        entries.append((requiresNetwork ? "需网络" : "本地运行", !requiresNetwork))
+        return entries
+    }
 }

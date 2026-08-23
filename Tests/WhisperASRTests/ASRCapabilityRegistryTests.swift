@@ -100,4 +100,57 @@ final class ASRCapabilityRegistryTests: XCTestCase {
         XCTAssertEqual(fallback.engine, .apple)
         XCTAssertTrue(fallback.supportsPartialResult, "兜底至少允许 partial 显示")
     }
+
+    // MARK: summaryEntries（设置页渲染数据源）
+
+    /// 所有引擎的 summaryEntries 非空且条目合法——UI 遍历渲染依赖
+    /// 此完备性（新引擎只在注册表补注册，UI 即可显示）。
+    func testSummaryEntriesCompleteForAllEngines() {
+        for capability in ASRCapabilityRegistry.shared.all {
+            let entries = capability.summaryEntries
+            XCTAssertFalse(entries.isEmpty, "\(capability.engine.rawValue) 能力清单为空")
+            for entry in entries {
+                XCTAssertFalse(entry.label.isEmpty, "\(capability.engine.rawValue) 存在空标签")
+            }
+            // 每个清单都应包含推荐场景行（首条）与运行位置行（末条）。
+            XCTAssertTrue(entries.first?.label.contains("推荐场景") ?? false,
+                          "\(capability.engine.rawValue) 缺推荐场景条目")
+            let last = entries.last?.label ?? ""
+            XCTAssertTrue(last.contains("本地运行") || last.contains("需网络"),
+                          "\(capability.engine.rawValue) 缺运行位置条目")
+        }
+    }
+
+    /// 网络需求与清单文案一致：online 末条为「需网络」，其余「本地运行」。
+    func testNetworkRequirementMatchesSummaryText() {
+        for capability in ASRCapabilityRegistry.shared.all {
+            let last = capability.summaryEntries.last?.label ?? ""
+            if capability.requiresNetwork {
+                XCTAssertEqual(last, "需网络", "\(capability.engine.rawValue) 应标需网络")
+            } else {
+                XCTAssertEqual(last, "本地运行", "\(capability.engine.rawValue) 应标本地运行")
+            }
+        }
+    }
+
+    /// 语言展示策略：不可枚举（空表）→「多语言自动检测」；
+    /// 可枚举 → 明确语言数或语言列表。
+    func testLanguageEntryReflectsSupportedLanguages() {
+        let qwen = ASRCapabilityRegistry.shared.capability(for: .qwen3asr)
+        XCTAssertTrue(qwen.summaryEntries.contains { $0.label.contains("自动检测") })
+        let funasr = ASRCapabilityRegistry.shared.capability(for: .funasr)
+        if funasr.supportsLanguageSelection || !funasr.supportedLanguages.isEmpty {
+            XCTAssertTrue(funasr.summaryEntries.contains { $0.label.contains("语言") })
+        }
+    }
+
+    /// engineType(forModelPath:) 与 debugEngineDescription 同一判定：
+    /// 设置页能力查询与转录调度使用同一事实源。
+    func testEngineTypeResolutionMatchesDebugDescription() {
+        let path = ModelPathResolver.resolveModelPath()
+        let type = TranscriptionService.engineType(forModelPath: path)
+        let description = TranscriptionService.debugEngineDescription(forPath: path)
+        XCTAssertTrue(description.hasSuffix("engine=\(type.rawValue)"),
+                      "engineType 判定(\(type.rawValue))与调试描述不一致：\(description)")
+    }
 }

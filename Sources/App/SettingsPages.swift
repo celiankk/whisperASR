@@ -904,30 +904,9 @@ struct TranslationSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: translation.model) { _, _ in verifyResult = nil }
 
-                    // 场景化预设：点选填入文本框（仍可手动改；「默认」清空自定义）。
-                    HStack {
-                        Text("提示词预设")
-                        Spacer()
-                        Menu {
-                            ForEach(TranslationPromptPreset.all, id: \.name) { preset in
-                                Button(preset.name) {
-                                    translation.systemPrompt = preset.prompt
-                                }
-                            }
-                        } label: {
-                            Label("选择预设", systemImage: "text.badge.star")
-                                .controlSize(.small)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-                    }
-                    TextField("系统提示词（可选）", text: $translation.systemPrompt,
-                              prompt: Text("你是专业字幕翻译助手。保持原意。不要解释。只输出翻译结果。"),
-                              axis: .vertical)
-                        .lineLimit(2...4)
-                    Text("自定义 system message 提示词；留空使用默认翻译指令。编号输出格式要求会自动追加。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // 提示词配置：预设选择 + 模板编辑 + 变量插入 +
+                    // 恢复默认/保存（变量替换统一走 PromptBuilder）。
+                    TranslationPromptEditor(translation: translation)
 
                     // 思考模型兼容：禁思考参数注入（DeepSeek-R1/GLM/Qwen3 等
                     // 思考模型会把译文写进 reasoning_content 导致翻译空）。
@@ -2640,3 +2619,119 @@ private struct ModelRowView: View {
 
 // TranslationPromptPreset 已迁移至 Pipeline/Translation/TranslationPromptPreset.swift
 // （Pipeline 层——设置页与翻译运行时共用；变量化模板见 PromptBuilder）。
+
+/// 翻译提示词编辑器（设置 → 翻译）：预设选择即时加载对应模板，
+/// 编辑区修改后「保存」持久化（保存即视为自定义态）；「恢复默认」
+/// 重载当前预设原始模板；变量点击追加到编辑区（不做复杂编辑器）。
+private struct TranslationPromptEditor: View {
+    @Bindable var translation: TranslationConfiguration
+    /// 编辑缓冲（未保存的修改；保存时写回 translation.systemPrompt）。
+    @State private var draft: String = ""
+    /// 已加载到缓冲的来源（预设名 / "自定义" / ""），驱动恢复默认。
+    @State private var loadedSource: String = ""
+    @State private var saveConfirmation: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("系统提示词")
+                Spacer()
+                Picker("", selection: $loadedSource) {
+                    ForEach(TranslationPromptPreset.all, id: \.name) { preset in
+                        Text(preset.name).tag(preset.name)
+                    }
+                    Text(TranslationPromptPreset.customName).tag(TranslationPromptPreset.customName)
+                }
+                .labelsHidden()
+                .frame(width: 150)
+                .pickerStyle(.menu)
+                .onChange(of: loadedSource) { _, newValue in
+                    loadPreset(named: newValue)
+                }
+            }
+
+            TextEditor(text: $draft)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(minHeight: 110, maxHeight: 180)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
+
+            // 变量说明（点击追加到编辑区末尾）。
+            HStack(spacing: 10) {
+                Text("可用变量：").font(.caption).foregroundStyle(.secondary)
+                ForEach([("{source_lang}", "源语言"),
+                         ("{target_lang}", "目标语言"),
+                         ("{text}", "待翻译文本")], id: \.0) { variable, hint in
+                    Button {
+                        draft += variable
+                    } label: {
+                        Text("\(variable) \(hint)")
+                            .font(.caption)
+                            .monospaced()
+                    }
+                    .buttonStyle(.link)
+                    .help("点击插入 \(variable)")
+                }
+            }
+
+            HStack {
+                Button("恢复默认") { restoreDefault() }
+                    .disabled(loadedSource.isEmpty || loadedSource == TranslationPromptPreset.customName)
+                Button("保存") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(draft == translation.systemPrompt)
+                if let saveConfirmation {
+                    Text(saveConfirmation)
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+                Spacer()
+            }
+
+            Text("模板支持变量替换（发送前统一执行）；留空使用默认翻译指令。编号输出格式要求会自动追加，无需写入。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear { loadPersisted() }
+    }
+
+    /// 启动时按持久化状态恢复：预设名 + 模板全文。
+    private func loadPersisted() {
+        let savedPreset = translation.translationPromptPreset
+        draft = translation.systemPrompt
+        if savedPreset == TranslationPromptPreset.customName || savedPreset.isEmpty {
+            // 自定义 / 未选择过：显示自定义（或空）。
+            loadedSource = savedPreset.isEmpty ? "" : TranslationPromptPreset.customName
+        } else {
+            loadedSource = savedPreset
+        }
+    }
+
+    /// 切换预设：立即加载对应模板到编辑区（未保存，需点保存写入）。
+    private func loadPreset(named name: String) {
+        guard let preset = TranslationPromptPreset.named(name) else { return }
+        draft = preset.prompt
+        loadedSource = preset.name
+        saveConfirmation = nil
+    }
+
+    /// 恢复默认：重载当前预设的原始模板。
+    private func restoreDefault() {
+        guard let preset = TranslationPromptPreset.named(loadedSource) else { return }
+        draft = preset.prompt
+    }
+
+    /// 保存：写回配置（持久化）；与任何内置预设不同即标记自定义态。
+    private func save() {
+        translation.systemPrompt = draft
+        if let preset = TranslationPromptPreset.named(loadedSource),
+           preset.prompt == draft {
+            translation.translationPromptPreset = preset.name
+        } else {
+            translation.translationPromptPreset = TranslationPromptPreset.customName
+        }
+        saveConfirmation = "已保存"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saveConfirmation = nil }
+    }
+}

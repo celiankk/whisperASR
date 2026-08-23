@@ -2092,3 +2092,73 @@ SwiftUI + @Observable：Picker(selection:) 的绑定不建立对外部写入的
 第 20–23 节完成：引擎分类事故修复与复盘、LiveTranslate 深度报告对标
 （可靠性/VAD/桶化/翻译/显示/补零可调/OBS 窗，共 15+ 项）、四轮 bug
 检查与死代码清理。测试 106→123。git 历史干净按功能分 commit。
+
+---
+
+## 24. 第十六轮会话（2026-08-23 22:00–22:40）：ASRResultNormalizer 统一识别结果层
+
+### 需求（用户规格）
+
+所有 ASR 引擎（whisper / qwen3asr / nemotron / apple / funasr）输出统一归一，
+字幕层禁止 if whisper / if funasr / if apple 引擎分支；Provider 推理逻辑不动；
+两个 commit：`refactor: add ASR result normalizer` + `refactor: unify provider
+output format`；不混入 UI/Runtime/VAD/模型管理修改。
+
+### 架构（落地形态）
+
+```
+ASRProvider（推理逻辑不动）
+      ↓ 统一中间结果（ASRResult / TranscriptionResult）
+TranscriptionService 出口（dispatchChunk / transcribeFileDispatch 收口）
+      ↓ ASRResultNormalizer（唯一允许按引擎分支的位置）
+NormalizedASRResult { segments, language, engine, metadata, fullText }
+      ↓
+SubtitleManager（只按 metadata.mergePolicy 行为）/ AppState / APIServer
+```
+
+新模块 `Sources/Pipeline/ASR/Normalizer/`：
+- `NormalizedSegment.swift`：NormalizedSegment（id/text/startTime/endTime/
+  confidence/isFinal）+ NormalizedASRResult；
+- `ASRMetadata.swift`：ASREngineType（= ASRProviderEngine 的 typealias，不造
+  重复枚举）、ASRTimebase（chunkRelative/sessionStart）、**ASRMergePolicy**
+  （replaceTail=每轮重转录整个 tail 整段替换 / appendIncrement=流式引擎只回
+  增量需跨轮累积）；ASRMetadata.default(isStreamingEngine:) 按 Provider 协议
+  已声明的喂音语义折算；
+- `ASRResultNormalizer.swift`：三个 normalize 入口（ASRResult 单文本 /
+  TranscriptionResult 多段 / TranscriptionSegment 单段增量）+ 回迁
+  toTranscriptionSegments。
+
+### 关键修复（顺手修的真 bug）
+
+`liveEngineStreamsIncrementally` 硬编码只认 Apple——FunASR paraformer-
+streaming 同样是增量引擎（isStreamingEngine=true），却被误按整段替换策略
+处理：当前句每轮被最新碎片覆盖，前半句丢失。现在合并策略由 Provider 的
+isStreamingEngine 折算为新查询 `liveMergePolicy`，布尔形式保留。
+
+### 数据结构决策
+
+- NormalizedASRResult.fullText：文件转录兼容字段（历史库 fullText 直接取用，
+  APIServer text/json 响应不变）；实时链路不用（增量语义下整段无意义）。
+- 字幕显示/持久化仍是 TranscriptionSegment——归一层在边界转换
+  （toTranscriptionSegments），历史库数据格式零迁移。
+
+### 改动面（3 commit）
+
+1. `30eb76f refactor: add ASR result normalizer`：Normalizer 模块 + 7 单测。
+2. `1f09e0e refactor: unify provider output format`：transcribeChunk 返回
+   NormalizedASRResult；ASRManager 合并策略读结果 metadata；SubtitleManager
+   appendTail(incremental:) → (mergePolicy:)；修 paraformer-streaming bug。
+3. `bcee64f refactor: normalize file transcription output`：transcribe 出口
+   归一（分派主体拆至 transcribeFileDispatch）；AppState/APIServer 消费端
+   回迁原格式。
+
+测试 123→130（+7 Normalizer）。全量通过。工作区干净。
+
+### 未做 / 下轮候选
+
+- confidence 目前仅 Apple 有真实来源；whisper avg_logprob、sherpa 时间戳
+  精细映射可后续补进 NormalizedSegment（字段已预留）。
+- ASRTimebase 当前两档都由调用方加偏移（行为同旧），真正绝对时间轴引擎
+  接入时才需要消费方区分。
+- 规格第七节「切换模型不影响字幕渲染」的端到端验证需真机（SenseVoice /
+  paraformer-streaming 实测），纯数据层已由单测覆盖。

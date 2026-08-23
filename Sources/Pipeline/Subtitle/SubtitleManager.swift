@@ -1,5 +1,24 @@
 import Foundation
 
+// MARK: - 实时识别状态（StreamingState）
+//
+// 显式状态快照：调试日志 / UI 状态展示 / 状态监控用。
+// 不用于并发控制——实时循环严格串行（ASRManager 每 pass await 转录返回），
+// 状态推进只发生在 appendTail / rollbackTail / seal 系列 / clear 中。
+
+enum StreamingState: Equatable {
+    /// 会话未开始或已清空。
+    case idle
+    /// 已有 sealed 文本、当前无未封口 tail（说话人停顿中）。
+    case recognizing
+    /// 有未封口 tail（partial 增量累积 / 全量替换中）。
+    case partial
+    /// 封口进行中（seal 系列调用内）。
+    case finalizing
+    /// 会话结束（stop 后；缓存由上层清显示快照）。
+    case completed
+}
+
 // MARK: - 字幕管理器（SubtitleManager）
 //
 // 实时字幕数据管理（AppState 拆分的一部分，UI 绑定不变）：
@@ -29,6 +48,8 @@ final class SubtitleManager: @unchecked Sendable {
     private(set) var sealedSampleCount = 0
     /// 封口是否落在静音停顿内（干净封口无需 overlap；强制封口需要 1s 左上下文）。
     private(set) var sealedClean = true
+    /// 实时识别状态（显式快照：日志/UI 展示用，不做并发控制）。
+    private(set) var streamingState: StreamingState = .idle
 
     /// 生命周期门面（SubtitleEngine.shared）：统一生命周期 / 刷新节流 /
     /// 性能监控 / 日志 / 异常恢复。
@@ -45,6 +66,7 @@ final class SubtitleManager: @unchecked Sendable {
     /// 会话结束：停止引擎（缓存由上层清空显示快照）。
     func stop() {
         engine.stop()
+        streamingState = .completed
     }
 
     /// 清空字幕缓存（新会话 / 异常恢复 / 停止时）。
@@ -53,6 +75,7 @@ final class SubtitleManager: @unchecked Sendable {
         pendingTailSegments.removeAll()
         sealedSampleCount = 0
         sealedClean = true
+        streamingState = .idle
     }
 
     // MARK: - 数据管理
@@ -78,6 +101,7 @@ final class SubtitleManager: @unchecked Sendable {
         let kept = sealedSegments.filter { $0.start < tailStartTime }
 
         if mergePolicy == .appendIncrement {
+            streamingState = .partial
             let incoming = tailSegments
                 .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
@@ -101,6 +125,7 @@ final class SubtitleManager: @unchecked Sendable {
                     text: incomingText)]
             }
         } else {
+            streamingState = .partial
             pendingTailSegments = tailSegments
         }
 
@@ -131,11 +156,13 @@ final class SubtitleManager: @unchecked Sendable {
     /// sealTime 之后的段留作 pendingTail（下一句起点，不丢失）。
     /// 调用方（ASRManager）负责 recorder.trimSamples。
     func seal(upToSampleCount: Int, clean: Bool, combined: [TranscriptionSegment]) {
+        streamingState = .finalizing
         let sealTime = Double(upToSampleCount) / 16000.0
         sealedSegments = combined.filter { $0.start < sealTime }
         pendingTailSegments = combined.filter { $0.start >= sealTime }
         sealedSampleCount = upToSampleCount
         sealedClean = clean
+        streamingState = pendingTailSegments.isEmpty ? .recognizing : .partial
         // 环形窗口：只保留近期段，防止数小时运行内存无限增长。
         if sealedSegments.count > Self.maxSealedSegments {
             sealedSegments.removeFirst(sealedSegments.count - Self.maxSealedSegments)
@@ -146,6 +173,7 @@ final class SubtitleManager: @unchecked Sendable {
     /// 未提交的 pendingTail 文本一并固化——静音路径不经过常规 seal，
     /// 不提交的话最后一句的前半部分会随边界推进丢失。
     func sealSilence(upToSampleCount: Int) {
+        streamingState = .finalizing
         let sealTime = Double(upToSampleCount) / 16000.0
         let committing = pendingTailSegments.filter { $0.start < sealTime }
         if !committing.isEmpty {
@@ -157,6 +185,7 @@ final class SubtitleManager: @unchecked Sendable {
         pendingTailSegments = pendingTailSegments.filter { $0.start >= sealTime }
         sealedSampleCount = upToSampleCount
         sealedClean = true
+        streamingState = .recognizing
     }
 
     /// 输出快照（环形窗口裁剪：只保留最近 maxLiveSegments 条）。

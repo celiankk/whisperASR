@@ -116,6 +116,50 @@ final class SubtitleManagerTests: XCTestCase {
         XCTAssertEqual(manager.sealedSampleCount, 0)
     }
 
+    // MARK: StreamingState（显式实时状态快照）
+
+    func testStreamingStateTransitions() {
+        let manager = SubtitleManager()
+        XCTAssertEqual(manager.streamingState, .idle)
+
+        // partial 增量 → .partial；空 pass 不回退状态。
+        manager.appendTail(tailSegments: [seg(0, "今天")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        XCTAssertEqual(manager.streamingState, .partial)
+        manager.appendTail(tailSegments: [], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        XCTAssertEqual(manager.streamingState, .partial)
+
+        // 静音封口（整句提交、tail 清空）→ .recognizing。
+        manager.sealSilence(upToSampleCount: 2 * 16000)
+        XCTAssertEqual(manager.streamingState, .recognizing)
+
+        // 全量替换引擎新一轮 → .partial。
+        manager.appendTail(tailSegments: [seg(3, "下一句")], tailStartTime: 0, useOverlap: false, mergePolicy: .replaceTail)
+        XCTAssertEqual(manager.streamingState, .partial)
+
+        // 常规封口：封口线(3.5s)之前提交、之后的段留存 → .partial。
+        manager.appendTail(tailSegments: [seg(4, "留存段")], tailStartTime: 0, useOverlap: false, mergePolicy: .replaceTail)
+        manager.seal(upToSampleCount: Int(3.5 * 16000), clean: true,
+                     combined: manager.sealedSegments + manager.pendingTailSegments)
+        XCTAssertEqual(manager.pendingTailSegments.map(\.text), ["留存段"])
+        XCTAssertEqual(manager.streamingState, .partial)
+
+        // stop → .completed；clear → .idle。
+        manager.stop()
+        XCTAssertEqual(manager.streamingState, .completed)
+        manager.clear()
+        XCTAssertEqual(manager.streamingState, .idle)
+    }
+
+    func testSealToRecognizingWhenTailEmpty() {
+        let manager = SubtitleManager()
+        manager.appendTail(tailSegments: [seg(0, "完整句")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        // 封口线在所有段之后：pending 清空 → .recognizing（停顿中）。
+        manager.seal(upToSampleCount: 5 * 16000, clean: true,
+                     combined: manager.sealedSegments + manager.pendingTailSegments)
+        XCTAssertTrue(manager.pendingTailSegments.isEmpty)
+        XCTAssertEqual(manager.streamingState, .recognizing)
+    }
+
     // MARK: trimOverlap（whisper 强制封口后的 1s 上下文去重）
 
     func testTrimOverlapTrimsDuplicatedPrefix() {

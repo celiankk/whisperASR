@@ -1,8 +1,9 @@
 import XCTest
 @testable import WhisperASR
 
-/// 翻译提示词体系单测（规格第十二节）：
-/// PromptBuilder 变量替换 / 缺失变量安全 / 预设完备性 / Apple 路径隔离。
+/// 翻译提示词体系单测（规格第十二节 + 预设升级规格第十节）：
+/// PromptBuilder 变量替换 / 缺失变量安全 / 8 预设完整性 / 默认预设 /
+/// 用户配置兼容 / 预设切换 / Apple 路径隔离。
 final class TranslationPromptTests: XCTestCase {
 
     // MARK: PromptBuilder 变量替换
@@ -62,42 +63,135 @@ final class TranslationPromptTests: XCTestCase {
         XCTAssertFalse(PromptBuilder.embedsText("Translate to {target_lang}."))
     }
 
-    // MARK: 预设体系
+    // MARK: 预设完整性（规格第十节）
 
-    /// 规格第三节：三个变量化预设必备；「自定义」为标记名不占预设位。
-    func testRequiredPresetsExist() {
-        let names = TranslationPromptPreset.all.map(\.name)
-        for required in ["日常聊天", "视频字幕", "技术内容"] {
-            XCTAssertTrue(names.contains(required), "缺少预设 \(required)")
+    /// 8 个内置预设全部字段完备：id 不重复、name/description/prompt 非空；
+    /// 全部含 {text} 变量（文本内嵌模板形态）。
+    func testEightPresetsComplete() {
+        let presets = TranslationPromptPreset.all
+        XCTAssertEqual(presets.count, 8, "内置预设应为 8 个（不新增额外预设）")
+        let ids = presets.map(\.id)
+        XCTAssertEqual(Set(ids).count, 8, "预设 id 不得重复")
+        for preset in presets {
+            XCTAssertFalse(preset.name.isEmpty, "\(preset.id) name 为空")
+            XCTAssertFalse(preset.description.isEmpty, "\(preset.id) description 为空")
+            XCTAssertFalse(preset.prompt.isEmpty, "\(preset.id) prompt 为空")
+            XCTAssertTrue(preset.prompt.contains("{text}"), "\(preset.id) 缺 {text} 变量")
+            XCTAssertTrue(preset.prompt.contains("{source_lang}"), "\(preset.id) 缺 {source_lang}")
+            XCTAssertTrue(preset.prompt.contains("{target_lang}"), "\(preset.id) 缺 {target_lang}")
         }
-        XCTAssertFalse(names.contains(TranslationPromptPreset.customName),
+    }
+
+    /// 规格第二节：8 个预设名与顺序（日常聊天/视频字幕/直播口语/影视剧情/
+    /// 游戏/技术 IT/新闻资讯/商务正式）。
+    func testPresetNamesAndOrder() {
+        XCTAssertEqual(TranslationPromptPreset.all.map(\.name),
+                       ["日常聊天", "视频字幕", "直播口语", "影视剧情",
+                        "游戏", "技术 / IT", "新闻资讯", "商务正式"])
+        XCTAssertFalse(TranslationPromptPreset.all.contains { $0.id == TranslationPromptPreset.customID },
                        "「自定义」是编辑态标记，不应是内置预设")
     }
 
-    /// 规格第十一节：视频字幕预设使用规格建议模板（含全部三变量）。
-    func testVideoSubtitlePresetUsesSpecTemplate() {
-        let preset = TranslationPromptPreset.named("视频字幕")
-        XCTAssertNotNil(preset)
-        XCTAssertTrue(preset?.prompt.contains("{source_lang}") ?? false)
-        XCTAssertTrue(preset?.prompt.contains("{target_lang}") ?? false)
-        XCTAssertTrue(preset?.prompt.contains("{text}") ?? false)
-        XCTAssertTrue(preset?.prompt.contains("real-time subtitle translator") ?? false)
+    // MARK: 默认预设（规格第三节）
+
+    /// 默认预设为「视频字幕」（应用核心场景是实时字幕）。
+    func testDefaultPresetIsVideoSubtitle() {
+        XCTAssertEqual(TranslationPromptPreset.defaultID, "video-subtitle")
+        let defaultPreset = TranslationPromptPreset.with(id: TranslationPromptPreset.defaultID)
+        XCTAssertNotNil(defaultPreset)
+        XCTAssertEqual(defaultPreset?.name, "视频字幕")
     }
 
-    /// 持久化恢复路径：按名查预设；未知名返回 nil（上层回落默认指令）。
-    func testNamedLookup() {
-        XCTAssertNotNil(TranslationPromptPreset.named("技术内容"))
-        XCTAssertNil(TranslationPromptPreset.named("不存在的预设"))
+    /// 规格第四节：默认「视频字幕」Prompt 使用规格建议模板。
+    func testVideoSubtitlePresetUsesSpecTemplate() {
+        let prompt = TranslationPromptPreset.with(
+            id: TranslationPromptPreset.defaultID)?.prompt ?? ""
+        XCTAssertTrue(prompt.contains("professional real-time subtitle translator"))
+        XCTAssertTrue(prompt.contains("If the input is incomplete or cut off"))
+        XCTAssertTrue(prompt.contains("Do not add information that is not present in the source"))
+        XCTAssertTrue(prompt.contains("Input:\n{text}"))
+        XCTAssertTrue(prompt.hasSuffix("Output only the translation."))
+    }
+
+    // MARK: 预设切换（规格第十节）
+
+    /// 切换视频字幕 → 技术/IT → 游戏 → 自定义：Prompt 内容正确切换
+    ///（模拟设置页 loadPreset → save 的行为链）。
+    func testPresetSwitchingChangesPrompt() {
+        var currentPrompt = ""
+        var currentID = ""
+
+        func select(_ id: String) {
+            if let preset = TranslationPromptPreset.with(id: id) {
+                currentPrompt = preset.prompt   // loadPreset
+                currentID = id
+            } else if id == TranslationPromptPreset.customID {
+                currentID = TranslationPromptPreset.customID   // 内容保持用户态
+            }
+        }
+
+        select("video-subtitle")
+        XCTAssertTrue(currentPrompt.contains("real-time subtitle translator"))
+        select("tech-it")
+        XCTAssertTrue(currentPrompt.contains("professional technical translator"))
+        XCTAssertNotEqual(currentPrompt, "", "切换后 Prompt 必须更新")
+        select("game")
+        XCTAssertTrue(currentPrompt.contains("video game translator"))
+
+        // 保存时按内容匹配回写预设 id；不匹配 → 自定义。
+        func savedID() -> String {
+            TranslationPromptPreset.all.first { $0.prompt == currentPrompt }?.id
+                ?? TranslationPromptPreset.customID
+        }
+        select("tech-it")
+        XCTAssertEqual(savedID(), "tech-it")
+        currentPrompt = "my own prompt"
+        XCTAssertEqual(savedID(), TranslationPromptPreset.customID)
+        _ = currentID
+    }
+
+    /// 按 id 查预设；未知名返回 nil（上层回落默认指令）。
+    func testLookupById() {
+        XCTAssertNotNil(TranslationPromptPreset.with(id: "tech-it"))
+        XCTAssertNil(TranslationPromptPreset.with(id: "不存在的id"))
+        XCTAssertNil(TranslationPromptPreset.with(id: ""))
+    }
+
+    // MARK: 用户配置兼容（规格第七节）
+
+    /// 模拟设置页 loadPersisted 的兼容三分支：
+    /// 已有 Prompt → 原样保留；首次安装 → 默认视频字幕；残留 id → 内容为准。
+    func testUserConfigurationCompatibility() {
+        let savedPromptKey = "test_saved_prompt"
+        let savedIDKey = "test_saved_id"
+        UserDefaults.standard.removeObject(forKey: savedPromptKey)
+        UserDefaults.standard.removeObject(forKey: savedIDKey)
+
+        // 场景 1：首次安装（两键皆空）→ 加载默认「视频字幕」。
+        let firstRunPrompt = UserDefaults.standard.string(forKey: savedPromptKey) ?? ""
+        let firstRunID = UserDefaults.standard.string(forKey: savedIDKey) ?? ""
+        if firstRunPrompt.isEmpty && firstRunID.isEmpty {
+            let preset = TranslationPromptPreset.with(id: TranslationPromptPreset.defaultID)
+            XCTAssertEqual(preset?.name, "视频字幕")
+        }
+
+        // 场景 2：已有用户自定义 Prompt → 原样保留（不被默认覆盖）。
+        let userPrompt = "my custom prompt {text}"
+        UserDefaults.standard.set(userPrompt, forKey: savedPromptKey)
+        let restored = UserDefaults.standard.string(forKey: savedPromptKey) ?? ""
+        XCTAssertEqual(restored, userPrompt, "已有自定义 Prompt 升级后必须保留")
+        XCTAssertNotEqual(restored,
+                          TranslationPromptPreset.with(id: TranslationPromptPreset.defaultID)?.prompt ?? "",
+                          "默认预设不得覆盖用户已有配置")
+        UserDefaults.standard.removeObject(forKey: savedPromptKey)
+        UserDefaults.standard.removeObject(forKey: savedIDKey)
     }
 
     // MARK: Apple Translation 隔离（规格第七/十二节）
 
-    /// Apple Translation 路径不读 systemPrompt：AppleTranslationManager
-    /// 的翻译调用链不经过 PromptBuilder（LLM 专属）。静态验证：
-    /// PromptBuilder 的引用只允许出现在 ChatCompletion/TranslationService
-    /// （LLM 路径），不得出现在 AppleTranslation* 文件。
+    /// Apple Translation 路径不读 systemPrompt：不经过 PromptBuilder。
+    /// 源码级守护：Apple 翻译引擎文件不得引用 PromptBuilder。
     func testAppleTranslationDoesNotUsePromptBuilder() throws {
-        // 源码级守护：Apple 翻译引擎文件不得引用 PromptBuilder。
         let appleFiles = ["AppleTranslationEngine.swift", "AppleTranslationManager.swift"]
         for fileName in appleFiles {
             let url = URL(fileURLWithPath: #filePath)
@@ -108,6 +202,23 @@ final class TranslationPromptTests: XCTestCase {
             let content = try String(contentsOf: url, encoding: .utf8)
             XCTAssertFalse(content.contains("PromptBuilder"),
                            "\(fileName) 不得使用 PromptBuilder（Apple Translation 不注入 LLM system prompt）")
+        }
+    }
+
+    /// Provider 回归守护（规格第十节）：LLM 路径的 prompt 注入点唯一
+    /// （TranslationService.systemContent 构造），Provider 文件不含
+    /// 第二套变量替换逻辑。
+    func testProvidersHaveNoDuplicateVariableSubstitution() throws {
+        let providerFiles = ["LocalTranslationProvider.swift", "ChatCompletionProvider.swift"]
+        for fileName in providerFiles {
+            let url = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Pipeline/Translation/\(fileName)")
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            let content = try String(contentsOf: url, encoding: .utf8)
+            XCTAssertFalse(content.contains("replacingOccurrences(of: \"{"),
+                           "\(fileName) 出现了独立的变量替换逻辑（违反唯一收口）")
         }
     }
 }

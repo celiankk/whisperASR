@@ -2367,3 +2367,33 @@ sherpa-onnx C API 未暴露；实际可用为 Silero/Ten-VAD 两族。
 ### 测试
 
 148→158。全量通过。工作区干净。
+
+---
+
+## 30. 第二十二轮会话（2026-08-24 05:00–05:30）：翻译预设 8 场景升级
+
+### 需求
+
+彻底替换旧翻译预设为 8 个内置场景预设（四字段结构 id/name/description/
+prompt），默认预设设为「视频字幕」；用户已有 Prompt 配置必须保留；
+PromptBuilder/Provider/Apple 零改动。
+
+### 落地（0449b3d feat + test commit + 本节 docs）
+
+- TranslationPromptPreset 重写：8 预设（daily-chat / video-subtitle /
+  live-stream / film-drama / game / tech-it / news / business），全部
+  变量化模板（{source_lang}/{target_lang}/{text}）；customID="custom"
+  编辑态标记；defaultID="video-subtitle"（规格第四节建议模板）；
+- 用户配置兼容：loadPersisted 三分支——首次安装（两键皆空）落默认
+  视频字幕；已有 Prompt 原样保留（显示态按内容匹配预设，全等才高亮，
+  否则自定义态）；残留旧 id 以内容为准；
+- 设置页：「翻译风格」选择器（8 预设 + 自定义）+ 预设描述行 +
+  编辑器/恢复默认/保存行为不变；
+- 测试 158→163：预设完整性 / 默认预设模板 / 切换链路 / 兼容三分支 /
+  Provider 唯一收口守护 / Apple 隔离守护。
+
+### 备注
+
+工作区中发现同规格改动已先行完成大半（预设文件 + 设置页），本会话
+核对规格符合性、补齐测试适配与提交。TranslationService 只读 systemPrompt
+键（模板全文），不感知预设 id——运行时零改动成立。

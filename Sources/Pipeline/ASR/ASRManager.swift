@@ -246,81 +246,18 @@ final class ASRManager: @unchecked Sendable {
                     }
                     consecutiveChunkFailures = 0
                     consecutiveChunkTimeouts = 0
-                    // 统一识别结果层：NormalizedASRResult（引擎差异已折算
-                    // 为 metadata.mergePolicy；字幕层按字段行为）。
-                    let normalized = result
-                    let asrText = normalized.segments.map(\.text).joined(separator: " ")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    print("[ASR] response received text=\(asrText.debugDescription) segments=\(normalized.segments.count) isFinal=\(normalized.segments.first?.isFinal ?? false) language=\(normalized.language ?? "nil")"
-                        + (asrText.isEmpty ? " REASON=empty-or-still-aggregating" : ""))
-
-                    // Offset timestamps to match position in the full stream.
-                    let tailSegments = normalized.segments.map { seg in
-                        TranscriptionSegment(
-                            start: seg.startTime + timeOffset,
-                            end: seg.endTime.map { $0 + timeOffset },
-                            text: seg.text
-                        )
-                    }
-
-                    // Combine sealed (final) + freshly transcribed tail (interim) for display.
-                    // 合并策略来自归一结果 metadata（appendIncrement：本轮增量并入
-                    // pendingTail 累积为完整当前句；replaceTail：整段替换）。
-                    let tailStartTime = Double(tailStart) / 16000.0
-                    let combined = self.subtitleManager.appendTail(
-                        tailSegments: tailSegments,
-                        tailStartTime: tailStartTime,
-                        useOverlap: useOverlap,
-                        mergePolicy: normalized.metadata.mergePolicy
-                    )
-
-                    // Advance the seal: to a trailing pause (clean), or forced once the tail has
-                    // grown past the cap without one. Everything before it becomes final.
-                    // 动态停顿判定：自适应值（P75 统计）× 渐进系数（段长）。
-                    let effectiveSilenceSeconds = adaptiveSilenceSeconds
-                        * Self.progressiveSilenceFactor(tailSeconds: tailSeconds)
-                    let dynamicMinSilenceFrames = max(
-                        1, Int(effectiveSilenceSeconds / (Double(frameSamples) / 16000.0)))
-                    let silenceCut = recorder.lastSilenceCut(
-                        searchFrom: self.subtitleManager.sealedSampleCount, searchTo: totalSamples,
-                        frameSamples: frameSamples, silenceThreshold: sealSilenceThreshold,
-                        minSilenceFrames: dynamicMinSilenceFrames)
-                    var newSeal = self.subtitleManager.sealedSampleCount
-                    var newSealClean = self.subtitleManager.sealedClean
-                    if let cut = silenceCut, cut - self.subtitleManager.sealedSampleCount >= 1600 {
-                        newSeal = cut; newSealClean = true
-                        // 记录本次停顿时长（自适应统计样本：静音段起 cut → 段尾）。
-                        silenceDurations.append(Double(totalSamples - cut) / 16000.0)
-                        if silenceDurations.count > 50 { silenceDurations.removeFirst() }
-                    } else if tailCount >= Self.forceChunkSamples {
-                        // 谷值回溯：8s 上限不硬切——后 70% 找平滑能量谷
-                        //（谷值 < 段均值 80% = 自然停顿），无谷值才硬切。
-                        if let valley = recorder.lowestEnergyCut(
-                            searchFrom: self.subtitleManager.sealedSampleCount,
-                            searchTo: totalSamples, frameSamples: frameSamples),
-                           valley - self.subtitleManager.sealedSampleCount >= 16000 {
-                            newSeal = valley; newSealClean = true
-                        } else {
-                            newSeal = totalSamples; newSealClean = false
-                        }
-                    }
-
-                    if newSeal > self.subtitleManager.sealedSampleCount {
-                        self.subtitleManager.seal(
-                            upToSampleCount: newSeal, clean: newSealClean, combined: combined)
-                        // Nothing behind a clean (silence) seal is needed again; keep 1s behind a
-                        // forced seal for the next pass's overlap.
-                        recorder.trimSamples(upTo: max(0, newSeal - (newSealClean ? 0 : contextSamples)))
-                    }
-
-                    let snapshot = self.subtitleManager.snapshot(combined)
-                    await MainActor.run {
-                        self.appState?.liveSegments = snapshot
-                        print("[Subtitle Input] liveSegments count=\(snapshot.count) last=\(snapshot.last?.text.debugDescription ?? "nil")")
-                        self.throttledAutoSave()
-                    }
-                    // 翻译不再按每个快照触发：由字幕层检测到“一句结束”后，
-                    // 通过 translateSentence 整句单飞发送（见 Live Translation）。
+                    // 结果处理收口（partial 合并 / 封口推进 / 快照推送），
+                    // 音频循环只负责采集与 chunk 调度。
+                    await self.handleASRResult(
+                        result,
+                        recorder: recorder,
+                        context: HandleContext(
+                            totalSamples: totalSamples, tailCount: tailCount,
+                            tailStart: tailStart, tailSeconds: tailSeconds,
+                            useOverlap: useOverlap, timeOffset: timeOffset,
+                            frameSamples: frameSamples, contextSamples: contextSamples,
+                            adaptiveSilenceSeconds: adaptiveSilenceSeconds,
+                            sealSilenceThreshold: sealSilenceThreshold))
                 } catch is TimeoutError {
                     ErrorManager.shared.report(
                         .asr, context: "chunk timed out after \(timeoutSeconds)s"
@@ -350,6 +287,102 @@ final class ASRManager: @unchecked Sendable {
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
+    }
+
+    // MARK: - 实时结果处理（handleASRResult）
+
+    /// handleASRResult 的本轮循环上下文（音频坐标与 VAD 阈值快照，
+    /// 由调用方从循环变量打包，方法本身不触碰采集调度）。
+    struct HandleContext {
+        let totalSamples: Int
+        let tailCount: Int
+        let tailStart: Int
+        let tailSeconds: Double
+        let useOverlap: Bool
+        let timeOffset: Double
+        let frameSamples: Int
+        let contextSamples: Int
+        let adaptiveSilenceSeconds: Double
+        let sealSilenceThreshold: Float
+    }
+
+    /// 单轮识别结果的完整处理收口：日志 → 时间戳偏移 → 字幕合并
+    /// （按归一结果 mergePolicy）→ 封口推进（自适应静音 / 谷值回溯 /
+    /// 强制封口）→ 显示快照推送。行为与抽离前逐行一致。
+    private func handleASRResult(_ normalized: NormalizedASRResult,
+                                 recorder: AudioRecorder,
+                                 context: HandleContext) async {
+        let asrText = normalized.segments.map(\.text).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        print("[ASR] response received text=\(asrText.debugDescription) segments=\(normalized.segments.count) isFinal=\(normalized.segments.first?.isFinal ?? false) language=\(normalized.language ?? "nil")"
+            + (asrText.isEmpty ? " REASON=empty-or-still-aggregating" : ""))
+
+        // Offset timestamps to match position in the full stream.
+        let tailSegments = normalized.segments.map { seg in
+            TranscriptionSegment(
+                start: seg.startTime + context.timeOffset,
+                end: seg.endTime.map { $0 + context.timeOffset },
+                text: seg.text
+            )
+        }
+
+        // Combine sealed (final) + freshly transcribed tail (interim) for display.
+        // 合并策略来自归一结果 metadata（appendIncrement：本轮增量并入
+        // pendingTail 累积为完整当前句；replaceTail：整段替换）。
+        let combined = subtitleManager.appendTail(
+            tailSegments: tailSegments,
+            tailStartTime: Double(context.tailStart) / 16000.0,
+            useOverlap: context.useOverlap,
+            mergePolicy: normalized.metadata.mergePolicy
+        )
+
+        // Advance the seal: to a trailing pause (clean), or forced once the tail has
+        // grown past the cap without one. Everything before it becomes final.
+        // 动态停顿判定：自适应值（P75 统计）× 渐进系数（段长）。
+        let effectiveSilenceSeconds = context.adaptiveSilenceSeconds
+            * Self.progressiveSilenceFactor(tailSeconds: context.tailSeconds)
+        let dynamicMinSilenceFrames = max(
+            1, Int(effectiveSilenceSeconds / (Double(context.frameSamples) / 16000.0)))
+        let silenceCut = recorder.lastSilenceCut(
+            searchFrom: subtitleManager.sealedSampleCount, searchTo: context.totalSamples,
+            frameSamples: context.frameSamples, silenceThreshold: context.sealSilenceThreshold,
+            minSilenceFrames: dynamicMinSilenceFrames)
+        var newSeal = subtitleManager.sealedSampleCount
+        var newSealClean = subtitleManager.sealedClean
+        if let cut = silenceCut, cut - subtitleManager.sealedSampleCount >= 1600 {
+            newSeal = cut; newSealClean = true
+            // 记录本次停顿时长（自适应统计样本：静音段起 cut → 段尾）。
+            silenceDurations.append(Double(context.totalSamples - cut) / 16000.0)
+            if silenceDurations.count > 50 { silenceDurations.removeFirst() }
+        } else if context.tailCount >= Self.forceChunkSamples {
+            // 谷值回溯：8s 上限不硬切——后 70% 找平滑能量谷
+            //（谷值 < 段均值 80% = 自然停顿），无谷值才硬切。
+            if let valley = recorder.lowestEnergyCut(
+                searchFrom: subtitleManager.sealedSampleCount,
+                searchTo: context.totalSamples, frameSamples: context.frameSamples),
+               valley - subtitleManager.sealedSampleCount >= 16000 {
+                newSeal = valley; newSealClean = true
+            } else {
+                newSeal = context.totalSamples; newSealClean = false
+            }
+        }
+
+        if newSeal > subtitleManager.sealedSampleCount {
+            subtitleManager.seal(
+                upToSampleCount: newSeal, clean: newSealClean, combined: combined)
+            // Nothing behind a clean (silence) seal is needed again; keep 1s behind a
+            // forced seal for the next pass's overlap.
+            recorder.trimSamples(upTo: max(0, newSeal - (newSealClean ? 0 : context.contextSamples)))
+        }
+
+        let snapshot = subtitleManager.snapshot(combined)
+        await MainActor.run {
+            appState?.liveSegments = snapshot
+            print("[Subtitle Input] liveSegments count=\(snapshot.count) last=\(snapshot.last?.text.debugDescription ?? "nil")")
+            throttledAutoSave()
+        }
+        // 翻译不再按每个快照触发：由字幕层检测到“一句结束”后，
+        // 通过 translateSentence 整句单飞发送（见 Live Translation）。
     }
 
     /// 连续失败降级：连续 5 次 chunk 错误且未降级过 → 探测 Apple 引擎

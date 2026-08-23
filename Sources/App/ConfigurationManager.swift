@@ -384,8 +384,14 @@ final class TranslationConfiguration {
         didSet { UserDefaults.standard.set(temperature, forKey: TranslationService.ConfigKeys.temperature) }
     }
     /// 自定义翻译系统提示词（空 = 默认翻译指令）。
+    /// 支持变量 {source_lang} / {target_lang} / {text}（PromptBuilder 统一替换）。
     var systemPrompt = "" {
         didSet { UserDefaults.standard.set(systemPrompt, forKey: TranslationService.ConfigKeys.systemPrompt) }
+    }
+    /// 当前选中的提示词预设名（"自定义" = 用户编辑态；空 = 未选择过）。
+    var translationPromptPreset: String {
+        get { UserDefaults.standard.string(forKey: "translationPromptPreset") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "translationPromptPreset") }
     }
 
     init() { reload() }

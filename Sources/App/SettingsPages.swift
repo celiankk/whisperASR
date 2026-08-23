@@ -2638,21 +2638,5 @@ private struct ModelRowView: View {
 
 // MARK: - 翻译提示词预设（场景化风格库）
 
-struct TranslationPromptPreset {
-    let name: String
-    let prompt: String
-
-    /// 内置预设（点选填入设置文本框，可继续手动修改；
-    /// prompt 为空 = 清回默认指令）。
-    static let all: [TranslationPromptPreset] = [
-        .init(name: "默认（清空自定义）", prompt: ""),
-        .init(name: "会议口语",
-              prompt: "你是实时会议字幕翻译。用简洁自然的口语体翻译，保留说话人语气；专业术语首次出现时在括号内附原文。"),
-        .init(name: "影视字幕",
-              prompt: "你是影视字幕翻译。译文必须简短（不超过原文长度的 1.2 倍）以匹配字幕节奏；意译优先，人名地名用通行译名。"),
-        .init(name: "技术文档",
-              prompt: "你是技术文档翻译。术语精确（保留 API 名/命令/代码原文不译），语态正式，逻辑关系词严谨。"),
-        .init(name: "身份核验",
-              prompt: "You are translating for identity verification. Preserve all names, dates, ID numbers, and document field values EXACTLY as written. Never transliterate or reformat identifiers."),
-    ]
-}
+// TranslationPromptPreset 已迁移至 Pipeline/Translation/TranslationPromptPreset.swift
+// （Pipeline 层——设置页与翻译运行时共用；变量化模板见 PromptBuilder）。

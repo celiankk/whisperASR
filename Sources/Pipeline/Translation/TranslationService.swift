@@ -497,7 +497,10 @@ enum TranslationService {
         // 输出格式：批量（>1 句）要求 JSON 数组（模型不易漏句/串行；
         // 解析失败回退编号格式）；单句直接译文（流式友好）。
         // 自定义翻译系统提示词（设置 → 翻译 → 系统提示词）为空时用默认指令。
-        let customPrompt = (UserDefaults.standard.string(forKey: ConfigKeys.systemPrompt) ?? "")
+        // 变量替换统一走 PromptBuilder（唯一收口）：模板含 {text} 时文本
+        // 已嵌入模板（system 内），user 消息仍发编号原文（批量格式解析
+        // 依赖编号行）；不含变量时保持现行结构（模板作指令，文本走 user）。
+        let customPromptTemplate = (UserDefaults.standard.string(forKey: ConfigKeys.systemPrompt) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // 三铁律（无论默认/自定义模板都生效）：
         // 1) 只输出一条最佳译文（禁止备选/注释/解释）；
@@ -505,10 +508,18 @@ enum TranslationService {
         // 3) 依据上下文与常识纠正 ASR 识别错误（容错下沉到 LLM 层）。
         let ironRules = " Output ONLY one best translation per line — no alternatives, no parenthetical notes, no explanations. Keep proper nouns and brand names in the original language. Silently fix obvious ASR misrecognitions using context and common sense."
         let baseInstruction: String
-        if customPrompt.isEmpty {
+        if customPromptTemplate.isEmpty {
             baseInstruction = "You are a translator for a live transcription. Translate each numbered line to \(languageName). If a line is already in \(languageName), output it unchanged." + ironRules
         } else {
-            baseInstruction = customPrompt + ironRules
+            let rendered = PromptBuilder.build(
+                template: customPromptTemplate,
+                context: TranslationPromptContext(
+                    // 源语言：实时场景 ASR 自动检测，模板未显式指定时用
+                    // "the source language"（避免编造）；目标语言取配置全名。
+                    sourceLanguage: "the detected source language",
+                    targetLanguage: languageName,
+                    text: numberedInput))
+            baseInstruction = rendered + ironRules
         }
         let formatInstruction: String
         if segmentTexts.count > 1 {
@@ -524,7 +535,7 @@ enum TranslationService {
         var messages: [[String: Any]] = [
             ["role": "system", "content": systemContent],
         ]
-        if customPrompt.contains("{context}"), !previousTranslations.isEmpty {
+        if customPromptTemplate.contains("{context}"), !previousTranslations.isEmpty {
             // 占位符路径：contextSection 已在 system 内，无需多轮。
         } else if !previousTranslations.isEmpty {
             let history = previousTranslations.suffix(10)

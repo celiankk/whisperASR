@@ -188,6 +188,36 @@ final class SubtitleManager: @unchecked Sendable {
         streamingState = .recognizing
     }
 
+    /// 回滚当前未封口 tail 并以 final 结果替换。
+    ///
+    /// 缺口场景：增量引擎的 final 可能修正/缩短已显示的 partial
+    ///（Apple："ta pop" → final "pop"）。appendIncrement 只加不减，
+    /// 直接追加会产生「ta pop pop」脏文本；本方法删除错误 pendingTail、
+    /// 用 final 段重建，sealedSegments 不受影响。
+    ///
+    /// - Parameter segment: final 归一段（start/end 为录制时间轴绝对秒）；
+    ///   文本为空时仅清空 tail（引擎撤回全部已显示文本）。
+    /// - Returns: 合并后的显示快照（sealed + 新 pendingTail）。
+    @discardableResult
+    func rollbackTail(to segment: NormalizedSegment) -> [TranscriptionSegment] {
+        let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 清掉与 final 时间区间重叠的旧 tail（final 修正只对它覆盖的
+        // 区间负责，更晚的段不误删）。
+        if let end = segment.endTime {
+            pendingTailSegments.removeAll { $0.start < end }
+        } else {
+            pendingTailSegments.removeAll()
+        }
+        guard !text.isEmpty else {
+            streamingState = pendingTailSegments.isEmpty ? .recognizing : .partial
+            return sealedSegments + pendingTailSegments
+        }
+        pendingTailSegments.append(
+            TranscriptionSegment(start: segment.startTime, end: segment.endTime, text: text))
+        streamingState = .partial
+        return sealedSegments + pendingTailSegments
+    }
+
     /// 输出快照（环形窗口裁剪：只保留最近 maxLiveSegments 条）。
     func snapshot(_ combined: [TranscriptionSegment]) -> [TranscriptionSegment] {
         Array(combined.suffix(Self.maxLiveSegments))

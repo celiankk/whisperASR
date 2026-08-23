@@ -160,6 +160,62 @@ final class SubtitleManagerTests: XCTestCase {
         XCTAssertEqual(manager.streamingState, .recognizing)
     }
 
+    // MARK: rollbackTail（final 修正短于 partial 的回滚）
+
+    /// Apple Speech 场景：partial "ta pop" 累积显示后，final 修正为 "pop"
+    /// ——结果必须是 "pop"，不是 "ta pop pop"。
+    func testRollbackReplacesShorterFinalCorrection() {
+        let manager = SubtitleManager()
+        // 两轮增量累积出已显示 partial："ta pop"。
+        _ = manager.appendTail(tailSegments: [seg(0, "ta")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        var combined = manager.appendTail(
+            tailSegments: [seg(1, "pop")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        XCTAssertEqual(combined.first?.text, "ta pop")
+
+        // sealed 已有历史文本：rollback 不得影响。
+        combined = manager.rollbackTail(to: NormalizedSegment(
+            text: "pop", startTime: 1.0, endTime: 2.0, confidence: nil, isFinal: true))
+        XCTAssertEqual(manager.pendingTailSegments.map(\.text), ["pop"])
+        XCTAssertEqual(combined.map(\.text), ["pop"], "final 缩短修正必须替换而非追加")
+    }
+
+    /// FunASR streaming 场景：端点断段 final 覆盖当前增量句。
+    func testRollbackFunASRStreamingEndpointCommit() {
+        let manager = SubtitleManager()
+        _ = manager.appendTail(tailSegments: [seg(0, "继续")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        _ = manager.appendTail(tailSegments: [seg(1, "说下去")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+
+        let combined = manager.rollbackTail(to: NormalizedSegment(
+            text: "继续说下去", startTime: 0.5, endTime: 3.2, confidence: nil, isFinal: true))
+        XCTAssertEqual(combined.map(\.text), ["继续说下去"])
+        XCTAssertEqual(manager.streamingState, .partial)
+    }
+
+    /// Whisper 场景：强制封口后 overlap 重转录给出更短的正确文本，
+    /// rollback 清掉错误 tail 换成重转录结果；sealed 不受影响。
+    func testRollbackKeepsSealedUntouched() {
+        let manager = SubtitleManager()
+        _ = manager.appendTail(tailSegments: [seg(0, "旧尾")], tailStartTime: 0, useOverlap: false, mergePolicy: .replaceTail)
+        manager.sealSilence(upToSampleCount: 16000)
+        XCTAssertEqual(manager.sealedSegments.map(\.text), ["旧尾"])
+
+        let combined = manager.rollbackTail(to: NormalizedSegment(
+            text: "重转录正确文本", startTime: 2.0, endTime: nil, confidence: nil, isFinal: true))
+        XCTAssertEqual(manager.sealedSegments.map(\.text), ["旧尾"], "rollback 不影响 sealed")
+        XCTAssertEqual(combined.map(\.text), ["旧尾", "重转录正确文本"])
+    }
+
+    /// 空 final（引擎撤回全部文本）：只清 tail，不产生空段。
+    func testRollbackEmptyFinalClearsTail() {
+        let manager = SubtitleManager()
+        _ = manager.appendTail(tailSegments: [seg(0, "幻觉输出")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        let combined = manager.rollbackTail(to: NormalizedSegment(
+            text: "  ", startTime: 0, endTime: 1.0, confidence: nil, isFinal: true))
+        XCTAssertTrue(manager.pendingTailSegments.isEmpty)
+        XCTAssertEqual(combined.map(\.text), [])
+        XCTAssertEqual(manager.streamingState, .recognizing)
+    }
+
     // MARK: trimOverlap（whisper 强制封口后的 1s 上下文去重）
 
     func testTrimOverlapTrimsDuplicatedPrefix() {

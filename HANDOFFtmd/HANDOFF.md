@@ -2274,3 +2274,55 @@ ASRCapability 仅作描述/展示/调试（禁止自动选模型/推荐/性能�
 
 未动 Provider/Runtime/ASRManager/SubtitleManager/Capability 模型字段；
 无自动选择逻辑。新引擎接入流程 = 注册表加一条注册，UI 零修改。
+
+---
+
+## 28. 第二十轮会话（2026-08-24 02:00–03:00）：远程 ASR 引擎 + Silero 神经网络 VAD
+
+### 背景
+
+LiveTranslate 报告缺口分析后确认两个真缺口，用户拍板「两个都做」。
+依赖报告：Silero VAD 模型 ~2.2MB（MIT，sherpa-onnx releases 运行时下载）；
+远程 ASR 零新增依赖。勘误：此前说的 FSMN-VAD 是 FunASR 生态模型，
+sherpa-onnx C API 未暴露；实际可用为 Silero/Ten-VAD 两族。
+
+### A. 远程自托管 ASR 引擎（22c3b42 feat: add remote self-hosted ASR engine）
+
+- `.remote` 引擎档：RemoteASRProvider（句子缓冲 + 请求队列 + 结果合并，
+  与 Online 同构）；OpenAI 兼容 /audio/transcriptions 协议，密钥可选；
+- **配置活动源机制**（核心设计）：OnlineASRConfig 的读取口感知
+  isActiveSourceRemote，远程激活时转发 RemoteASRConfig——OnlineASRService
+  29 处引用零改动复用整个请求栈（WAV 编码/上传/解析/超时/错误分类）；
+  unloadModel 复位在线源；
+- 接线面：resolveEngine/resolveLiveEngine（端点未配置回落本地）、
+  dispatch、shouldChunk（remote 与 online 同不参与分片）、preload、
+  shutdown/unloadLiveModel、languageSupport（.selectable 全表）；
+- UI：设置页「识别方式」四项 + RemoteASRSettingsSection（端点/密钥/
+  模型名/测试连接——测试期间临时激活活动源复用在线连通性检查）；
+  菜单栏引擎子菜单加「远程」；能力层注册 .remote（网络引擎）。
+
+### B. Silero 神经网络 VAD（feat: add Silero neural VAD...）
+
+- SherpaVAD（Pipeline/Audio/）：sherpa-onnx v1.13.6 C API 的
+  VoiceActivityDetector 封装（符号已在 no-tts 裁剪版静态库中验证存在）；
+  512 窗口步进喂入 / Detected() 查询 / 懒加载 + 60s 失败冷却；
+- **判定链融合原则：可选增强，不可用时行为逐位不变**：
+  · 密度门 ≥0.25 时经 detectSpeech 确认——音乐底噪（能量过门但非人声）
+    改判静音省算力；
+  · 能量门 ≤skipThreshold 时 detectSpeech==true 则放行送 ASR——低响度
+    语音不再误跳过；
+- 设置页「音频处理」下载行（GitHub releases 直链，原子写入模型目录）；
+  startLive 时 reset 会话。
+
+### 测试与验证状态
+
+148 全过（testOnlineRequiresNetworkOthersLocal 更新为双网络引擎语义）。
+**未真机验证项（下轮优先）**：① 远程端点实际请求（whisper.cpp-server
+对拍）；② silero_vad.onnx 实际下载后 detector 建立、音乐场景静音判定
+对比；③ 菜单栏切远程 → 语言子菜单同步。
+
+### 下轮候选
+
+- VAD 电平监控条（调试面板实时显示 RMS+人声概率，调参所见即所得）；
+- 首启引导向导（按系统语言预选下载源 + 倒计时自动开始）；
+- 会话文本落盘（original/translation/all 三文件 tail -f 可跟）。

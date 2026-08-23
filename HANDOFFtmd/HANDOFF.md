@@ -2204,3 +2204,42 @@ SubtitleManager（pendingTailSegments/sealedSegments/mergePolicy/trimOverlap）
   脏文本，在 handleASRResult 中对 isFinal 且短于当前 pendingTail 文本的
   归一结果调 rollbackTail。
 - StreamingState 接入浮层 UI（如显示「识别中…」状态点）。
+
+---
+
+## 26. 第十八轮会话（2026-08-24 00:30–00:50）：ASRCapability 能力描述层
+
+### 需求
+
+统一 ASR 引擎能力描述（streaming/partial/timestamp/语言/网络/推荐模式），
+UI 与未来自动路由经 Capability 查询；Provider 不动、不放推理/加载/状态逻辑。
+
+### 落地（2 commit）
+
+1. `12e279b refactor: add ASR capability model`：Pipeline/ASR/Capability/
+   ASRCapability.swift——ASRMode（realtime/balanced/accuracy）+ ASRCapability
+   纯数据结构 + supportsLanguageSelection 派生字段 + summaryEntries
+  （设置页 ✓/△ 列表数据源）。
+2. `c7b83bd refactor: add ASR capability registry`：ASRCapabilityRegistry
+  （引擎→能力唯一查询口，静态注册，缺失 debug 断言+兜底）+
+   ASRPerformanceProfile（速度档位/内存量级/setup 成本）。
+   FunASR 按所选模型折算（paraformer-streaming 流式、语言按模型族）。
+
+### 数据事实依据（防编造）
+
+- timestamp=true 仅：whisper（原生段）、apple（段 range）、funasr
+ （sherpa token 级 timestamps）；Qwen/Nemotron 为字符估算 → false；
+- streaming=true：apple 恒真；funasr 随模型（与 isStreamingEngine 同源）；
+- 语言表：whisper 全表来自 CWhisper 运行时查询；Qwen 自动检测不可枚举
+ → 空表（supportsLanguageSelection=false）；Apple 跟随系统语言包 → 空表。
+
+### 测试
+
+144（+8）：完备性不变量（规格第九节）、streaming 描述与 Provider 声明
+一致性、网络需求唯一性（仅 online）、字段语义、自定义注入覆盖、兜底安全。
+
+### 未做 / 下轮候选
+
+- 设置页接 Capability 渲染（✓ 实时识别 / △ 时间戳 列表）——本次按规格
+  禁止混入 UI 重构，summaryEntries 已备好数据源；
+- 自动路由（任务 → capability 查询 → 推荐模型）仅为数据预留。

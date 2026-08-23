@@ -904,10 +904,6 @@ struct TranslationSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: translation.model) { _, _ in verifyResult = nil }
 
-                    // 提示词配置：预设选择 + 模板编辑 + 变量插入 +
-                    // 恢复默认/保存（变量替换统一走 PromptBuilder）。
-                    TranslationPromptEditor(translation: translation)
-
                     // 思考模型兼容：禁思考参数注入（DeepSeek-R1/GLM/Qwen3 等
                     // 思考模型会把译文写进 reasoning_content 导致翻译空）。
                     HStack {
@@ -1023,6 +1019,15 @@ struct TranslationSettingsView: View {
                                 .lineLimit(3)
                         }
                         Spacer()
+                    }
+                }
+
+                // 翻译提示词：独立区块（预设 + 模板编辑 + 变量插入 +
+                // 恢复默认/保存；变量替换统一走 PromptBuilder）。
+                // 仅 LLM 翻译（本地/在线）使用；Apple 翻译不经过提示词。
+                if mode != .apple {
+                    Section("翻译提示词") {
+                        TranslationPromptEditor(translation: translation)
                     }
                 }
             }

@@ -2162,3 +2162,45 @@ isStreamingEngine 折算为新查询 `liveMergePolicy`，布尔形式保留。
   接入时才需要消费方区分。
 - 规格第七节「切换模型不影响字幕渲染」的端到端验证需真机（SenseVoice /
   paraformer-streaming 实测），纯数据层已由单测覆盖。
+
+---
+
+## 25. 第十七轮会话（2026-08-23 22:45–23:20）：合并 StreamingContext 能力进 SubtitleManager
+
+### 需求演变
+
+用户先发来「新建 Pipeline/Streaming/ 层」的规格；分析后指出其与现有
+SubtitleManager（pendingTailSegments/sealedSegments/mergePolicy/trimOverlap）
+大面积重复，建议合并版。用户采纳：「不要创建新的 StreamingContext 层……
+将 StreamingContext 的有效能力合并进 SubtitleManager」。
+
+### 落地（3 commit）
+
+1. `d6397d4 refactor: add subtitle streaming state`：StreamingState 枚举
+  （idle/recognizing/partial/finalizing/completed）由 SubtitleManager 持有，
+   在 appendTail / seal 系列 / stop / clear 中推进。用途限定日志/UI 展示/
+   监控，不做并发控制（实时循环严格串行）。
+2. `94e785a fix: support subtitle tail rollback`：rollbackTail(to:)——
+   final 修正/缩短已显示 partial 时（Apple："ta pop" → "pop"）替换
+   pendingTail 而非追加，消除「ta pop pop」脏文本。按 endTime 清理重叠旧
+   tail（final 只对覆盖区间负责）；空 final 只清 tail。**注意：目前是能力
+   预留，实时链路尚未接线调用（Apple 的增量基线 diff 已在 Provider 层消化
+   大部分回退），接线点是后续观察实际脏文本出现后再做。**
+3. `81f13c4 refactor: simplify ASR result handling`：ASRManager.startLive
+   的单轮结果处理抽为 handleASRResult(_:recorder:context:)（HandleContext
+   打包循环上下文）。行为逐行不变。
+
+### 决策记录
+
+- 不建 Pipeline/Streaming/ 目录、不建 StreamingSegment/SubtitleSnapshot：
+  与 NormalizedSegment / appendTail 返回值重复，纯透传层。
+- 去重逻辑零改动：Provider 基线 diff + trimOverlap 保持原样（规格明确禁止
+  复制一套 Streaming 去重算法）。
+- 测试 130→136（+2 状态机 + 4 rollback）。
+
+### 未做 / 下轮候选
+
+- rollbackTail 生产接线：若实测出现「partial 残留 + final 缩短」的显示
+  脏文本，在 handleASRResult 中对 isFinal 且短于当前 pendingTail 文本的
+  归一结果调 rollbackTail。
+- StreamingState 接入浮层 UI（如显示「识别中…」状态点）。

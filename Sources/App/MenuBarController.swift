@@ -120,8 +120,8 @@ final class MenuBarController: NSObject {
         for (item, engine) in engineItems {
             let base = item.title.replacingOccurrences(of: " ✓", with: "")
             let selected = engine == currentEngine ||
-                (currentEngine != .online && currentEngine != .apple && currentEngine != .funasr
-                    && engine == .auto)
+                (currentEngine != .online && currentEngine != .remote && currentEngine != .apple
+                    && currentEngine != .funasr && engine == .auto)
             item.title = selected ? base + " ✓" : base
         }
 
@@ -145,13 +145,14 @@ final class MenuBarController: NSObject {
         let options: [(String, ASREngineSelection)] = [
             (L10n.t("menubar.engine.local"), .auto),
             (L10n.t("menubar.engine.online"), .online),
+            ("远程", .remote),
             (L10n.t("menubar.engine.apple"), .apple)
         ]
         engineItems.removeAll()
         for (title, engine) in options {
             let item = NSMenuItem(
                 title: (engine == current ||
-                        (current != .online && current != .apple && current != .funasr
+                        (current != .online && current != .remote && current != .apple && current != .funasr
                             && engine == .auto))
                     ? title + " ✓" : title,
                 action: #selector(selectEngine(_:)), keyEquivalent: "")
@@ -207,7 +208,7 @@ final class MenuBarController: NSObject {
             self.isMenuOpen = false   // 选择路径：明确已不在打开态
             self.rebuildMenu()
         }
-        appState?.showToast("\(L10n.t("menubar.engine.switched"))：\(engine == .apple ? "Apple" : engine == .online ? L10n.t("menubar.engine.online") : L10n.t("menubar.engine.local"))")
+        appState?.showToast("\(L10n.t("menubar.engine.switched"))：\(engine == .apple ? "Apple" : engine == .remote ? "远程" : engine == .online ? L10n.t("menubar.engine.online") : L10n.t("menubar.engine.local"))")
     }
 
     /// ConfigurationManager 弱引用（appState.attach 注入的同一实例）。

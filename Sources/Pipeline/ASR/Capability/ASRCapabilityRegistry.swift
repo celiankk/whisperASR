@@ -38,7 +38,7 @@ final class ASRCapabilityRegistry: @unchecked Sendable {
 
     /// 全部引擎（固定顺序：UI 遍历渲染顺序即此）。
     static let allEngines: [ASREngineType] = [
-        .whisper, .qwen3asr, .nemotron, .online, .apple, .funasr
+        .whisper, .qwen3asr, .nemotron, .online, .remote, .apple, .funasr
     ]
 
     private var capabilities: [ASREngineType: ASRCapability] = [:]
@@ -113,6 +113,16 @@ final class ASRCapabilityRegistry: @unchecked Sendable {
             // Online API：网络请求；响应无词级时间戳（整段回落）。
             ASRCapability(
                 engine: .online,
+                supportsStreaming: false,
+                supportsPartialResult: true,
+                supportsTimestamp: false,
+                supportedLanguages: whisperLanguages,
+                requiresNetwork: true,
+                recommendedMode: .balanced),
+            // 远程自托管端点：网络请求（局域网 GPU 机器）；协议同 OpenAI
+            // Whisper API，无原生时间戳；密钥可选。
+            ASRCapability(
+                engine: .remote,
                 supportsStreaming: false,
                 supportsPartialResult: true,
                 supportsTimestamp: false,

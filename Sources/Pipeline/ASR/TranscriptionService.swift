@@ -21,6 +21,8 @@ final class TranscriptionService: @unchecked Sendable {
     private let qwenProvider = QwenProvider()
     /// 在线 OpenAI 兼容 Whisper API（无本地模型，需在设置中启用并配置）。
     private let onlineProvider = OnlineASRProvider()
+    /// 远程自托管端点（局域网 GPU 机器；与在线共用请求栈，独立配置）。
+    private let remoteProvider = RemoteASRProvider()
     /// Apple Speech（macOS 26 原生 SpeechAnalyzer / SpeechTranscriber 引擎）。
     private let appleProvider = AppleSpeechManager.shared
     /// FunASR（SenseVoice / Paraformer 系）。
@@ -45,6 +47,7 @@ final class TranscriptionService: @unchecked Sendable {
         case nemotron(directory: String)
         case qwen3asr(path: String)
         case online
+        case remote
         case apple
         case funasr
     }
@@ -60,6 +63,12 @@ final class TranscriptionService: @unchecked Sendable {
                 return Self.engine(forPath: ModelPathResolver.resolveModelPath())
             }
             return .online
+        case .remote:
+            // 端点未配置时回落自动判定（与在线同策略）。
+            guard RemoteASRConfig.isConfigured else {
+                return Self.engine(forPath: ModelPathResolver.resolveModelPath())
+            }
+            return .remote
         case .whisper:
             return .whisper(path: ModelPathResolver.resolveModelPath())
         case .qwen:
@@ -86,6 +95,11 @@ final class TranscriptionService: @unchecked Sendable {
                 return Self.engine(forPath: ModelPathResolver.resolveLiveModelPath())
             }
             return .online
+        case .remote:
+            guard RemoteASRConfig.isConfigured else {
+                return Self.engine(forPath: ModelPathResolver.resolveLiveModelPath())
+            }
+            return .remote
         case .whisper:
             return .whisper(path: ModelPathResolver.resolveLiveModelPath())
         case .qwen:
@@ -134,6 +148,7 @@ final class TranscriptionService: @unchecked Sendable {
         Task { await nemotronProvider.unloadModel() }
         Task { await qwenProvider.unloadModel() }
         Task { await onlineProvider.unloadModel() }
+        Task { await remoteProvider.unloadModel() }
         Task { await appleProvider.unloadModel() }
     }
 
@@ -154,6 +169,9 @@ final class TranscriptionService: @unchecked Sendable {
         }
         Task { await qwenProvider.unloadModel() }
         onlineProvider.cancelPending()
+        // 远程引擎：取消在途请求 + 复位配置活动源（回到在线键）。
+        Task { await remoteProvider.unloadModel() }
+        RemoteASRConfig.activateAsActiveSource(false)
         Task { await appleProvider.unloadModel() }
         chunkManager.clear()  // 丢弃未发送的聚合残留
         waterlineLock.withLock {
@@ -223,6 +241,15 @@ final class TranscriptionService: @unchecked Sendable {
                 )
             }
             return try await onlineProvider.transcribeFile(
+                fileURL: fileURL, language: effectiveLanguage, translate: translate, onProgress: onProgress
+            )
+        case .remote:
+            guard !translate else {
+                throw TranscriptionError.processFailed(
+                    "Translation to English is not supported by Remote ASR. Select a Whisper model instead."
+                )
+            }
+            return try await remoteProvider.transcribeFile(
                 fileURL: fileURL, language: effectiveLanguage, translate: translate, onProgress: onProgress
             )
         case .apple:
@@ -307,7 +334,6 @@ final class TranscriptionService: @unchecked Sendable {
         let engine = provider(for: resolveLiveEngine()).engine
         return .empty(engine: engine, metadata: ASRMetadata.default(isStreamingEngine: false))
     }
-
     /// 把切片（或原样样本）发送到对应引擎的 Provider，出口统一归一化：
     /// Provider 返回结果经 ASRResultNormalizer 折算（引擎喂音语义
     /// isStreamingEngine → 合并策略元数据），字幕层不再感知引擎差异。
@@ -329,6 +355,7 @@ final class TranscriptionService: @unchecked Sendable {
         case .qwen3asr: return qwenProvider
         case .whisper: return whisperProvider
         case .online: return onlineProvider
+        case .remote: return remoteProvider
         case .apple: return appleProvider
         case .funasr: return funasrProvider
         }
@@ -347,6 +374,8 @@ final class TranscriptionService: @unchecked Sendable {
             return try await whisperProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
         case .online:
             return try await onlineProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
+        case .remote:
+            return try await remoteProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
         case .apple:
             return try await appleProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
         case .funasr:
@@ -365,12 +394,12 @@ final class TranscriptionService: @unchecked Sendable {
         case .localOnly:
             switch engine {
             case .whisper, .nemotron, .qwen3asr: return true
-            case .online, .apple, .funasr: return false
+            case .online, .remote, .apple, .funasr: return false
             }
         case .onlineOnly:
             switch engine {
-            case .online: return false
-            case .whisper, .nemotron, .qwen3asr, .apple, .funasr: return false
+            case .online, .remote, .apple, .funasr: return false
+            case .whisper, .nemotron, .qwen3asr: return false
             }
         }
     }
@@ -408,6 +437,9 @@ final class TranscriptionService: @unchecked Sendable {
         case .online:
             // 在线模式：校验配置（失败时由调用方提示，不影响本地引擎）。
             try await onlineProvider.prepare()
+        case .remote:
+            // 远程端点：校验配置（连通性由首次请求验证）。
+            try await remoteProvider.prepare()
         case .apple:
             // Apple Speech：请求授权并启动流式会话（语言资源缺失自动下载）。
             try await appleProvider.prepare()
@@ -439,6 +471,10 @@ final class TranscriptionService: @unchecked Sendable {
             if OnlineASRApiType.current == .mimo {
                 return .autoOnly("小米 MiMo 仅支持中英双语（自动/中文/英文）。")
             }
+            return .selectable
+        case .remote:
+            // 自托管端点：OpenAI Whisper 协议支持 language 参数，全表可选
+            //（端点侧是否多语取决于部署的模型）。
             return .selectable
         case .qwen:
             return qwenAuto
@@ -506,6 +542,7 @@ final class TranscriptionService: @unchecked Sendable {
         case .nemotron: return "arch=\(arch) engine=nemotron"
         case .qwen3asr: return "arch=\(arch) engine=qwen3asr"
         case .online: return "arch=\(arch) engine=online"
+        case .remote: return "arch=\(arch) engine=remote"
         case .apple: return "arch=\(arch) engine=apple"
         case .funasr: return "arch=\(arch) engine=funasr"
         }
@@ -520,6 +557,7 @@ final class TranscriptionService: @unchecked Sendable {
         case .nemotron: return .nemotron
         case .qwen3asr: return .qwen3asr
         case .online: return .online
+        case .remote: return .remote
         case .apple: return .apple
         case .funasr: return .funasr
         }

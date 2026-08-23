@@ -48,8 +48,10 @@ final class ASRCapabilityRegistryTests: XCTestCase {
     func testOnlineRequiresNetworkOthersLocal() {
         let registry = ASRCapabilityRegistry.shared
         for capability in registry.all {
-            XCTAssertEqual(capability.requiresNetwork, capability.engine == .online,
-                           "仅在线引擎 requiresNetwork=true")
+            // 网络引擎 = 在线 API + 远程自托管端点；本地引擎（含 Apple）不联网。
+            let isNetworkEngine = capability.engine == .online || capability.engine == .remote
+            XCTAssertEqual(capability.requiresNetwork, isNetworkEngine,
+                           "\(capability.engine.rawValue) 的 requiresNetwork 与引擎类型不符")
         }
     }
 

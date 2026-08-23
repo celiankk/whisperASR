@@ -21,8 +21,14 @@ enum OnlineASRConfig {
         static let mimoLanguage = "onlineASRMimoLanguage"
     }
 
+    /// 活动配置源：远程 ASR 引擎（.remote）激活时，本配置的读取口
+    /// 全部转发到 RemoteASRConfig（自托管局域网端点）——请求栈
+    /// （OnlineASRService 的 29 处引用）零改动复用。
+    /// 由 TranscriptionService.resolveLiveEngine 路径驱动（录制开始时设置）。
+    static var isActiveSourceRemote = false
+
     static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: Keys.enabled)
+        isActiveSourceRemote ? RemoteASRConfig.isEnabled : UserDefaults.standard.bool(forKey: Keys.enabled)
     }
 
     /// 默认值按 API 类型（openai → api.openai.com/v1 + whisper-1；
@@ -31,22 +37,27 @@ enum OnlineASRConfig {
     static var defaultModel: String { OnlineASRApiType.current.defaultModel }
 
     static var baseURL: String {
+        if isActiveSourceRemote { return RemoteASRConfig.baseURL }
         let raw = (UserDefaults.standard.string(forKey: Keys.baseURL) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.isEmpty ? defaultBaseURL : raw
     }
 
     static var apiKey: String {
-        UserDefaults.standard.string(forKey: Keys.apiKey) ?? ""
+        isActiveSourceRemote ? RemoteASRConfig.apiKey : (UserDefaults.standard.string(forKey: Keys.apiKey) ?? "")
     }
 
     static var model: String {
-        let raw = (UserDefaults.standard.string(forKey: Keys.model) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = isActiveSourceRemote
+            ? RemoteASRConfig.model
+            : (UserDefaults.standard.string(forKey: Keys.model) ?? "")
         return raw.isEmpty ? defaultModel : raw
     }
 
     /// API 类型（OpenAI Compatible 自动拼路径 / MiMo chat/completions / Custom 原样）。
+    /// 远程端点恒为 OpenAI Compatible（自托管 whisper.cpp-server / faster-whisper
+    /// 服务等均走 /audio/transcriptions）。
     static var apiType: OnlineASRApiType {
-        OnlineASRApiType.current
+        isActiveSourceRemote ? .openai : OnlineASRApiType.current
     }
 
     /// 流式输出（仅 MiMo 生效；文档支持 stream=true，逐 chunk 返回）。
@@ -64,6 +75,54 @@ enum OnlineASRConfig {
     /// 是否已配置（baseURL 有效即可；密钥可为空——本地兼容服务通常不需要）。
     static var isConfigured: Bool {
         !baseURL.isEmpty
+    }
+}
+
+// MARK: - 远程 ASR 配置（RemoteASRConfig）
+//
+// 自托管局域网/远程 GPU 端点（LiveTranslate Remote Whisper 对标）：
+// OpenAI 兼容 /audio/transcriptions 协议，识别卸载到算力更强的机器，
+// 本机无需下载任何模型。与「在线」共用请求栈但独立配置键——语义差异：
+// 在线 = 公有云 API（需密钥、计费），远程 = 自己的机器（密钥可选）。
+
+enum RemoteASRConfig {
+    enum Keys {
+        static let enabled = "remoteASREnabled"
+        static let baseURL = "remoteASRBaseURL"
+        static let apiKey = "remoteASRApiKey"
+        static let model = "remoteASRModel"
+    }
+
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Keys.enabled)
+    }
+
+    static var baseURL: String {
+        (UserDefaults.standard.string(forKey: Keys.baseURL) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 密钥可选（自托管端点通常无鉴权；whisper.cpp-server 的 -api-key 例外）。
+    static var apiKey: String {
+        UserDefaults.standard.string(forKey: Keys.apiKey) ?? ""
+    }
+
+    /// 模型名仅服务端多模型部署时需要（如 whisper.cpp-server 的 model 参数）；
+    /// 单模型端点忽略此字段。
+    static var model: String {
+        (UserDefaults.standard.string(forKey: Keys.model) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 是否已配置（启用 + baseURL 有效）。
+    static var isConfigured: Bool {
+        isEnabled && !baseURL.isEmpty
+    }
+
+    /// 活动源切换（TranscriptionService 解析出 .remote 时调用）。
+    /// 幂等；录制会话结束时由 unloadLiveModel 复位为在线源。
+    static func activateAsActiveSource(_ active: Bool) {
+        OnlineASRConfig.isActiveSourceRemote = active
     }
 }
 

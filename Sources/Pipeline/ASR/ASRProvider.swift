@@ -21,6 +21,8 @@ enum ASRProviderEngine: String, Sendable {
     case nemotron
     case qwen3asr
     case online
+    /// 远程自托管端点（局域网 GPU 机器，OpenAI 兼容协议）。
+    case remote
     case apple
     /// FunASR（SenseVoice / Paraformer 系，sherpa-onnx 后端）。
     case funasr

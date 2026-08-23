@@ -100,7 +100,8 @@ final class GeneralSettings {
 /// 识别引擎选择（UserDefaults "asrEngine"）：
 /// - auto：按所选模型自动判定引擎（1.4 默认行为，推荐）；
 /// - whisper / qwen / nemotron：强制使用对应本地引擎；
-/// - online：使用在线 OpenAI 兼容 API（需在「在线识别 API」启用并配置）；
+/// - online：使用在线 OpenAI 兼容 API（需在设置中启用并配置）；
+/// - remote：远程自托管端点（局域网 GPU 机器，OpenAI 兼容协议，密钥可选）；
 /// - apple：使用 macOS 26 原生 Apple Speech（SpeechAnalyzer / SpeechTranscriber）。
 /// 切换立即生效，无需重启；实时转录与文件转录同时切换。
 enum ASREngineSelection: String, CaseIterable, Codable {
@@ -109,6 +110,7 @@ enum ASREngineSelection: String, CaseIterable, Codable {
     case qwen
     case nemotron
     case online
+    case remote
     case apple
     case funasr
 
@@ -270,6 +272,20 @@ final class ASRConfiguration {
     /// MiMo 指定语种（auto / zh / en，默认 auto；文档推荐显式指定提升准确率）。
     var onlineASRMimoLanguage = "auto" {
         didSet { UserDefaults.standard.set(onlineASRMimoLanguage, forKey: OnlineASRConfig.Keys.mimoLanguage) }
+    }
+
+    // 远程自托管识别端点（OpenAI 兼容协议，局域网 GPU 机器；密钥可选）。
+    var remoteASREnabled = false {
+        didSet { UserDefaults.standard.set(remoteASREnabled, forKey: RemoteASRConfig.Keys.enabled) }
+    }
+    var remoteASRBaseURL = "" {
+        didSet { UserDefaults.standard.set(remoteASRBaseURL, forKey: RemoteASRConfig.Keys.baseURL) }
+    }
+    var remoteASRApiKey = "" {
+        didSet { UserDefaults.standard.set(remoteASRApiKey, forKey: RemoteASRConfig.Keys.apiKey) }
+    }
+    var remoteASRModel = "" {
+        didSet { UserDefaults.standard.set(remoteASRModel, forKey: RemoteASRConfig.Keys.model) }
     }
 
     /// 音频分片模式（统一策略：关闭 / 仅本地模型 / 仅在线 API）。

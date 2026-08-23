@@ -210,6 +210,7 @@ struct RecognitionSettingsView: View {
                 Picker("识别方式", selection: enginePickerSelection) {
                     Text("本地模型").tag(ASREngineSelection.auto)
                     Text("在线").tag(ASREngineSelection.online)
+                    Text("远程").tag(ASREngineSelection.remote)
                     Text("Apple").tag(ASREngineSelection.apple)
                 }
                 .pickerStyle(.menu)
@@ -235,6 +236,8 @@ struct RecognitionSettingsView: View {
                 AppleSpeechSettingsSection()
             case .online:
                 OnlineASRSection(recognition: recognition)
+            case .remote:
+                RemoteASRSettingsSection(recognition: recognition)
             case .funasr, .auto, .whisper, .qwen, .nemotron:
                 ModelCatalogSection()
                 CustomModelSection(recognition: recognition)
@@ -425,6 +428,7 @@ struct RecognitionSettingsView: View {
             get: {
                 switch settings.asr.asrEngine {
                 case .online: return .online
+                case .remote: return .remote
                 case .apple: return .apple
                 case .auto, .whisper, .qwen, .nemotron, .funasr: return .auto
                 }
@@ -434,11 +438,12 @@ struct RecognitionSettingsView: View {
     }
 
     /// 当前选择对应的能力查询引擎（ASREngineType）：
-    /// 在线/Apple/FunASR 直接映射；本地三项按模型路径自动判定
+    /// 在线/远程/Apple/FunASR 直接映射；本地三项按模型路径自动判定
     /// （与 TranscriptionService.resolveEngine 同一事实源）。
     private var currentCapabilityEngine: ASREngineType {
         switch settings.asr.asrEngine {
         case .online: return .online
+        case .remote: return .remote
         case .apple: return .apple
         case .funasr: return .funasr
         case .auto, .whisper, .qwen, .nemotron:
@@ -451,6 +456,8 @@ struct RecognitionSettingsView: View {
     private var engineHint: String {        switch settings.asr.asrEngine {
         case .online:
             return "在线：OpenAI 兼容 API（无需本地模型，识别数据发送到服务端）；需在下方启用并配置。"
+        case .remote:
+            return "远程：自托管端点（局域网 GPU 机器，OpenAI 兼容协议），本机无需下载模型；需在下方启用并配置。"
         case .apple:
             return "Apple：macOS 26 原生系统语音识别（需在系统设置中授权语音识别）。"
         case .funasr:
@@ -731,6 +738,68 @@ private struct OnlineASRSection: View {
             await MainActor.run {
                 onlineASRTesting = false
                 onlineASRResult = result
+            }
+        }
+    }
+}
+
+/// 远程自托管 ASR 端点区（远程引擎选中时显示）：
+/// 局域网 GPU 机器跑 OpenAI 兼容 /audio/transcriptions 服务
+/// （whisper.cpp-server / faster-whisper-server 等），本机零模型。
+private struct RemoteASRSettingsSection: View {
+    @Bindable var recognition: ASRConfiguration
+    @State private var testing = false
+    @State private var testResult: (success: Bool, message: String)? = nil
+
+    var body: some View {
+        Section("远程识别 API（自托管）") {
+            Toggle("启用远程识别", isOn: $recognition.remoteASREnabled)
+            if recognition.remoteASREnabled {
+                TextField("端点 Base URL",
+                          text: $recognition.remoteASRBaseURL,
+                          prompt: Text("http://192.168.1.100:8080/v1"))
+                    .textFieldStyle(.roundedBorder)
+                Text("自动拼接 /audio/transcriptions；重复 /v1 自动去重。示例服务：whisper.cpp-server、faster-whisper-server、Speaches。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                SecureField("API 密钥（可选，自托管通常留空）",
+                            text: $recognition.remoteASRApiKey)
+                    .textFieldStyle(.roundedBorder)
+                TextField("模型名（可选，仅多模型服务端需要）",
+                          text: $recognition.remoteASRModel,
+                          prompt: Text("whisper-1"))
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button(testing ? "测试中…" : "测试连接") {
+                        testConnection()
+                    }
+                    .disabled(testing || recognition.remoteASRBaseURL.isEmpty)
+                    if let result = testResult {
+                        Text(result.message)
+                            .font(.caption)
+                            .foregroundStyle(result.success ? .green : .red)
+                            .lineLimit(2)
+                    }
+                }
+                ASRCapabilitySummaryView(engine: .remote)
+            }
+            Text("识别音频将发送到你所配置的服务器（请确保为可信网络）；端点不可达时该轮识别失败，不影响本地引擎。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func testConnection() {
+        testing = true
+        testResult = nil
+        Task {
+            // 复用在线连接测试（活动源切换后读远程键；测试期间临时激活）。
+            RemoteASRConfig.activateAsActiveSource(true)
+            defer { RemoteASRConfig.activateAsActiveSource(false) }
+            let result = await OnlineASRService.testConnection()
+            await MainActor.run {
+                testing = false
+                testResult = result
             }
         }
     }

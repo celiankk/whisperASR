@@ -92,6 +92,7 @@ final class ASRManager: @unchecked Sendable {
         subtitleManager.start()
         SubtitleHistoryManager.shared.clear()
         liveRecorder = recorder
+        SherpaVAD.shared.reset()   // 新会话：丢弃上一段的 VAD 内部缓冲
         startHealthCheck()
         // ASR Prompt（热词）：启动识别时生成/刷新（不每句话调用）。
         ASRPromptManager.shared.refresh()
@@ -172,9 +173,18 @@ final class ASRManager: @unchecked Sendable {
                 // 密度噪声门：非全静但语音密度 <25% 的段（音乐底噪/碎音）
                 // 不送 ASR——当静音处理，封口跳过省算力。
                 let tailSeconds = Double(tailCount) / 16000.0
-                let density = recorder.speechDensity(
+                var density = recorder.speechDensity(
                     from: self.subtitleManager.sealedSampleCount, to: totalSamples,
                     frameSamples: frameSamples, threshold: skipThreshold)
+                // Silero 增强（模型可用时）：能量门判为静音的段再经神经网络
+                // 人声确认——音乐底噪 RMS 高于 skipThreshold 时启发式会放行，
+                // 人声概率低则同样按静音封口；不可用（nil）时行为不变。
+                if density >= 0.25, tailSeconds > 1.0,
+                   let neuralSpeech = SherpaVAD.shared.detectSpeech(
+                    recorder.getSamples(from: self.subtitleManager.sealedSampleCount,
+                                        upTo: totalSamples)) {
+                    density = neuralSpeech ? max(density, 1.0) : 0.0
+                }
                 if density < 0.25, tailSeconds > 1.0 {
                     self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
                     lastTranscribedTotal = totalSamples
@@ -190,18 +200,24 @@ final class ASRManager: @unchecked Sendable {
                 }
 
                 let rms = recorder.rmsEnergy(from: self.subtitleManager.sealedSampleCount, count: tailCount)
-                guard rms > skipThreshold else {
-                    self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
-                    lastTranscribedTotal = totalSamples
-                    recorder.trimSamples(upTo: max(0, self.subtitleManager.sealedSampleCount - contextSamples))
-                    consecutiveSilenceCount += 1
-                    let snapshot = self.subtitleManager.sealedSegments
-                    await MainActor.run {
-                        self.appState?.liveSegments = Array(snapshot.suffix(SubtitleManager.maxLiveSegments))
-                        self.throttledAutoSave()
+                if rms <= skipThreshold {
+                    // Silero 增强：能量门判静音但神经网络检测到人声（低响度
+                    // 语音）时不跳过，送 ASR 兜底；nil = 模型不可用，行为不变。
+                    if SherpaVAD.shared.detectSpeech(
+                        recorder.getSamples(from: self.subtitleManager.sealedSampleCount,
+                                            upTo: totalSamples)) != true {
+                        self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
+                        lastTranscribedTotal = totalSamples
+                        recorder.trimSamples(upTo: max(0, self.subtitleManager.sealedSampleCount - contextSamples))
+                        consecutiveSilenceCount += 1
+                        let snapshot = self.subtitleManager.sealedSegments
+                        await MainActor.run {
+                            self.appState?.liveSegments = Array(snapshot.suffix(SubtitleManager.maxLiveSegments))
+                            self.throttledAutoSave()
+                        }
+                        try? await Task.sleep(for: .milliseconds(consecutiveSilenceCount >= 2 ? 1000 : 500))
+                        continue
                     }
-                    try? await Task.sleep(for: .milliseconds(consecutiveSilenceCount >= 2 ? 1000 : 500))
-                    continue
                 }
                 consecutiveSilenceCount = 0
 

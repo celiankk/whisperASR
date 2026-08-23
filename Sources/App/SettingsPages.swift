@@ -294,6 +294,9 @@ struct RecognitionSettingsView: View {
                 Text("推理输入补零对齐到固定时长桶：稳定 GPU 推理形状、减少延迟毛刺；禁用则恢复原始输入长度。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                // Silero 神经网络 VAD（可选增强）：模型下载后自动启用。
+                SileroVADDownloadRow()
             }
 
             Section("ASR Prompt（热词提示）") {
@@ -2323,6 +2326,69 @@ struct ASRCapabilitySummaryView: View {
                     Text(entry.label)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+/// Silero 神经网络 VAD 下载行（可选增强，~2.2MB MIT）：
+/// 未下载显示下载按钮；已下载显示状态（自动启用，无开关——判定链
+/// 内部按可用性回落启发式，行为零风险）。
+private struct SileroVADDownloadRow: View {
+    @State private var downloaded = SherpaVAD.isModelDownloaded
+    @State private var downloading = false
+    @State private var statusText: String? = nil
+
+    private static let modelSource = URL(string:
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx")!
+
+    var body: some View {
+        HStack {
+            Text("神经网络人声检测")
+            Spacer()
+            if downloaded {
+                Label("已启用", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            } else if downloading {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button("下载模型（2MB）") { download() }
+                    .disabled(downloading)
+            }
+        }
+        if let statusText {
+            Text(statusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Silero VAD 提升音乐底噪 / 掌声等非人声场景的静音判定准确率；未下载时使用内置能量启发式（行为不变）。录制中自动生效。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func download() {
+        downloading = true
+        statusText = nil
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: Self.modelSource)
+                let url = SherpaVAD.modelURL
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+                await MainActor.run {
+                    downloaded = SherpaVAD.isModelDownloaded
+                    downloading = false
+                    statusText = downloaded ? "模型就绪，下次录制自动生效。" : nil
+                }
+            } catch {
+                await MainActor.run {
+                    downloading = false
+                    statusText = "下载失败：\(error.localizedDescription)"
                 }
             }
         }

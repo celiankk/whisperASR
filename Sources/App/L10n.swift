@@ -24,6 +24,7 @@ enum L10n {
         "menubar.engine": ("识别引擎", "ASR Engine"),
         "menubar.engine.local": ("本地模型", "Local Model"),
         "menubar.engine.online": ("在线", "Online"),
+        "menubar.engine.remote": ("远程", "Remote"),
         "menubar.engine.apple": ("Apple", "Apple"),
         "menubar.passthrough": ("字幕浮层鼠标穿透", "Subtitle Overlay Click-through"),
         "menubar.obsWindow": ("OBS 字幕窗", "OBS Subtitle Window"),

@@ -1141,9 +1141,15 @@ struct CaptionSettingsView: View {
         let borderVisible: Bool
         let borderOpacity: Double
         let fontWeight: String
+        /// 默认主题（值 = AppState 出厂缺省；与手调默认区分开便于恢复）。
+        var isDefault = false
     }
 
     private let themes: [SubtitleTheme] = [
+        .init(name: "默认", icon: "arrow.counterclockwise",
+              sourceFontSize: 32, backgroundOpacity: 0.4,
+              borderVisible: true, borderOpacity: 0.6, fontWeight: "regular",
+              isDefault: true),
         .init(name: "观影", icon: "film",
               sourceFontSize: 30, backgroundOpacity: 0.55,
               borderVisible: false, borderOpacity: 0, fontWeight: "medium"),
@@ -1161,6 +1167,18 @@ struct CaptionSettingsView: View {
               borderVisible: false, borderOpacity: 0, fontWeight: "bold"),
     ]
 
+    /// 当前样式是否与某预设完全匹配；不匹配任何预设 = 自定义
+    ///（手动微调任一项后自动落入此态）。
+    private func matchedThemeIndex(subtitle: SubtitleConfiguration) -> Int? {
+        let borderOpacity = subtitle.editBorderVisible ? subtitle.editBorderOpacity : 0
+        return themes.firstIndex { theme in
+            theme.sourceFontSize == subtitle.sourceFontSize
+                && theme.backgroundOpacity == subtitle.backgroundOpacity
+                && theme.borderOpacity == borderOpacity
+                && theme.fontWeight == subtitle.fontWeight
+        }
+    }
+
     var body: some View {
         @Bindable var caption = settings.subtitle
         @Bindable var window = settings.window
@@ -1168,7 +1186,7 @@ struct CaptionSettingsView: View {
         Form {
             Section("主题预设") {
                 HStack(spacing: 8) {
-                    ForEach(themes, id: \.name) { theme in
+                    ForEach(Array(themes.enumerated()), id: \.offset) { index, theme in
                         Button {
                             applyTheme(theme)
                         } label: {
@@ -1182,10 +1200,32 @@ struct CaptionSettingsView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        // 当前匹配的预设高亮（accent 描边）；自定义态全部
+                        // 恢复普通样式，由右侧徽标指示。
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(matchedThemeIndex(subtitle: caption) == index
+                                        ? Color.accentColor : .clear, lineWidth: 1.5)
+                        )
                         .help("\(theme.name)：字号\(Int(theme.sourceFontSize)) / 背景\(Int(theme.backgroundOpacity * 100))%")
                     }
+                    // 自定义徽标：非预设组合时显示（手动微调自动落入）。
+                    if matchedThemeIndex(subtitle: caption) == nil {
+                        HStack(spacing: 3) {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 16))
+                            Text("自定义")
+                                .font(.system(size: 10))
+                        }
+                        .frame(width: 58, height: 48)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.accentColor, lineWidth: 1.5)
+                        )
+                        .help("当前为手动微调的样式组合")
+                    }
                 }
-                Text("一键应用样式组合，应用后可继续手动微调下方各项。")
+                Text("一键应用样式组合，应用后可继续手动微调下方各项；微调后标记为自定义。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

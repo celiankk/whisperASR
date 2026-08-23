@@ -65,15 +65,20 @@ struct NormalizedASRResult: Equatable, Sendable {
     let engine: ASREngineType
     /// 引擎差异元数据（时间坐标系 / 合并策略）——字幕层按此行为。
     let metadata: ASRMetadata
+    /// Provider 原始整段文本（文件转录的 fullText 兼容字段；
+    /// 实时链路不使用——增量语义下整段文本无意义）。
+    var fullText: String = ""
 
     init(segments: [NormalizedSegment],
          language: String?,
          engine: ASREngineType,
-         metadata: ASRMetadata) {
+         metadata: ASRMetadata,
+         fullText: String = "") {
         self.segments = segments
         self.language = language
         self.engine = engine
         self.metadata = metadata
+        self.fullText = fullText
     }
 
     /// 空结果（喂入为空 / 引擎暂无产出）：保留引擎与元数据，

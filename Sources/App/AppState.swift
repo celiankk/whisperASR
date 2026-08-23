@@ -438,14 +438,19 @@ class AppState {
 
         transcriptionQueueTask = Task.detached { [service = runtime.service, history] in
             do {
-                let result = try await service.transcribe(fileURL: item.fileURL) { progress in
+                // 统一识别结果层：文件转录结果经 ASRResultNormalizer 归一
+                // （多段时间戳保留、confidence 缺失补 nil），再回迁
+                // TranscriptionSegment 持久化结构——历史库数据格式不变。
+                let normalized = try await service.transcribe(fileURL: item.fileURL) { progress in
                     Task { @MainActor in
                         item.progress = progress
                     }
                 }
+                let segments = ASRResultNormalizer.toTranscriptionSegments(normalized)
+                let fullText = normalized.segments.map(\.text).joined(separator: "\n")
                 await MainActor.run {
-                    item.segments = result.segments
-                    item.fullText = result.text
+                    item.segments = segments
+                    item.fullText = fullText.isEmpty ? normalized.fullText : fullText
                     // 内存中已是完整内容：标记已载入，允许整体持久化
                     //（懒加载条目未标记时 save 只回写元数据，结果会丢失）。
                     item.transcriptHydrated = true

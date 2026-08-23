@@ -298,8 +298,14 @@ private struct OpenAITranscriptionAPI: Sendable {
                 fileURL: tmp, language: language, translate: translate) { _ in }
             let secs = Date().timeIntervalSince(start)
             Self.log(String(format: "%@: 200 ok (%d chars, %d segments) in %.1fs",
-                            kind, result.text.count, result.segments.count, secs))
-            return Self.formatResult(result, format: responseFormat, translate: translate)
+                            kind, result.fullText.count, result.segments.count, secs))
+            // 统一识别结果层：回迁 TranscriptionSegment（API 响应格式不变）。
+            return Self.formatResult(
+                TranscriptionResult(
+                    text: result.fullText,
+                    segments: ASRResultNormalizer.toTranscriptionSegments(result),
+                    detectedLanguage: result.language),
+                format: responseFormat, translate: translate)
         } catch {
             let secs = Date().timeIntervalSince(start)
             Self.log(String(format: "%@: 500 transcribe failed after %.1fs: %@",

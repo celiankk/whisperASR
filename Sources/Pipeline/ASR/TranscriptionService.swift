@@ -167,12 +167,31 @@ final class TranscriptionService: @unchecked Sendable {
     /// 显式传入优先；未传时应用设置页「识别语言」的配置（仅对支持手动
     /// 指定的引擎生效——whisper / nemotron / 在线；Apple 用自己的语言包
     /// 设置、Qwen 自动检测，均不受配置影响）。
+    ///
+    /// 统一识别结果层：出口经 ASRResultNormalizer 归一为 NormalizedASRResult
+    /// （多段时间戳保留；fullText 为兼容字段——Provider 原始整段文本）。
     func transcribe(fileURL: URL,
                     language: String? = nil,
                     translate: Bool = false,
-                    onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
+                    onProgress: @escaping @Sendable (Double) -> Void) async throws -> NormalizedASRResult {
         let configuredLanguage = ConfigurationManager.shared.asr.effectiveASRLanguage
         let effectiveLanguage = (language?.isEmpty == false) ? language : configuredLanguage
+        let result = try await transcribeFileDispatch(
+            fileURL: fileURL, language: language,
+            effectiveLanguage: effectiveLanguage ?? "",
+            translate: translate, onProgress: onProgress)
+        let chunkProvider = provider(for: resolveEngine())
+        return ASRResultNormalizer.normalize(
+            result, engine: chunkProvider.engine,
+            metadata: ASRMetadata.default(isStreamingEngine: false))
+    }
+
+    /// 文件转录引擎分派（原 transcribe 主体，返回 Provider 原始结果）。
+    private func transcribeFileDispatch(fileURL: URL,
+                                        language: String?,
+                                        effectiveLanguage: String,
+                                        translate: Bool,
+                                        onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
         switch resolveEngine() {
         case .nemotron:
             guard !translate else {

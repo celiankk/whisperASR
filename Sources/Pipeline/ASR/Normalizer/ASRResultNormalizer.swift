@@ -50,7 +50,8 @@ enum ASRResultNormalizer {
     }
 
     /// 归一多段时间戳结果（whisper 文件转录 / verbose_json 形态）：
-    /// 每段独立保留时间戳与文本，confidence 无来源补 nil。
+    /// 每段独立保留时间戳与文本，confidence 无来源补 nil；
+    /// fullText 保留 Provider 原始整段文本（历史库 fullText 字段兼容）。
     static func normalize(_ result: TranscriptionResult,
                           engine: ASREngineType,
                           metadata: ASRMetadata) -> NormalizedASRResult {
@@ -69,7 +70,8 @@ enum ASRResultNormalizer {
             segments: segments,
             language: result.detectedLanguage,
             engine: engine,
-            metadata: metadata)
+            metadata: metadata,
+            fullText: result.text)
     }
 
     /// 归一单段增量结果（Apple Speech / paraformer-streaming 的实时路径：

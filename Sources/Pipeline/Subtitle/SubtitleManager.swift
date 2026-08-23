@@ -59,21 +59,25 @@ final class SubtitleManager: @unchecked Sendable {
 
     /// 追加一轮尾部转录结果（partial），与封口段合并为显示快照：
     /// - 保留封口边界前的 final 段；
-    /// - `incremental`（Apple 流式）：本轮增量并入 pendingTail（合并为
-    ///   单一「当前句」段，跨 pass 累积不丢前半句）；
-    /// - 全量引擎（whisper）：本轮结果整段替换 pendingTail；
-    /// - whisper 强制封口后的 overlap 场景用 trimOverlap 去重；
+    /// - `mergePolicy == .appendIncrement`（增量引擎元数据）：本轮增量并入
+    ///   pendingTail（合并为单一「当前句」段，跨 pass 累积不丢前半句）；
+    /// - `.replaceTail`（整段替换引擎）：本轮结果整段替换 pendingTail；
+    /// - 强制封口后的 overlap 场景用 trimOverlap 去重；
     /// - 空文本段丢弃。
+    ///
+    /// 统一识别结果层：本方法只按归一结果携带的 ASRMergePolicy 行为，
+    /// 不出现 if whisper / if funasr / if apple 引擎分支。
+    ///
     /// - Returns: 合并后的显示快照（调用方再按 maxLiveSegments 裁剪输出）。
     func appendTail(
         tailSegments: [TranscriptionSegment],
         tailStartTime: Double,
         useOverlap: Bool,
-        incremental: Bool = false
+        mergePolicy: ASRMergePolicy
     ) -> [TranscriptionSegment] {
         let kept = sealedSegments.filter { $0.start < tailStartTime }
 
-        if incremental {
+        if mergePolicy == .appendIncrement {
             let incoming = tailSegments
                 .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
@@ -103,7 +107,7 @@ final class SubtitleManager: @unchecked Sendable {
         var combined = kept
         for seg in pendingTailSegments {
             var text = seg.text
-            if useOverlap, !incremental, let lastText = combined.last?.text {
+            if useOverlap, mergePolicy == .replaceTail, let lastText = combined.last?.text {
                 text = Self.trimOverlap(previous: lastText, current: text)
             }
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

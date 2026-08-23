@@ -16,11 +16,11 @@ final class SubtitleManagerTests: XCTestCase {
         let manager = SubtitleManager()
         // 三轮增量：当前句必须完整累积为单一 pending 段。
         let r1 = manager.appendTail(
-            tailSegments: [seg(0, "今天天气")], tailStartTime: 0, useOverlap: false, incremental: true)
+            tailSegments: [seg(0, "今天天气")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         let r2 = manager.appendTail(
-            tailSegments: [seg(1, "很好我们")], tailStartTime: 0, useOverlap: false, incremental: true)
+            tailSegments: [seg(1, "很好我们")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         let r3 = manager.appendTail(
-            tailSegments: [seg(2, "出去走走")], tailStartTime: 0, useOverlap: false, incremental: true)
+            tailSegments: [seg(2, "出去走走")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
 
         for combined in [r1, r2, r3] {
             XCTAssertEqual(combined.count, 1, "增量累积期间 combined = sealed(空) + 单一当前句段")
@@ -32,25 +32,25 @@ final class SubtitleManagerTests: XCTestCase {
 
     func testIncrementalEnglishJoinedWithSpace() {
         let manager = SubtitleManager()
-        manager.appendTail(tailSegments: [seg(0, "hello")], tailStartTime: 0, useOverlap: false, incremental: true)
+        manager.appendTail(tailSegments: [seg(0, "hello")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         let combined = manager.appendTail(
-            tailSegments: [seg(1, "world")], tailStartTime: 0, useOverlap: false, incremental: true)
+            tailSegments: [seg(1, "world")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         XCTAssertEqual(combined.first?.text, "hello world", "西文拼接补空格")
     }
 
     func testIncrementalChineseJoinedWithoutSpace() {
         let manager = SubtitleManager()
-        manager.appendTail(tailSegments: [seg(0, "你好")], tailStartTime: 0, useOverlap: false, incremental: true)
+        manager.appendTail(tailSegments: [seg(0, "你好")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         let combined = manager.appendTail(
-            tailSegments: [seg(1, "世界")], tailStartTime: 0, useOverlap: false, incremental: true)
+            tailSegments: [seg(1, "世界")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         XCTAssertEqual(combined.first?.text, "你好世界", "中文直接相连")
     }
 
     func testIncrementalEmptyPassKeepsPending() {
         let manager = SubtitleManager()
-        manager.appendTail(tailSegments: [seg(0, "前半句")], tailStartTime: 0, useOverlap: false, incremental: true)
+        manager.appendTail(tailSegments: [seg(0, "前半句")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         // 空结果 pass（引擎没出字）：pending 不丢、不重复。
-        let combined = manager.appendTail(tailSegments: [], tailStartTime: 0, useOverlap: false, incremental: true)
+        let combined = manager.appendTail(tailSegments: [], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         XCTAssertEqual(combined.count, 1)
         XCTAssertEqual(combined.first?.text, "前半句")
     }
@@ -59,9 +59,9 @@ final class SubtitleManagerTests: XCTestCase {
 
     func testFullTailReplacesPending() {
         let manager = SubtitleManager()
-        manager.appendTail(tailSegments: [seg(0, "旧尾")], tailStartTime: 0, useOverlap: false, incremental: false)
+        manager.appendTail(tailSegments: [seg(0, "旧尾")], tailStartTime: 0, useOverlap: false, mergePolicy: .replaceTail)
         let combined = manager.appendTail(
-            tailSegments: [seg(0, "旧尾新词")], tailStartTime: 0, useOverlap: false, incremental: false)
+            tailSegments: [seg(0, "旧尾新词")], tailStartTime: 0, useOverlap: false, mergePolicy: .replaceTail)
         XCTAssertEqual(combined.first?.text, "旧尾新词", "全量引擎每轮整段替换")
         XCTAssertEqual(manager.pendingTailSegments.count, 1)
     }
@@ -73,7 +73,7 @@ final class SubtitleManagerTests: XCTestCase {
         // 全量引擎语义：两段独立段（增量模式下多段会被合并为单一当前句，
         // 那是设计行为——见 testIncrementalAccumulatesAcrossPasses）。
         let combined = manager.appendTail(
-            tailSegments: [seg(0, "第一句"), seg(5, "第二句")], tailStartTime: 0, useOverlap: false, incremental: false)
+            tailSegments: [seg(0, "第一句"), seg(5, "第二句")], tailStartTime: 0, useOverlap: false, mergePolicy: .replaceTail)
         XCTAssertEqual(combined.count, 2)
         // 第一段在封口线（2s）之前 → 提交；第二段在其后 → 留作下一句 pending。
         manager.seal(upToSampleCount: 2 * 16000, clean: true, combined: combined)
@@ -86,9 +86,9 @@ final class SubtitleManagerTests: XCTestCase {
     func testIncrementalSealCommitsWholeSentence() {
         let manager = SubtitleManager()
         // 增量模式：三轮碎片合并为一句；VAD 封口时整句提交。
-        _ = manager.appendTail(tailSegments: [seg(0, "你")], tailStartTime: 0, useOverlap: false, incremental: true)
-        _ = manager.appendTail(tailSegments: [seg(1, "陪我唱")], tailStartTime: 0, useOverlap: false, incremental: true)
-        let combined = manager.appendTail(tailSegments: [seg(2, "歌")], tailStartTime: 0, useOverlap: false, incremental: true)
+        _ = manager.appendTail(tailSegments: [seg(0, "你")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        _ = manager.appendTail(tailSegments: [seg(1, "陪我唱")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
+        let combined = manager.appendTail(tailSegments: [seg(2, "歌")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         XCTAssertEqual(combined.count, 1)
         XCTAssertEqual(combined.first?.text, "你陪我唱歌")
         manager.sealSilence(upToSampleCount: 3 * 16000)
@@ -98,7 +98,7 @@ final class SubtitleManagerTests: XCTestCase {
     func testSealSilenceCommitsPendingText() {
         let manager = SubtitleManager()
         let combined = manager.appendTail(
-            tailSegments: [seg(0, "最后一句")], tailStartTime: 0, useOverlap: false, incremental: true)
+            tailSegments: [seg(0, "最后一句")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         XCTAssertEqual(combined.count, 1)
         // 静音路径不经过常规 seal：pending 文本必须一并固化（不丢句首）。
         manager.sealSilence(upToSampleCount: 9 * 16000)
@@ -108,7 +108,7 @@ final class SubtitleManagerTests: XCTestCase {
 
     func testClearResetsAllState() {
         let manager = SubtitleManager()
-        _ = manager.appendTail(tailSegments: [seg(0, "文本")], tailStartTime: 0, useOverlap: false, incremental: true)
+        _ = manager.appendTail(tailSegments: [seg(0, "文本")], tailStartTime: 0, useOverlap: false, mergePolicy: .appendIncrement)
         manager.seal(upToSampleCount: 16000, clean: true, combined: manager.sealedSegments + manager.pendingTailSegments)
         manager.clear()
         XCTAssertTrue(manager.sealedSegments.isEmpty)

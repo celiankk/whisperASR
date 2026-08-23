@@ -246,28 +246,32 @@ final class ASRManager: @unchecked Sendable {
                     }
                     consecutiveChunkFailures = 0
                     consecutiveChunkTimeouts = 0
-                    let asrText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    print("[ASR] response received text=\(asrText.debugDescription) segments=\(result.segments.count) isFinal=n/a language=\(result.detectedLanguage ?? "nil")"
+                    // 统一识别结果层：NormalizedASRResult（引擎差异已折算
+                    // 为 metadata.mergePolicy；字幕层按字段行为）。
+                    let normalized = result
+                    let asrText = normalized.segments.map(\.text).joined(separator: " ")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    print("[ASR] response received text=\(asrText.debugDescription) segments=\(normalized.segments.count) isFinal=\(normalized.segments.first?.isFinal ?? false) language=\(normalized.language ?? "nil")"
                         + (asrText.isEmpty ? " REASON=empty-or-still-aggregating" : ""))
 
                     // Offset timestamps to match position in the full stream.
-                    let tailSegments = result.segments.map { seg in
+                    let tailSegments = normalized.segments.map { seg in
                         TranscriptionSegment(
-                            start: seg.start + timeOffset,
-                            end: seg.end.map { $0 + timeOffset },
+                            start: seg.startTime + timeOffset,
+                            end: seg.endTime.map { $0 + timeOffset },
                             text: seg.text
                         )
                     }
 
                     // Combine sealed (final) + freshly transcribed tail (interim) for display.
-                    // 增量引擎（Apple）传 incremental：本轮增量并入 pendingTail
-                    // 累积为完整当前句（否则每轮只剩最新碎片）。
+                    // 合并策略来自归一结果 metadata（appendIncrement：本轮增量并入
+                    // pendingTail 累积为完整当前句；replaceTail：整段替换）。
                     let tailStartTime = Double(tailStart) / 16000.0
                     let combined = self.subtitleManager.appendTail(
                         tailSegments: tailSegments,
                         tailStartTime: tailStartTime,
                         useOverlap: useOverlap,
-                        incremental: streamingEngine
+                        mergePolicy: normalized.metadata.mergePolicy
                     )
 
                     // Advance the seal: to a trailing pause (clean), or forced once the tail has

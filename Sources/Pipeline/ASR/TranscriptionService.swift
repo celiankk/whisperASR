@@ -229,6 +229,9 @@ final class TranscriptionService: @unchecked Sendable {
     /// Transcribe raw 16kHz mono PCM Float32 samples directly (used for live transcription during recording).
     /// Uses the live model selection (falling back to the main model) and runs on a background queue.
     ///
+    /// 统一识别结果层：本方法出口即 NormalizedASRResult（ASRResultNormalizer
+    /// 归一），字幕层只消费归一结果、按 metadata.mergePolicy 行为。
+    ///
     /// 音频分片（Chunk Manager）：
     /// - 按「音频分片模式」+ 当前引擎类型决定是否聚合：
     ///   关闭 → 直接发送 Provider（原实时流程）；
@@ -237,16 +240,16 @@ final class TranscriptionService: @unchecked Sendable {
     /// - `absoluteRange` 是 chunk 在录制时间轴上的绝对采样区间，供流式引擎
     ///   （Apple Speech）做去重水位线；聚合路径会打乱位置 → 透传 nil。
     func transcribeChunk(samples: [Float],
-                         absoluteRange: Range<Int>? = nil) async throws -> TranscriptionResult {
+                         absoluteRange: Range<Int>? = nil) async throws -> NormalizedASRResult {
         guard !samples.isEmpty else {
-            return TranscriptionResult(text: "", segments: [])
+            return emptyNormalizedResult()
         }
 
         let engine = resolveLiveEngine()
         if shouldChunk(engine: engine) {
             chunkManager.append(samples)
             guard chunkManager.isReadyToSend() else {
-                return TranscriptionResult(text: "", segments: [])
+                return emptyNormalizedResult()
             }
             let chunk = chunkManager.takeAll()
             return try await dispatchChunk(chunk, engine: engine, absoluteRange: nil)
@@ -272,12 +275,32 @@ final class TranscriptionService: @unchecked Sendable {
                 return Array(samples[start...])
             }
             if samplesToFeed.isEmpty {
-                return TranscriptionResult(text: "", segments: [])
+                return emptyNormalizedResult()
             }
         } else {
             samplesToFeed = samples
         }
         return try await dispatchChunk(samplesToFeed, engine: engine, absoluteRange: absoluteRange)
+    }
+
+    /// 空归一结果（调度层在无音频 / 未达标时收到，仍携带引擎与元数据）。
+    private func emptyNormalizedResult() -> NormalizedASRResult {
+        let engine = provider(for: resolveLiveEngine()).engine
+        return .empty(engine: engine, metadata: ASRMetadata.default(isStreamingEngine: false))
+    }
+
+    /// 把切片（或原样样本）发送到对应引擎的 Provider，出口统一归一化：
+    /// Provider 返回结果经 ASRResultNormalizer 折算（引擎喂音语义
+    /// isStreamingEngine → 合并策略元数据），字幕层不再感知引擎差异。
+    private func dispatchChunk(_ samples: [Float],
+                               engine: ResolvedEngine,
+                               absoluteRange: Range<Int>?) async throws -> NormalizedASRResult {
+        let chunkProvider = provider(for: engine)
+        let metadata = ASRMetadata.default(isStreamingEngine: chunkProvider.isStreamingEngine)
+        let result = try await chunkProvider.transcribeChunk(
+            samples: samples, absoluteRange: absoluteRange)
+        return ASRResultNormalizer.normalize(
+            result, engine: chunkProvider.engine, metadata: metadata)
     }
 
     /// 引擎 → provider（水位线路径用；与 dispatchChunk 同一分发表）。
@@ -333,12 +356,20 @@ final class TranscriptionService: @unchecked Sendable {
         }
     }
 
-    /// 实时引擎是否输出「纯增量」分块结果（Apple 流式引擎：音频持续喂入同一
-    /// 会话，每次只返回新增文本）。这类引擎没有 tail 重转录的音频 overlap，
-    /// 强制封口后不需要对首字符做 overlap 裁剪。
+    /// 实时引擎的字幕合并策略（统一识别结果层）：由 Provider 声明的
+    /// isStreamingEngine 折算（Apple Speech 与 FunASR paraformer-streaming
+    /// 均为增量引擎——旧实现只认 Apple，paraformer-streaming 被误按
+    /// 整段替换处理，当前句每轮被最新碎片覆盖）。这类引擎没有 tail
+    /// 重转录的音频 overlap，强制封口后不需要对首字符做 overlap 裁剪。
+    var liveMergePolicy: ASRMergePolicy {
+        provider(for: resolveLiveEngine()).isStreamingEngine
+            ? .appendIncrement : .replaceTail
+    }
+
+    /// 实时引擎是否输出「纯增量」分块结果（mergePolicy 的布尔形式，
+    /// 供喂音节奏等调度判断使用）。
     var liveEngineStreamsIncrementally: Bool {
-        if case .apple = resolveLiveEngine() { return true }
-        return false
+        liveMergePolicy == .appendIncrement
     }
 
     /// Ensure the live-transcription model is loaded (pre-loading at recording

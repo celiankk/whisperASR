@@ -2632,27 +2632,34 @@ private struct TranslationPromptEditor: View {
     @Bindable var translation: TranslationConfiguration
     /// 编辑缓冲（未保存的修改；保存时写回 translation.systemPrompt）。
     @State private var draft: String = ""
-    /// 已加载到缓冲的来源（预设名 / "自定义" / ""），驱动恢复默认。
-    @State private var loadedSource: String = ""
+    /// 已加载到缓冲的来源（预设 id / customID），驱动恢复默认与描述显示。
+    @State private var loadedID: String = ""
     @State private var saveConfirmation: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("系统提示词")
+                Text("翻译风格")
                 Spacer()
-                Picker("", selection: $loadedSource) {
-                    ForEach(TranslationPromptPreset.all, id: \.name) { preset in
-                        Text(preset.name).tag(preset.name)
+                Picker("", selection: $loadedID) {
+                    ForEach(TranslationPromptPreset.all, id: \.id) { preset in
+                        Text(preset.name).tag(preset.id)
                     }
-                    Text(TranslationPromptPreset.customName).tag(TranslationPromptPreset.customName)
+                    Text(TranslationPromptPreset.customID).tag(TranslationPromptPreset.customID)
                 }
                 .labelsHidden()
                 .frame(width: 150)
                 .pickerStyle(.menu)
-                .onChange(of: loadedSource) { _, newValue in
-                    loadPreset(named: newValue)
+                .onChange(of: loadedID) { _, newValue in
+                    loadPreset(id: newValue)
                 }
+            }
+
+            // 当前预设的场景描述（自定义态不显示）。
+            if let preset = TranslationPromptPreset.with(id: loadedID) {
+                Text("\(preset.name)：\(preset.description)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             TextEditor(text: $draft)
@@ -2682,7 +2689,7 @@ private struct TranslationPromptEditor: View {
 
             HStack {
                 Button("恢复默认") { restoreDefault() }
-                    .disabled(loadedSource.isEmpty || loadedSource == TranslationPromptPreset.customName)
+                    .disabled(TranslationPromptPreset.with(id: loadedID) == nil)
                 Button("保存") { save() }
                     .buttonStyle(.borderedProminent)
                     .disabled(draft == translation.systemPrompt)
@@ -2701,40 +2708,58 @@ private struct TranslationPromptEditor: View {
         .onAppear { loadPersisted() }
     }
 
-    /// 启动时按持久化状态恢复：预设名 + 模板全文。
+    /// 当前缓冲内容对应的预设（与内置模板全等才算选中该预设）。
+    private func matchedPreset() -> TranslationPromptPreset? {
+        TranslationPromptPreset.all.first { $0.prompt == draft }
+    }
+
+    /// 启动时按持久化状态恢复（用户配置兼容）：
+    /// - 已保存过 Prompt（systemPrompt 非空）→ 原样加载，不覆盖；
+    /// - 首次安装（无任何配置）→ 加载默认预设「视频字幕」并落盘；
+    /// - 持久化的预设 id 已不存在（预设被移除）→ 显示自定义态，内容保留。
     private func loadPersisted() {
-        let savedPreset = translation.translationPromptPreset
-        draft = translation.systemPrompt
-        if savedPreset == TranslationPromptPreset.customName || savedPreset.isEmpty {
-            // 自定义 / 未选择过：显示自定义（或空）。
-            loadedSource = savedPreset.isEmpty ? "" : TranslationPromptPreset.customName
-        } else {
-            loadedSource = savedPreset
+        let savedID = translation.translationPromptPreset
+        let savedPrompt = translation.systemPrompt
+        if savedPrompt.isEmpty && savedID.isEmpty {
+            // 首次安装：应用默认预设「视频字幕」。
+            if let preset = TranslationPromptPreset.with(id: TranslationPromptPreset.defaultID) {
+                draft = preset.prompt
+                loadedID = preset.id
+                translation.systemPrompt = preset.prompt
+                translation.translationPromptPreset = preset.id
+            }
+            return
         }
+        draft = savedPrompt
+        // 保存内容与某内置模板全等 → 高亮该预设；否则自定义态。
+        if let preset = matchedPreset() {
+            loadedID = preset.id
+        } else {
+            loadedID = TranslationPromptPreset.customID
+        }
+        _ = savedID  // 旧 id 仅作参考；显示以内容匹配为准（预设改名/替换不破坏内容）
     }
 
     /// 切换预设：立即加载对应模板到编辑区（未保存，需点保存写入）。
-    private func loadPreset(named name: String) {
-        guard let preset = TranslationPromptPreset.named(name) else { return }
+    private func loadPreset(id: String) {
+        guard let preset = TranslationPromptPreset.with(id: id) else { return }
         draft = preset.prompt
-        loadedSource = preset.name
         saveConfirmation = nil
     }
 
     /// 恢复默认：重载当前预设的原始模板。
     private func restoreDefault() {
-        guard let preset = TranslationPromptPreset.named(loadedSource) else { return }
+        guard let preset = TranslationPromptPreset.with(id: loadedID) else { return }
         draft = preset.prompt
     }
 
     /// 保存：写回配置（持久化）；与任何内置预设不同即标记自定义态。
     private func save() {
         translation.systemPrompt = draft
-        if let preset = TranslationPromptPreset.named(loadedSource),
-           preset.prompt == draft {
-            translation.translationPromptPreset = preset.name
+        if let preset = matchedPreset() {
+            translation.translationPromptPreset = preset.id
         } else {
-            translation.translationPromptPreset = TranslationPromptPreset.customName
+            translation.translationPromptPreset = TranslationPromptPreset.customID
         }
         saveConfirmation = "已保存"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { saveConfirmation = nil }

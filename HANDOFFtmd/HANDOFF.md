@@ -2326,3 +2326,44 @@ sherpa-onnx C API 未暴露；实际可用为 Silero/Ten-VAD 两族。
 - VAD 电平监控条（调试面板实时显示 RMS+人声概率，调参所见即所得）；
 - 首启引导向导（按系统语言预选下载源 + 倒计时自动开始）；
 - 会话文本落盘（original/translation/all 三文件 tail -f 可跟）。
+
+---
+
+## 29. 第二十一轮会话（2026-08-24 03:20–04:00）：翻译提示词体系
+
+### 需求
+
+硬编码翻译 System Prompt 升级为可配置 Prompt 管理（预设/变量/持久化），
+只属于翻译层；实时行为（队列/并发/超时/三连败）与 SubtitleManager 零改动。
+
+### 落地（4 commit）
+
+1. `4d221d4 feat: add translation prompt builder`：PromptBuilder——变量
+   替换唯一收口（{source_lang}/{target_lang}/{text}；缺失安全、不改模板、
+   未知占位符保留）；embedsText 判定模板是否内嵌待译文本。
+2. `b8cdaed feat: add translation prompt presets`：预设迁移到 Pipeline 层
+  （规格三预设变量化 + 保留旧四场景）；持久化 translationPromptPreset
+   新键 + 模板沿用 systemPrompt 键（不新增访问层）；TranslationService
+   systemContent 接入 PromptBuilder——三铁律/格式指令/上下文双路径追加
+   行为不变。
+3. `9815767 feat: add translation prompt settings`：TranslationPromptEditor
+  （预设 Picker 即时加载 / 等宽编辑区 / 变量点击追加 / 恢复默认 / 保存）；
+   编辑缓冲与持久化分离（保存才写回；与预设不同自动标记自定义）。
+4. `test: add translation prompt coverage`：10 单测（变量/安全/预设
+   完备性/规格模板/Apple 隔离源码级守护）。
+
+### 设计决策
+
+- **变量替换收口**：只在 TranslationService.systemContent 构造处调用
+  PromptBuilder（所有 LLM 路径——本地/在线/流式/批量——汇聚点）；
+  Provider 零改动。
+- **{text} 语义**：变量化模板整体作 system（文本嵌入其中），user 消息
+  仍发编号原文——批量 JSON 解析依赖编号行，不能把文本从 user 抽走。
+- **源语言变量值**：实时场景 ASR 未显式给出源语言，统一填
+  "the detected source language"（避免编造语种）。
+- **Apple Translation 隔离**：不经过 PromptBuilder（源码级测试守护）。
+- 旧「提示词预设」Menu + 单行 TextField 移除，由编辑器替代。
+
+### 测试
+
+148→158。全量通过。工作区干净。

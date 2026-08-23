@@ -2243,3 +2243,34 @@ UI 与未来自动路由经 Capability 查询；Provider 不动、不放推理/�
 - 设置页接 Capability 渲染（✓ 实时识别 / △ 时间戳 列表）——本次按规格
   禁止混入 UI 重构，summaryEntries 已备好数据源；
 - 自动路由（任务 → capability 查询 → 推荐模型）仅为数据预留。
+
+---
+
+## 27. 第十九轮会话（2026-08-24 01:00–01:25）：能力描述层接入设置页
+
+### 需求
+
+ASRCapability 仅作描述/展示/调试（禁止自动选模型/推荐/性能决策）；
+设置页能力展示改动态读取 summaryEntries；UI 不感知引擎（移除硬编码分支）。
+
+### 落地（1 commit：aeeddf3 feat: display ASR capability metadata in settings）
+
+- ASRCapability 补 summaryEntries（上轮汇报说有此字段，实际漏写——本轮
+  如实补上）：推荐场景 / 实时出字 / 原生时间戳 / 语言策略 / 运行位置；
+- ASRCapabilitySummaryView：通用 ✓/△ 渲染视图（SettingsPages.swift 内，
+  紧邻 StatusRow）；无 if engine == .xxx 分支；
+- 接入四处：识别引擎 Section（engineHint 下方）、本地模型列表底部
+ （当前模型能力）、Apple Speech 区块头、在线 API 启用后头部；
+- TranscriptionService.engineType(forModelPath:) 新公开口：把 private
+  engine(forPath:) 的判定结果转 ASREngineType（设置页与转录调度同一
+  事实源），行为零改动。
+
+### 测试
+
+148（+4）：summaryEntries 全引擎完备性、网络需求文案一致性、语言条目
+策略、engineType 与 debugEngineDescription 判定一致性。
+
+### 边界遵守
+
+未动 Provider/Runtime/ASRManager/SubtitleManager/Capability 模型字段；
+无自动选择逻辑。新引擎接入流程 = 注册表加一条注册，UI 零修改。

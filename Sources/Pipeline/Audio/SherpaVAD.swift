@@ -47,6 +47,11 @@ final class SherpaVAD: @unchecked Sendable {
     /// 喂入音频并返回「当前是否检测到人声」。
     /// 模型不可用返回 nil（调用方回落启发式判定）。
     /// - Parameter samples: 16kHz 单声道 PCM（任意长度，内部按 512 窗口切）。
+    ///
+    /// 本封装只用 Detected() 的实时语音态判定，不消费语音段输出——
+    /// 每次查询后 Flush + Clear 清空内部段队列：否则检测到的段在
+    /// circular buffer 无限堆积（长录制内存泄漏），队列满后 Detected()
+    /// 语义漂移。
     func detectSpeech(_ samples: [Float]) -> Bool? {
         guard !samples.isEmpty else { return nil }
         return lock.withLock { () -> Bool? in
@@ -61,7 +66,11 @@ final class SherpaVAD: @unchecked Sendable {
                     offset += 512
                 }
             }
-            return SherpaOnnxVoiceActivityDetectorDetected(detector) == 1
+            let detected = SherpaOnnxVoiceActivityDetectorDetected(detector) == 1
+            // 丢弃段输出（只要实时态）：flush 收口当前段、clear 清队列。
+            SherpaOnnxVoiceActivityDetectorFlush(detector)
+            SherpaOnnxVoiceActivityDetectorClear(detector)
+            return detected
         }
     }
 

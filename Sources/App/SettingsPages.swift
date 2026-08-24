@@ -1132,7 +1132,7 @@ struct CaptionSettingsView: View {
     private let themes: [SubtitleTheme] = [
         .init(name: "默认", icon: "arrow.counterclockwise",
               sourceFontSize: 32, backgroundOpacity: 0.4,
-              borderVisible: true, borderOpacity: 0.6, fontWeight: "regular",
+              borderVisible: true, borderOpacity: 0.6, fontWeight: "medium",
               isDefault: true),
         .init(name: "观影", icon: "film",
               sourceFontSize: 30, backgroundOpacity: 0.55,

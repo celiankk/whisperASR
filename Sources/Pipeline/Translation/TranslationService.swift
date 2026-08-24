@@ -494,14 +494,29 @@ enum TranslationService {
             ? numberedInputFull
             : String(numberedInputFull.prefix(maxInputCharacters))
 
-        // 输出格式：批量（>1 句）要求 JSON 数组（模型不易漏句/串行；
-        // 解析失败回退编号格式）；单句直接译文（流式友好）。
         // 自定义翻译系统提示词（设置 → 翻译 → 系统提示词）为空时用默认指令。
+        // 首次安装（无任何 Prompt 配置）：落默认预设「视频字幕」（应用核心
+        // 场景是实时字幕）——落盘必须在运行时读取点，只放设置页 onAppear
+        // 时用户不进设置页就永远不生效。已有配置（含显式清空）不覆盖。
         // 变量替换统一走 PromptBuilder（唯一收口）：模板含 {text} 时文本
         // 已嵌入模板（system 内），user 消息仍发编号原文（批量格式解析
         // 依赖编号行）；不含变量时保持现行结构（模板作指令，文本走 user）。
-        let customPromptTemplate = (UserDefaults.standard.string(forKey: ConfigKeys.systemPrompt) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawPrompt = UserDefaults.standard.string(forKey: ConfigKeys.systemPrompt) ?? ""
+        let hasPresetSelection = UserDefaults.standard.string(forKey: "translationPromptPreset") != nil
+        var customPromptTemplate: String
+        if rawPrompt.isEmpty && !hasPresetSelection {
+            // 首次安装：落默认预设（显式保存过空模板 = hasPresetSelection
+            // 非nil，不进入此分支——用户「清空自定义」的意图受尊重）。
+            let defaultPreset = TranslationPromptPreset.with(id: TranslationPromptPreset.defaultID)
+            customPromptTemplate = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let defaultPreset {
+                UserDefaults.standard.set(defaultPreset.prompt, forKey: ConfigKeys.systemPrompt)
+                UserDefaults.standard.set(defaultPreset.id, forKey: "translationPromptPreset")
+                customPromptTemplate = defaultPreset.prompt
+            }
+        } else {
+            customPromptTemplate = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         // 三铁律（无论默认/自定义模板都生效）：
         // 1) 只输出一条最佳译文（禁止备选/注释/解释）；
         // 2) 专名与品牌名保留原文不译；

@@ -42,6 +42,14 @@ final class ASRCapabilityRegistry: @unchecked Sendable {
     ]
 
     private var capabilities: [ASREngineType: ASRCapability] = [:]
+    /// capabilities/funasrCache 的访问锁（@unchecked Sendable：查询来自
+    /// 主线程 UI 与测试线程）。
+    private let lock = NSLock()
+    /// FunASR 能力缓存（按模型目录名失效）：funasrCapability() 每次读盘
+    /// （resolveLiveModelPath 的 fileExists + 目录文件特征探测），而
+    /// ASRCapabilitySummaryView 的 body 每帧查询——设置页高频重绘时
+    /// 造成无谓磁盘 IO。模型切换时目录名变化，缓存自动失效。
+    private var funasrCache: (directoryName: String, capability: ASRCapability)?
 
     /// 测试可实例化（独立注册表，不污染 shared）。
     init() {
@@ -59,16 +67,21 @@ final class ASRCapabilityRegistry: @unchecked Sendable {
     /// 返回兜底描述并断言（debug 下炸出「engine exists but
     /// capability missing」）。
     func capability(for engine: ASREngineType) -> ASRCapability {
-        if let capability = capabilities[engine] { return capability }
-        assertionFailure("ASRCapability missing for engine \(engine.rawValue)")
-        return ASRCapability(
-            engine: engine,
-            supportsStreaming: false,
-            supportsPartialResult: true,
-            supportsTimestamp: false,
-            supportedLanguages: [],
-            requiresNetwork: false,
-            recommendedMode: .balanced)
+        if engine == .funasr {
+            return lock.withLock { cachedFunASRCapability() }
+        }
+        return lock.withLock {
+            if let capability = capabilities[engine] { return capability }
+            assertionFailure("ASRCapability missing for engine \(engine.rawValue)")
+            return ASRCapability(
+                engine: engine,
+                supportsStreaming: false,
+                supportsPartialResult: true,
+                supportsTimestamp: false,
+                supportedLanguages: [],
+                requiresNetwork: false,
+                recommendedMode: .balanced)
+        }
     }
 
     /// 全部已注册能力（设置页遍历渲染用；固定引擎顺序）。
@@ -149,6 +162,20 @@ final class ASRCapabilityRegistry: @unchecked Sendable {
     /// FunASR 能力按所选模型折算：paraformer-streaming 是流式引擎，
     /// 其余 offline 整段替换；语言支持按模型族（SenseVoice 四语 +
     /// 粤语提示 / Paraformer 中英内置 / Nano 多语言自动检测）。
+    /// FunASR 能力缓存查询：模型目录名未变时直接返回缓存
+    ///（目录名含模型身份——catalog 约定 fileName；自定义目录按文件
+    /// 特征探测的结果也随目录内容变化，名字不变内容变的窗口极小，
+    /// 设置页展示场景可接受）。
+    private func cachedFunASRCapability() -> ASRCapability {
+        let directoryName = (ModelPathResolver.resolveLiveModelPath() as NSString).lastPathComponent
+        if let funasrCache, funasrCache.directoryName == directoryName {
+            return funasrCache.capability
+        }
+        let capability = funasrCapability()
+        funasrCache = (directoryName, capability)
+        return capability
+    }
+
     private func funasrCapability() -> ASRCapability {
         let modelType = FunASRModelConfig.config(
             for: URL(fileURLWithPath: ModelPathResolver.resolveLiveModelPath(),

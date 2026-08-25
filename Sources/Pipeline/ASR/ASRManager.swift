@@ -182,7 +182,8 @@ final class ASRManager: @unchecked Sendable {
                 if density >= 0.25, tailSeconds > 1.0,
                    let neuralSpeech = SherpaVAD.shared.detectSpeech(
                     recorder.getSamples(from: self.subtitleManager.sealedSampleCount,
-                                        upTo: totalSamples)) {
+                                        upTo: totalSamples),
+                    absoluteStart: self.subtitleManager.sealedSampleCount) {
                     density = neuralSpeech ? max(density, 1.0) : 0.0
                 }
                 if density < 0.25, tailSeconds > 1.0 {
@@ -205,7 +206,8 @@ final class ASRManager: @unchecked Sendable {
                     // 语音）时不跳过，送 ASR 兜底；nil = 模型不可用，行为不变。
                     if SherpaVAD.shared.detectSpeech(
                         recorder.getSamples(from: self.subtitleManager.sealedSampleCount,
-                                            upTo: totalSamples)) != true {
+                                            upTo: totalSamples),
+                        absoluteStart: self.subtitleManager.sealedSampleCount) != true {
                         self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
                         lastTranscribedTotal = totalSamples
                         recorder.trimSamples(upTo: max(0, self.subtitleManager.sealedSampleCount - contextSamples))

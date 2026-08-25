@@ -27,6 +27,11 @@ final class SherpaVAD: @unchecked Sendable {
     private let lock = NSLock()
     /// 加载失败后不再重试的时间戳（避免每轮循环反复读盘/建会话）。
     private var lastLoadFailure: Date = .distantPast
+    /// 喂音水位线：已喂入的总采样数（调用方传绝对区间时按此裁增量）。
+    /// Silero 是流式状态机——重复喂已喂过的音频浪费推理且让实时态
+    /// 被旧音频反复刷新；调用方（ASRManager 循环）每轮传同一 tail 区间，
+    /// 内部只喂新增采样。reset() 清零（新录制会话）。
+    private var fedSampleCount = 0
 
     private init() {}
 
@@ -46,21 +51,42 @@ final class SherpaVAD: @unchecked Sendable {
 
     /// 喂入音频并返回「当前是否检测到人声」。
     /// 模型不可用返回 nil（调用方回落启发式判定）。
-    /// - Parameter samples: 16kHz 单声道 PCM（任意长度，内部按 512 窗口切）。
+    /// - Parameters:
+    ///   - samples: 16kHz 单声道 PCM（任意长度，内部按 512 窗口切）。
+    ///   - absoluteStart: samples 在录制时间轴上的起始采样位置；提供时
+    ///     内部按喂音水位线裁剪，只喂纯新增采样（tail 重访零重复推理）。
+    ///     nil = 全量喂入（调用方无法提供位置时）。
     ///
     /// 本封装只用 Detected() 的实时语音态判定，不消费语音段输出——
     /// 每次查询后 Flush + Clear 清空内部段队列：否则检测到的段在
     /// circular buffer 无限堆积（长录制内存泄漏），队列满后 Detected()
     /// 语义漂移。
-    func detectSpeech(_ samples: [Float]) -> Bool? {
+    func detectSpeech(_ samples: [Float], absoluteStart: Int? = nil) -> Bool? {
         guard !samples.isEmpty else { return nil }
         return lock.withLock { () -> Bool? in
             guard ensureLoadedLocked(), let detector else { return nil }
-            // 按窗口步进喂入；Silero 输入窗 512 样本 @16kHz（32ms）。
-            samples.withUnsafeBufferPointer { buffer in
+            // 增量裁剪：调用方给绝对位置时跳过已喂区间（水位线之前）。
+            let feed: ArraySlice<Float>
+            if let absoluteStart {
+                let newStart = max(0, fedSampleCount - absoluteStart)
+                guard newStart < samples.count else {
+                    // 全部已喂过：只刷新实时态（不重复推理）。
+                    let detected = SherpaOnnxVoiceActivityDetectorDetected(detector) == 1
+                    SherpaOnnxVoiceActivityDetectorFlush(detector)
+                    SherpaOnnxVoiceActivityDetectorClear(detector)
+                    return detected
+                }
+                feed = samples[newStart...]
+                fedSampleCount = absoluteStart + samples.count
+            } else {
+                feed = samples[...]
+                fedSampleCount += samples.count
+            }
+            // 按 512 窗口步进喂入（Silero 输入窗 @16kHz = 32ms）。
+            feed.withUnsafeBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
                 var offset = 0
-                while offset + 512 <= samples.count {
+                while offset + 512 <= feed.count {
                     SherpaOnnxVoiceActivityDetectorAcceptWaveform(
                         detector, base + offset, 512)
                     offset += 512
@@ -74,13 +100,14 @@ final class SherpaVAD: @unchecked Sendable {
         }
     }
 
-    /// 复位会话状态（新录制会话开始时；丢弃内部缓冲的段队列）。
+    /// 复位会话状态（新录制会话开始时；丢弃内部缓冲的段队列与喂音水位线）。
     func reset() {
         lock.withLock {
             if let detector {
                 SherpaOnnxVoiceActivityDetectorClear(detector)
                 SherpaOnnxVoiceActivityDetectorFlush(detector)
             }
+            fedSampleCount = 0
         }
     }
 

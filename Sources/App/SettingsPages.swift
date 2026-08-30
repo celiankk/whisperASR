@@ -545,6 +545,8 @@ private struct ModelCatalogSection: View {
 /// 自定义模型路径区（本地引擎范畴，本地引擎选中时置顶显示）。
 private struct CustomModelSection: View {
     @Bindable var recognition: ASRConfiguration
+    /// 生效中模型路径（ModelPathResolver 同一判定：自定义 > 下载选择 > 默认）。
+    @State private var effectivePath = ""
 
     var body: some View {
         Section(header: IconSectionHeader("自定义模型", icon: "folder.badge.gearshape", color: .indigo)) {
@@ -552,11 +554,52 @@ private struct CustomModelSection: View {
                 TextField("GGML 模型文件", text: $recognition.customModelPath,
                           prompt: Text("自定义 ggml 模型路径"))
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: recognition.customModelPath) { _, _ in
+                        refreshEffective()
+                    }
                 Button("浏览…") { browse() }
             }
-            Text("填写有效路径后优先使用该模型（支持按 GGUF 架构自动识别引擎）；留空则使用上方选择的模型。")
+            // 当前实际生效模型（三来源互斥后的结果，含来源标注）——
+            // 自定义/下载列表/本地管理共写路径键，无此行用户无法分辨
+            // 真正生效的是哪个。
+            HStack(spacing: 4) {
+                Image(systemName: effectiveIsCustom ? "checkmark.circle.fill" : "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(effectiveIsCustom ? Color.green : Color.secondary)
+                Text(effectiveText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Text("填写有效路径后优先使用该模型（支持按 GGUF 架构自动识别引擎）；留空则使用上方选择的模型。与「本地模型管理」「语音识别模型」三处启用互斥——启用任一处即清空其他来源。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+        .onAppear { refreshEffective() }
+    }
+
+    private var effectiveIsCustom: Bool {
+        !recognition.customModelPath.isEmpty
+            && effectivePath == recognition.customModelPath
+    }
+
+    private var effectiveText: String {
+        if effectivePath.isEmpty {
+            return "当前生效：未找到有效模型"
+        }
+        let source = effectiveIsCustom
+            ? "自定义路径生效中"
+            : (effectivePath.contains(ModelCatalog.modelDirectory.path)
+               ? "下载模型生效中" : "本地模型管理生效中")
+        return "\(source)：\((effectivePath as NSString).lastPathComponent)"
+    }
+
+    private func refreshEffective() {
+        effectivePath = ModelPathResolver.resolveModelPath()
+        // resolveModelPath 回退到不存在的默认路径时视为无效。
+        if !FileManager.default.fileExists(atPath: effectivePath) {
+            effectivePath = ""
         }
     }
 
@@ -2496,6 +2539,9 @@ private struct LocalModelRowView: View {
                         AppLogger.shared.log(.model, "Local model disabled: \(model.path)")
                     } else {
                         modelPath = model.path
+                        // 模型来源互斥：清下载列表选择（resolveModelPath 中
+                        // modelPath 优先，保留会让列表「使用中」状态骗人）。
+                        ModelManager.shared.selectedFileName = ""
                         AppLogger.shared.log(.model, "Local model enabled: \(model.path)")
                     }
                     ConfigurationManager.shared.reload()

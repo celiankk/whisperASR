@@ -286,6 +286,11 @@ final class ModelManager {
         guard isDownloaded(model) else { return }
         guard selectedFileName != model.fileName else { return }
         selectedFileName = model.fileName
+        // 模型来源互斥：自定义路径/本地模型管理启用会占用 "modelPath"
+        // 键且解析优先级更高——不清理会出现「下载列表显示使用中、
+        // 实际生效的是旧自定义模型」的静默覆盖。
+        UserDefaults.standard.set("", forKey: "modelPath")
+        ConfigurationManager.shared.reload()
         AppLogger.shared.log(.model, "Model selected: \(model.fileName)")
     }
 

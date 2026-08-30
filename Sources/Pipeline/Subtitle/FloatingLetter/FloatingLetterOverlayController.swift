@@ -22,9 +22,25 @@ private final class FloatingLetterOverlayPanel: NSPanel {
 private final class FloatingLetterHostingView: NSHostingView<FloatingLetterContainerView> {
     var onMouseEnteredPanel: (() -> Void)?
     /// 背景按下：原生窗口拖动（performDrag）。
-    /// 边缘/四角缩放由系统原生处理（titled + resizable + fullSizeContentView，
-    /// 系统光标与手势），不经本视图转发。
     var onBackgroundMouseDown: ((NSEvent) -> Void)?
+
+    /// 系统 resize 热区宽度（窗口边缘/四角，与系统标准一致取 5pt，
+    /// 透明全尺寸内容下视觉不可见——加宽到 8pt 提升可命中性）。
+    private static let resizeHotEdge: CGFloat = 8
+
+    /// 边缘/四角命中判定：命中区放行给系统 resize（styleMask .resizable
+    /// 的原生处理），不再转发窗口拖动——此前 mouseDown 无条件走
+    /// performDrag 把系统 resize 热区整个截走，边缘缩放形同虚设。
+    private func isOnResizeEdge(_ event: NSEvent) -> Bool {
+        let location = convert(event.locationInWindow, from: nil)
+        let bounds = bounds
+        let e = Self.resizeHotEdge
+        let nearLeft = location.x <= e
+        let nearRight = location.x >= bounds.maxX - e
+        let nearBottom = location.y <= e
+        let nearTop = location.y >= bounds.maxY - e
+        return nearLeft || nearRight || nearBottom || nearTop
+    }
 
     deinit {
 #if DEBUG
@@ -51,7 +67,22 @@ private final class FloatingLetterHostingView: NSHostingView<FloatingLetterConta
     }
 
     override func mouseDown(with event: NSEvent) {
+        // 内部区域：转发窗口拖动。边缘区 hitTest 已返回 nil（见下），
+        // 事件直接落窗口原生 resize，不会进入本方法。
         onBackgroundMouseDown?(event)
+    }
+
+    /// 边缘/四角让路：hitTest 返回 nil → 事件穿透到窗口层（NSThemeFrame），
+    /// 由系统原生 resize 接管（styleMask .resizable）。这是透明全尺寸内容
+    /// 窗口让出 resize 热区的标准做法——拦截 mouseDown 再转发是不成立的
+    /// （NSView.mouseDown 默认实现不会触发窗口缩放）。
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let event = NSApp.currentEvent,
+           event.type == .leftMouseDown,
+           isOnResizeEdge(event) {
+            return nil
+        }
+        return super.hitTest(point)
     }
 }
 

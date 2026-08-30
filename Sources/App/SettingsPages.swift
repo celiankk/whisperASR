@@ -1424,11 +1424,22 @@ struct AudioSettingsView: View {
 
         Form {
             Section(header: IconSectionHeader("输入权限", icon: "mic.badge.xmark", color: .mint)) {
-                PermissionRow(
-                    title: "屏幕捕获（系统音频）",
-                    granted: screenCaptureMonitor.screenCaptureGranted,
-                    hint: "系统设置 → 隐私与安全性 → 屏幕录制"
-                )
+                if screenCaptureMonitor.screenCaptureGranted {
+                    PermissionRow(
+                        title: "屏幕捕获（系统音频）",
+                        granted: true,
+                        hint: "系统设置 → 隐私与安全性 → 屏幕录制"
+                    )
+                } else {
+                    // 拖拽式授权引导：app 图标拖进系统设置「屏幕录制」
+                    // 列表即完成授权（对标拖入即授权引导窗）。
+                    PermissionDragGuide(
+                        permissionName: "屏幕录制",
+                        settingsURL: URL(string:
+                            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
+                        onRecheck: { screenCaptureMonitor.refresh() }
+                    )
+                }
                 PermissionRow(
                     title: "麦克风",
                     granted: screenCaptureMonitor.microphoneGranted,

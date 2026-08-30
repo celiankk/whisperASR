@@ -25,12 +25,23 @@ final class AppIconDragSourceView: NSView, NSDraggingSource {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // 完整镜像 Finder 拖 app 的 pasteboard 形态——系统设置 TCC 列表
+        // 读的是 NSFilenamesPboardType（旧版文件名类型，路径数组的属性
+        // 列表序列化），缺失它 = 拖起但放下无效果。file-url 必须用
+        // url.dataRepresentation（此前的 JSON 编码是该类型的错误数据）。
         let pasteboardItem = NSPasteboardItem()
-        // file URL 双写：标准 UTType + 兼容字符串路径（系统设置任一形态都认）。
-        if let data = try? JSONEncoder().encode(fileURL) {
-            pasteboardItem.setData(data, forType: .fileURL)
+
+        // 1. 标准 file URL（dataRepresentation = URL 字节串）。
+        pasteboardItem.setData(fileURL.dataRepresentation, forType: .fileURL)
+
+        // 2. 旧版文件名类型（系统设置 TCC 列表的实际读取源）。
+        let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        if let plistData = try? PropertyListSerialization.data(
+            fromPropertyList: [fileURL.path], format: .binary, options: 0) {
+            pasteboardItem.setData(plistData, forType: filenamesType)
         }
-        pasteboardItem.setString(fileURL.path, forType: .fileURL)
+
+        // 3. 纯文本路径（兜底）。
         pasteboardItem.setString(fileURL.path, forType: .string)
 
         let dragItem = NSDraggingItem(pasteboardWriter: pasteboardItem)

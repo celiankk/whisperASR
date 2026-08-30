@@ -880,7 +880,7 @@ struct TranslationSettingsView: View {
                              detail: mode == .off ? "关闭实时字幕翻译"
                                  : mode == .localModel ? "LM Studio / Ollama / llama.cpp；地址与模型可自动探测"
                                  : mode == .onlineAPI ? "音频 → 实时识别 → 在线 API 翻译 → 目标语言字幕"
-                                 : "音频 → 实时识别 → Apple 翻译 → 目标语言字幕（macOS 15+）")
+                                 : "音频 → 实时识别 → Apple 翻译 → 目标语言字幕（macOS 26+）")
                 }
 
                 if mode != .off {

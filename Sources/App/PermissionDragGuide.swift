@@ -73,7 +73,9 @@ struct PermissionDragGuide: View {
                     .onChanged { _ in isPressed = true }
                     .onEnded { _ in isPressed = false })
                 .onDrag {
-                    NSItemProvider(object: appURL as NSURL? ?? NSURL())
+                    // Finder 同款文件拖拽注册：系统设置 TCC 列表接受
+                    // .app 的 file URL（NSURL 对象形式不被识别）。
+                    NSItemProvider(contentsOf: appURL) ?? NSItemProvider()
                 }
                 .help("按住拖到右侧系统设置列表中")
 
@@ -109,6 +111,10 @@ struct PermissionDragGuide: View {
                     }
                     Button("打开系统设置") {
                         NSWorkspace.shared.open(settingsURL)
+                        // 悬浮授权窗：附着在系统设置下方（置顶不抢焦点），
+                        // 直接把图标拖进权限列表。
+                        PermissionGuidePanelController.shared.show(
+                            permissionName: permissionName, settingsURL: settingsURL)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)

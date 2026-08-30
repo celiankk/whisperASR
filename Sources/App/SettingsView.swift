@@ -56,8 +56,13 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView {
             List(SettingsCategory.allCases, selection: $selection) { category in
-                Label(category.title, systemImage: category.icon)
-                    .tag(category)
+                HStack(spacing: 8) {
+                    Image(systemName: category.icon)
+                        .foregroundStyle(category.iconColor)
+                        .frame(width: 18)
+                    Text(category.title)
+                }
+                .tag(category)
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 210)

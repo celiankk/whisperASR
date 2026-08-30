@@ -23,7 +23,7 @@ struct GeneralSettingsView: View {
         @Bindable var general = settings.general
 
         Form {
-            Section("外观") {
+            Section(header: IconSectionHeader("外观", icon: "paintbrush", color: .purple)) {
                 Picker("转录字体大小", selection: $general.transcriptFontSizeRaw) {
                     ForEach(TranscriptFontSize.allCases, id: \.rawValue) { size in
                         Text(size.label).tag(size.rawValue)
@@ -32,14 +32,14 @@ struct GeneralSettingsView: View {
                 .pickerStyle(.segmented)
             }
 
-            Section("基础选项") {
+            Section(header: IconSectionHeader("基础选项", icon: "switch.2", color: .gray)) {
                 Toggle("录制后生成转录记录", isOn: $general.enableLiveTranscription)
                 Text("关闭后录制结束不生成转录历史条目、不保留录音文件；实时字幕与翻译不受影响。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("本地 API 服务器（兼容 OpenAI）") {
+            Section(header: IconSectionHeader("本地 API 服务器（兼容 OpenAI）", icon: "server.rack", color: .cyan)) {
                 Toggle("运行转录 API 服务器", isOn: $general.apiServerEnabled)
                     .onChange(of: general.apiServerEnabled) { _, on in
                         if on { apiServer.start() } else { apiServer.stop() }
@@ -95,7 +95,7 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("备份与恢复") {
+            Section(header: IconSectionHeader("备份与恢复", icon: "externaldrive.badge.timemachine", color: .teal)) {
                 HStack(spacing: 10) {
                     Button("导出备份…") { exportBackup() }
                     Button("从备份恢复…") { pickRestoreFile() }
@@ -203,7 +203,7 @@ struct RecognitionSettingsView: View {
             // 识别引擎置顶：选中哪个引擎（本地模型 / 在线 / Apple），
             // 对应的配置区紧跟其后显示；未选中的配置区按原顺序排在后面，
             // 内容不变。
-            Section("识别引擎") {
+            Section(header: IconSectionHeader("识别引擎", icon: "waveform.badge.mic", color: .blue)) {
                 // 三项选择：本地 / 在线 / Apple。
                 // 本地涵盖 Whisper / Qwen / Nemotron（引擎按所选模型自动判定），
                 // 语音识别模型 / 自定义模型 / 本地模型管理三区属于本地范畴。
@@ -244,7 +244,7 @@ struct RecognitionSettingsView: View {
                 LocalModelsSection()
             }
 
-            Section("音频处理") {
+            Section(header: IconSectionHeader("音频处理", icon: "waveform.path.ecg", color: .red)) {
                 Picker("音频分片模式", selection: $recognition.audioChunkingMode) {
                     ForEach(AudioChunkingMode.allCases, id: \.self) { mode in
                         Text(mode.label).tag(mode)
@@ -299,7 +299,7 @@ struct RecognitionSettingsView: View {
                 SileroVADDownloadRow()
             }
 
-            Section("ASR Prompt（热词提示）") {
+            Section(header: IconSectionHeader("ASR Prompt（热词提示）", icon: "text.badge.star", color: .orange)) {
                 Toggle("启用识别提示词", isOn: $asrPrompt.enabled)
                 if asrPrompt.enabled {
                     Picker("来源", selection: $asrPrompt.source) {
@@ -355,7 +355,7 @@ struct RecognitionSettingsView: View {
                 }
             }
 
-            Section("识别语言") {
+            Section(header: IconSectionHeader("识别语言", icon: "globe", color: .blue)) {
                 // 按当前引擎显示：支持手动指定的（whisper / nemotron / 在线）
                 // 显示语言选择器；Qwen 自动检测；Apple 按语言包设置。
                 // 显式读取建立 Observable 依赖：菜单栏改 asrLanguage 时
@@ -481,7 +481,7 @@ private struct ModelCatalogSection: View {
     @State private var engineFilter: ModelEngine? = nil
 
     var body: some View {
-        Section("语音识别模型") {
+        Section(header: IconSectionHeader("语音识别模型", icon: "square.stack.3d.down.right", color: .indigo)) {
             HStack {
                 Text("下载源")
                 Spacer()
@@ -554,7 +554,7 @@ private struct CustomModelSection: View {
     @Bindable var recognition: ASRConfiguration
 
     var body: some View {
-        Section("自定义模型") {
+        Section(header: IconSectionHeader("自定义模型", icon: "folder.badge.gearshape", color: .indigo)) {
             HStack {
                 TextField("GGML 模型文件", text: $recognition.customModelPath,
                           prompt: Text("自定义 ggml 模型路径"))
@@ -585,7 +585,7 @@ private struct LocalModelsSection: View {
     @State private var localModelManager = LocalModelManager.shared
 
     var body: some View {
-        Section("本地模型管理") {
+        Section(header: IconSectionHeader("本地模型管理", icon: "internaldrive", color: .indigo)) {
             HStack {
                 TextField("模型目录", text: Binding(
                     get: { localModelManager.directoryPath },
@@ -648,7 +648,7 @@ private struct OnlineASRSection: View {
     @State private var onlineASRResult: (success: Bool, message: String)?
 
     var body: some View {
-        Section("在线识别 API") {
+        Section(header: IconSectionHeader("在线识别 API", icon: "icloud.and.arrow.down", color: .green)) {
             Toggle("启用在线识别", isOn: $recognition.onlineASREnabled)
             if recognition.onlineASREnabled {
                 // 能力清单（统一能力描述层动态渲染）。
@@ -755,7 +755,7 @@ private struct RemoteASRSettingsSection: View {
     @State private var testResult: (success: Bool, message: String)? = nil
 
     var body: some View {
-        Section("远程识别 API（自托管）") {
+        Section(header: IconSectionHeader("远程识别 API（自托管）", icon: "server.rack", color: .cyan)) {
             Toggle("启用远程识别", isOn: $recognition.remoteASREnabled)
             if recognition.remoteASREnabled {
                 TextField("端点 Base URL",
@@ -850,7 +850,7 @@ struct TranslationSettingsView: View {
         let _ = translation.targetLanguage
 
         Form {
-            Section("翻译") {
+            Section(header: IconSectionHeader("翻译", icon: "character.bubble", color: .orange)) {
                 Picker("翻译方式", selection: $translation.mode) {
                     ForEach(TranslationMode.allCases, id: \.self) { mode in
                         Text(mode.label).tag(mode)
@@ -890,7 +890,10 @@ struct TranslationSettingsView: View {
             }
 
             if mode == .localModel || mode == .onlineAPI {
-                Section(mode == .localModel ? "本地模型配置" : "在线 API 配置") {
+                Section(header: IconSectionHeader(
+                    mode == .localModel ? "本地模型配置" : "在线 API 配置",
+                    icon: mode == .localModel ? "shippingbox" : "network",
+                    color: mode == .localModel ? .indigo : .green)) {
                     TextField("API Base URL", text: $translation.endpoint,
                               prompt: Text(mode == .localModel ? "http://127.0.0.1:1234/v1" : "https://api.openai.com/v1"))
                         .textFieldStyle(.roundedBorder)
@@ -1026,7 +1029,7 @@ struct TranslationSettingsView: View {
                 // 恢复默认/保存；变量替换统一走 PromptBuilder）。
                 // 仅 LLM 翻译（本地/在线）使用；Apple 翻译不经过提示词。
                 if mode != .apple {
-                    Section("翻译提示词") {
+                    Section(header: IconSectionHeader("翻译提示词", icon: "text.quote", color: .orange)) {
                         TranslationPromptEditor(translation: translation)
                     }
                 }
@@ -1168,7 +1171,7 @@ struct CaptionSettingsView: View {
         @Bindable var window = settings.window
 
         Form {
-            Section("主题预设") {
+            Section(header: IconSectionHeader("主题预设", icon: "paintpalette", color: .purple)) {
                 HStack(spacing: 8) {
                     ForEach(Array(themes.enumerated()), id: \.offset) { index, theme in
                         Button {
@@ -1214,7 +1217,7 @@ struct CaptionSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("字幕文字") {
+            Section(header: IconSectionHeader("字幕文字", icon: "textformat.size", color: .purple)) {
                 HStack {
                     Text("原文字号")
                     Spacer()
@@ -1266,7 +1269,7 @@ struct CaptionSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("字幕区域") {
+            Section(header: IconSectionHeader("字幕区域", icon: "rectangle.inset.filled", color: .purple)) {
                 HStack {
                     Text("字幕宽度")
                     Spacer()
@@ -1312,7 +1315,7 @@ struct CaptionSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("字幕编辑边框") {
+            Section(header: IconSectionHeader("字幕编辑边框", icon: "rectangle.dashed", color: .purple)) {
                 Toggle("显示编辑边框", isOn: $caption.editBorderVisible)
                 HStack {
                     Text("边框颜色")
@@ -1342,7 +1345,7 @@ struct CaptionSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("字幕浮层行为") {
+            Section(header: IconSectionHeader("字幕浮层行为", icon: "cursorarrow.click.2", color: .purple)) {
                 HStack {
                     Text("字幕空闲清除")
                     Spacer()
@@ -1387,7 +1390,7 @@ struct AudioSettingsView: View {
         @Bindable var audio = settings.audio
 
         Form {
-            Section("输入权限") {
+            Section(header: IconSectionHeader("输入权限", icon: "mic.badge.xmark", color: .mint)) {
                 PermissionRow(
                     title: "屏幕捕获（系统音频）",
                     granted: screenCaptureMonitor.screenCaptureGranted,
@@ -1404,14 +1407,14 @@ struct AudioSettingsView: View {
                 }
             }
 
-            Section("录制") {
+            Section(header: IconSectionHeader("录制", icon: "record.circle", color: .red)) {
                 Toggle("默认包含麦克风", isOn: $audio.defaultIncludeMicrophone)
                 Text("打开后，录制系统音频时默认同时收录麦克风；浮层内仍可临时切换。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("当前输入状态") {
+            Section(header: IconSectionHeader("当前输入状态", icon: "waveform", color: .red)) {
                 HStack {
                     Text("录制状态")
                     Spacer()
@@ -1499,7 +1502,7 @@ struct HistorySettingsView: View {
 
     var body: some View {
         Form {
-            Section("转录历史") {
+            Section(header: IconSectionHeader("转录历史", icon: "clock.arrow.circlepath", color: .teal)) {
                 HStack {
                     Text("当前记录")
                     Spacer()
@@ -1526,7 +1529,7 @@ struct HistorySettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("会议纪要") {
+            Section(header: IconSectionHeader("会议纪要", icon: "doc.text.magnifyingglass", color: .pink)) {
                 ForEach(minutesStore.prompts) { prompt in
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1639,7 +1642,7 @@ struct SystemStatusSettingsView: View {
 
     var body: some View {
         Form {
-            Section("服务状态") {
+            Section(header: IconSectionHeader("服务状态", icon: "stethoscope", color: .green)) {
                 StatusRow(title: "后端服务",
                           text: monitor.backendRunning ? "运行中" : "未启动",
                           level: monitor.backendRunning ? .ok : .idle)
@@ -1656,7 +1659,7 @@ struct SystemStatusSettingsView: View {
                           level: AudioChunkingMode.current == .off ? .idle : .ok)
             }
 
-            Section("Online ASR") {
+            Section(header: IconSectionHeader("Online ASR", icon: "dot.radiowaves.left.and.right", color: .green)) {
                 StatusRow(title: "状态",
                           text: onlineASRStats.state == .error
                               ? "\(onlineASRStats.state.rawValue)：\(onlineASRStats.stateDetail)"
@@ -1694,7 +1697,7 @@ struct SystemStatusSettingsView: View {
                 }
             }
 
-            Section("资源占用") {
+            Section(header: IconSectionHeader("资源占用", icon: "memorychip", color: .green)) {
                 HStack {
                     Text("CPU 占用")
                     Spacer()
@@ -1719,7 +1722,7 @@ struct SystemStatusSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("最近日志") {
+            Section(header: IconSectionHeader("最近日志", icon: "doc.text.below.ecg", color: .gray)) {
                 Picker("分类", selection: $logFilter) {
                     Text("全部").tag(LogCategory?.none)
                     ForEach(LogCategory.allCases, id: \.rawValue) { category in
@@ -1750,7 +1753,7 @@ struct SystemStatusSettingsView: View {
                 }
             }
 
-            Section("操作") {
+            Section(header: IconSectionHeader("操作", icon: "wrench.and.screwdriver", color: .yellow)) {
                 HStack(spacing: 10) {
                     Button {
                         reconnectTranslation()
@@ -1772,7 +1775,7 @@ struct SystemStatusSettingsView: View {
                 }
             }
 
-            Section("权限") {
+            Section(header: IconSectionHeader("权限", icon: "lock.shield", color: .mint)) {
                 StatusRow(title: "屏幕捕获",
                           text: screenCaptureMonitor.screenCaptureGranted ? "已授权" : "未授权",
                           level: screenCaptureMonitor.screenCaptureGranted ? .ok : .error)
@@ -2003,7 +2006,7 @@ struct AppleSpeechSettingsSection: View {
     var body: some View {
         @Bindable var asr = settings.asr
 
-        Section("Apple Speech（系统语音识别）") {
+        Section(header: IconSectionHeader("Apple Speech（系统语音识别）", icon: "apple.logo", color: .primary)) {
             // 能力清单（统一能力描述层动态渲染，UI 不感知引擎细节）。
             ASRCapabilitySummaryView(engine: .apple)
             StatusRow(title: "授权",
@@ -2224,7 +2227,7 @@ struct AppleServicesSettingsView: View {
             // 在识别页置顶显示）。
             AppleSpeechSettingsSection()
 
-            Section("Apple Translation（系统翻译）") {
+            Section(header: IconSectionHeader("Apple Translation（系统翻译）", icon: "apple.logo", color: .primary)) {
                 StatusRow(title: "系统支持",
                           text: translationStatus.systemSupported ? "✓ 支持" : "✗ 不支持",
                           level: translationStatus.systemSupported ? .ok : .error)

@@ -275,9 +275,17 @@ final class FloatingLetterOverlayBinder {
         }
         viewModel.maxLines = appState.maxSubtitleLines
         viewModel.subtitleClearDelay = appState.subtitleClearDelay
-        // 字幕容器（独立于字体）。
-        viewModel.subtitleContainerWidth = CGFloat(appState.subtitleContainerWidth)
-        viewModel.subtitleContainerHeight = CGFloat(appState.subtitleContainerHeight)
+        // 字幕容器（独立于字体）。带变化 guard：pushState 在每次识别快照
+        // 变化时全量重跑——无 guard 时 resize 拖拽中每帧回写 appState →
+        // 这里再写回 VM → VM observation 重入（窗口被双向回写拉扯）。
+        let containerWidth = CGFloat(appState.subtitleContainerWidth)
+        if viewModel.subtitleContainerWidth != containerWidth {
+            viewModel.subtitleContainerWidth = containerWidth
+        }
+        let containerHeight = CGFloat(appState.subtitleContainerHeight)
+        if viewModel.subtitleContainerHeight != containerHeight {
+            viewModel.subtitleContainerHeight = containerHeight
+        }
         viewModel.subtitleBackgroundOpacity = appState.subtitleBackgroundOpacity
         // 字幕编辑边框（仅视觉）。
         viewModel.subtitleEditBorderVisible = appState.subtitleEditBorderVisible

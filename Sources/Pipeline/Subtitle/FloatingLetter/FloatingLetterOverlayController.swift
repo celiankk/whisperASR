@@ -712,14 +712,17 @@ final class FloatingLetterOverlayController: NSObject {
         AppLogger.shared.log(.window, "Window mode=\(windowManager.mode) passthrough=\(viewModel.mousePassthrough)")
     }
 
-    /// 窗口移动/缩放回调：更新 currentFrame 并保存；
-    /// 原生 live-resize 拖拽中每帧同步容器（字幕实时重排），帧落盘留到
-    /// didEndLiveResize 一次性完成（避免拖拽中高频写 UserDefaults）。
+    /// 窗口移动/缩放回调：更新 currentFrame 并保存。
+    /// live-resize 拖拽中【不同步容器】：每帧 syncContainer 会触发
+    /// onContainerResized → appState 写 UserDefaults + @Observable 通知
+    /// → binder observation → pushState 全量重跑 → VM 容器属性写入 →
+    /// SwiftUI 内容 invalidate——整条链每帧跑一遍就是「调整难受」。
+    /// 容器与帧的落盘统一到 didEndLiveResize 一次性完成。
     private func windowFrameChanged() {
         syncLastKnownFrame()
         windowManager.markFrame(panel.frame)
-        syncContainerFromWindowFrame()
         if !panel.inLiveResize {
+            syncContainerFromWindowFrame()
             saveWindowFrame()
         }
     }
@@ -727,6 +730,8 @@ final class FloatingLetterOverlayController: NSObject {
     /// 原生缩放结束：落盘窗口帧并锁尺寸签名（防止随后的状态观察用容器
     /// 配置反推 targetSize 把窗口弹回——容器钳制与窗口尺寸不一致时会跳）。
     private func handleNativeResizeEnded() {
+        // resize 结束一次性收口：容器同步 + 帧落盘 + 签名复位。
+        syncContainerFromWindowFrame()
         saveWindowFrame()
         if let viewModel {
             lastAppliedSizeSignature = sizeSignature(for: viewModel)

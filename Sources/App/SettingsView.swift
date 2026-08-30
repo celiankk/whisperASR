@@ -67,8 +67,14 @@ struct SettingsView: View {
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 210)
         } detail: {
-            detailView(for: selection)
-                .navigationTitle(selection.title)
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsPageHeader(
+                    title: selection.title,
+                    icon: selection.icon,
+                    color: selection.pageHeaderColor)
+                detailView(for: selection)
+            }
+            .padding(.top, 8)
         }
         .frame(minWidth: 660, minHeight: 460)
         .onAppear { settings.reload() }

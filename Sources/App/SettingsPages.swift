@@ -1424,15 +1424,26 @@ struct AudioSettingsView: View {
 
         Form {
             Section(header: IconSectionHeader("输入权限", icon: "mic.badge.xmark", color: .mint)) {
+                // 屏幕捕获：未授权直接显示拖拽式授权引导；已授权显示
+                // 正常行 + 可展开的引导（拖拽体验随时可用，不必先去
+                // 系统设置移除授权）。
                 if screenCaptureMonitor.screenCaptureGranted {
-                    PermissionRow(
-                        title: "屏幕捕获（系统音频）",
-                        granted: true,
-                        hint: "系统设置 → 隐私与安全性 → 屏幕录制"
-                    )
+                    DisclosureGroup {
+                        PermissionDragGuide(
+                            permissionName: "屏幕录制",
+                            settingsURL: URL(string:
+                                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
+                            onRecheck: { screenCaptureMonitor.refresh() }
+                        )
+                        .padding(.top, 4)
+                    } label: {
+                        PermissionRow(
+                            title: "屏幕捕获（系统音频）",
+                            granted: true,
+                            hint: "系统设置 → 隐私与安全性 → 屏幕录制"
+                        )
+                    }
                 } else {
-                    // 拖拽式授权引导：app 图标拖进系统设置「屏幕录制」
-                    // 列表即完成授权（对标拖入即授权引导窗）。
                     PermissionDragGuide(
                         permissionName: "屏幕录制",
                         settingsURL: URL(string:

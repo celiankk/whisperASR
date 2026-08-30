@@ -24,7 +24,6 @@ struct PermissionDragGuide: View {
     var onRecheck: (() -> Void)? = nil
 
     @State private var appURL: URL? = Bundle.main.bundleURL
-    @State private var isPressed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -47,37 +46,19 @@ struct PermissionDragGuide: View {
             HStack(spacing: 16) {
                 // 可拖拽的 app 图标卡片。
                 HStack(spacing: 10) {
-                    appIcon
-                        .frame(width: 28, height: 28)
+                    // AppKit beginDraggingSession：SwiftUI .onDrag 跨 app
+                    // 拖系统设置不可靠，且 .gesture(DragGesture) 与 .onDrag
+                    // 冲突导致拖拽根本无法启动。
+                    DraggableAppIcon(fileURL: Bundle.main.bundleURL, iconSide: 40)
+                        .frame(width: 36, height: 36)
                     Text("WhisperASR")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.primary)
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(.quaternary.opacity(0.6))
-                        .stroke(isPressed ? Color.accentColor : .clear, lineWidth: 1.5)
-                )
-                .scaleEffect(isPressed ? 0.97 : 1)
-                .contentShape(RoundedRectangle(cornerRadius: 10))
-                .onHover { hovering in
-                    if hovering {
-                        NSCursor.openHand.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
-                .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { _ in isPressed = true }
-                    .onEnded { _ in isPressed = false })
-                .onDrag {
-                    // Finder 同款文件拖拽注册：系统设置 TCC 列表接受
-                    // .app 的 file URL（NSURL 对象形式不被识别）。
-                    NSItemProvider(contentsOf: appURL) ?? NSItemProvider()
-                }
-                .help("按住拖到右侧系统设置列表中")
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.6)))
+                .help("按住图标拖到系统设置列表中")
 
                 Spacer()
 
@@ -131,16 +112,4 @@ struct PermissionDragGuide: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
     }
 
-    /// App 图标（Bundle 主图标；生成失败回退通用 app 图标）。
-    @ViewBuilder
-    private var appIcon: some View {
-        if let appURL, let icon = NSWorkspace.shared.icon(forFile: appURL.path) as NSImage? {
-            Image(nsImage: icon)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-        } else {
-            Image(systemName: "app.fill")
-                .foregroundStyle(.secondary)
-        }
-    }
 }

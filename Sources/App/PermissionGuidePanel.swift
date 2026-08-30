@@ -44,6 +44,33 @@ final class PermissionGuidePanelController {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
+    /// 跨进程查找系统设置主窗口的 frame（CGWindowList，
+    /// Cocoa 坐标系与 NSWindow.frame 可直接互换）。
+    private func findSystemSettingsWindowFrame() -> NSRect? {
+        guard
+            let list = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+            ) as? [[String: Any]]
+        else { return nil }
+        for info in list {
+            let owner = info[kCGWindowOwnerName as String] as? String ?? ""
+            guard owner == "系统设置" || owner == "System Settings" else { continue }
+            // 只看有标题的主窗口（过滤设置进程的辅助小窗）。
+            let name = info[kCGWindowName as String] as? String ?? ""
+            guard !name.isEmpty else { continue }
+            guard let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let x = bounds["X"] as? CGFloat,
+                  let y = bounds["Y"] as? CGFloat,
+                  let w = bounds["Width"] as? CGFloat,
+                  let h = bounds["Height"] as? CGFloat,
+                  w > 500 else { continue }
+            // CG 坐标（左上原点）→ Cocoa 坐标（左下原点）。
+            guard let screenHeight = NSScreen.screens.first?.frame.height else { return nil }
+            return NSRect(x: x, y: screenHeight - y - h, width: w, height: h)
+        }
+        return nil
+    }
+
     // MARK: - 面板
 
     private func createPanel() {
@@ -70,19 +97,17 @@ final class PermissionGuidePanelController {
         self.panel = panel
     }
 
-    /// 定位：系统设置窗口下方居中（找不到时屏幕下方居中）。
+    /// 定位：系统设置窗口下方居中。系统设置是【另一个进程】——它的
+    /// 窗口不在 NSApp.windows 里（此前用 NSApp.windows 找永远落空，
+    /// 兜底到屏幕底部，用户感知为「没附着到设置上」）。跨进程用
+    /// CGWindowList 按窗口属主名定位。
     private func positionBelowSettings() {
         guard let panel else { return }
-        // 系统设置窗口：可见、非本浮窗、宽度较大的普通窗口。
-        let settingsWindow = NSApp.windows.first {
-            $0 != panel && $0.isVisible && $0.frame.width > 600
-        }
         var target = panel.frame
-        if let settings = settingsWindow {
-            let frame = settings.frame
+        if let settingsFrame = findSystemSettingsWindowFrame() {
             target = NSRect(
-                x: frame.midX - panel.frame.width / 2,
-                y: frame.minY - panel.frame.height - 16,
+                x: settingsFrame.midX - panel.frame.width / 2,
+                y: settingsFrame.minY - panel.frame.height - 16,
                 width: panel.frame.width,
                 height: panel.frame.height)
         } else if let screen = NSScreen.main?.visibleFrame {
@@ -108,40 +133,16 @@ final class PermissionGuidePanelController {
 /// 悬浮授权窗内容：app 图标（可拖拽）+ 说明 + 关闭。
 private struct PermissionGuideFloatingContent: View {
     let onClose: () -> Void
-    @State private var isPressed = false
 
     private var appURL: URL { Bundle.main.bundleURL }
 
     var body: some View {
         HStack(spacing: 14) {
-            // 可拖拽的 app 图标（NSItemProvider(contentsOf:)：Finder 同款
-            // 文件拖拽注册，系统设置 TCC 列表接受）。
-            Image(nsImage: NSWorkspace.shared.icon(forFile: appURL.path))
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 40, height: 40)
-                .padding(8)
+            // 可拖拽的 app 图标（AppKit beginDraggingSession：Finder 同款
+            // pasteboard file URL，系统设置 TCC 列表接受的标准形态）。
+            DraggableAppIcon(fileURL: appURL, iconSide: 48)
+                .frame(width: 56, height: 56)
                 .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.6)))
-                .scaleEffect(isPressed ? 0.95 : 1)
-                .onDrag {
-                    isPressed = true
-                    let provider = NSItemProvider(contentsOf: appURL)
-                        ?? NSItemProvider()
-                    return provider
-                } preview: {
-                    Image(nsImage: NSWorkspace.shared.icon(forFile: appURL.path))
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 48, height: 48)
-                }
-                .onHover { hovering in
-                    if hovering {
-                        NSCursor.openHand.push()
-                    } else {
-                        NSCursor.pop()
-                    }
-                }
-                .help("按住我，拖到系统设置的列表里")
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("把图标拖进上方的列表")

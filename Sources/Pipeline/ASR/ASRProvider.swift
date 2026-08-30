@@ -73,33 +73,6 @@ struct ASRResult {
     }
 }
 
-/// 统一模型类型（跨引擎目录/路由/UI 的模型身份）。
-/// 与 ModelCatalog 条目一一对应——后端接入（如 sherpa-onnx）按此
-/// 特化运行时行为（SenseVoice CTC / Paraformer 流式等）。
-enum ASRModelType: String, CaseIterable {
-    // Whisper
-    case whisperSmall, whisperMedium, whisperLargeTurbo
-    // Qwen / Nemotron
-    case qwen3ASR, nemotron
-    // FunASR
-    case senseVoiceSmall
-    case paraformerStreaming
-    case paraformerZH
-    case funASRNano
-
-    var engine: ModelEngine {
-        switch self {
-        case .whisperSmall, .whisperMedium, .whisperLargeTurbo: return .whisper
-        case .qwen3ASR: return .qwen3asr
-        case .nemotron: return .nemotron
-        case .senseVoiceSmall, .paraformerStreaming, .paraformerZH, .funASRNano: return .funasr
-        }
-    }
-
-    /// 是否实时推荐（设置页 FunASR 分组排序用）。
-    var isRealtimeRecommended: Bool { self == .senseVoiceSmall }
-}
-
 /// 统一 ASR Provider 接口。
 protocol ASRProvider: Sendable {
     /// 引擎标识。

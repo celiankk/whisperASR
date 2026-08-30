@@ -35,6 +35,13 @@ final class PermissionGuidePanelController {
         }
         positionBelowSettings()
         panel?.orderFrontRegardless()
+        let settingsFrame = findSystemSettingsWindowFrame()
+        let diag = "[PermissionGuide] shown frame=\(panel?.frame ?? .zero) "
+            + "settings=\(settingsFrame.map { NSStringFromRect($0) } ?? "not-found") "
+            + "visible=\(panel?.isVisible ?? false)"
+        print(diag)
+        try? diag.write(to: URL(fileURLWithPath: "/tmp/permission_guide_log.txt"),
+                        atomically: true, encoding: .utf8)
     }
 
     func dismiss() {
@@ -55,9 +62,11 @@ final class PermissionGuidePanelController {
         for info in list {
             let owner = info[kCGWindowOwnerName as String] as? String ?? ""
             guard owner == "系统设置" || owner == "System Settings" else { continue }
-            // 只看有标题的主窗口（过滤设置进程的辅助小窗）。
-            let name = info[kCGWindowName as String] as? String ?? ""
-            guard !name.isEmpty else { continue }
+            // 注意：kCGWindowName 在自身无屏幕录制权限时对其他进程窗口
+            // 一律为空——【不能用标题过滤】（未授权恰恰是本流程的前提）。
+            // 用窗口层级（layer 0 = 普通窗口）+ 最小宽度过滤辅助小窗。
+            let layer = info[kCGWindowLayer as String] as? Int ?? -1
+            guard layer == 0 else { continue }
             guard let bounds = info[kCGWindowBounds as String] as? [String: Any],
                   let x = bounds["X"] as? CGFloat,
                   let y = bounds["Y"] as? CGFloat,

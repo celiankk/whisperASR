@@ -74,6 +74,14 @@ struct WhisperASRApp: App {
                 Button("字幕浮层样式预览…") {
                     openWindow(id: "debug-subtitle")
                 }
+                // 悬浮授权窗测试：直接弹出（附着在系统设置下方的拖拽
+                // 授权引导）——绕开设置页导航链路，便于验证与演示。
+                Button("屏幕录制授权悬浮窗…") {
+                    PermissionGuidePanelController.shared.show(
+                        permissionName: "屏幕录制",
+                        settingsURL: URL(string:
+                            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                }
 #if DEBUG
                 Button("浮层内存自检") {
                     FloatingLetterLeakTest.runAfterLaunch(appDelegate: appDelegate)

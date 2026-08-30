@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct DetailView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioPlayerManager.self) var audioPlayer
+    @Environment(AudioRecorder.self) var recorder
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @State private var showTimestamps = true
@@ -55,17 +56,31 @@ struct DetailView: View {
             }
             .padding(.top, 20)
 
-            // 功能引导卡（三列）。
+            // 功能引导卡（三列，可点击直接调用对应功能）。
             HStack(spacing: 14) {
                 featureCard(icon: "record.circle", color: .red,
                             title: "开始录制",
-                            detail: "工具栏录制按钮，\n实时出字幕与翻译")
+                            detail: "工具栏录制按钮，\n实时出字幕与翻译") {
+                    // 与工具栏录制按钮同流程：一体化浮层 + 选择应用。
+                    FloatingLetterOverlayHost.shared.startRecordingFlow(
+                        appState: appState, recorder: recorder
+                    ) {
+                        FloatingLetterOverlayHost.shared.dismiss()
+                    }
+                }
                 featureCard(icon: "square.and.arrow.down", color: .blue,
                             title: "导入文件",
-                            detail: "拖放音频到左侧列表，\n批量文件转录")
+                            detail: "拖放音频到左侧列表，\n批量文件转录") {
+                    openFileImportPanel()
+                }
                 featureCard(icon: "captions.bubble", color: .purple,
                             title: "实时字幕",
-                            detail: "字幕浮层可穿透、缩放，\n支持 OBS 采集")
+                            detail: "字幕浮层可穿透、缩放，\n支持 OBS 采集") {
+                    // 展示字幕浮层（不进入录制流程；录制仍从录制入口开始）。
+                    FloatingLetterOverlayHost.shared.present(
+                        appState: appState, recorder: recorder
+                    )
+                }
             }
             .padding(.horizontal, 24)
 
@@ -74,8 +89,23 @@ struct DetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 单张功能引导卡：图标 + 标题 + 两行说明。
-    private func featureCard(icon: String, color: Color, title: String, detail: String) -> some View {
+    /// 导入文件：多选音频/视频（与侧栏「添加文件」同一入口语义）。
+    private func openFileImportPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.audio, .movie]
+        panel.begin { response in
+            guard response == .OK else { return }
+            for url in panel.urls {
+                appState.addFile(url: url)
+            }
+        }
+    }
+
+    /// 单张功能引导卡：图标 + 标题 + 两行说明；点击直接调用功能。
+    private func featureCard(icon: String, color: Color, title: String,
+                             detail: String, action: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 22))
@@ -90,6 +120,15 @@ struct DetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onHover { hovering in
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+        .onTapGesture(perform: action)
     }
 
     // MARK: - Item Detail

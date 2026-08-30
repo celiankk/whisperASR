@@ -26,6 +26,9 @@ final class PermissionGuidePanelController {
     private init() {}
 
     /// 显示悬浮授权窗（已显示则前置）。
+    /// 定位竞态：调用方通常刚 NSWorkspace.open 系统设置——冷启动时其
+    /// 窗口要 1-2s 才出现，立刻定位必然落空（落到屏幕底部，用户感知
+    /// 为「没附着设置」）。轮询重定位直到找到设置窗口或超时。
     func show(permissionName: String, settingsURL: URL) {
         self.permissionName = permissionName
         self.settingsURL = settingsURL
@@ -35,13 +38,27 @@ final class PermissionGuidePanelController {
         }
         positionBelowSettings()
         panel?.orderFrontRegardless()
-        let settingsFrame = findSystemSettingsWindowFrame()
-        let diag = "[PermissionGuide] shown frame=\(panel?.frame ?? .zero) "
-            + "settings=\(settingsFrame.map { NSStringFromRect($0) } ?? "not-found") "
-            + "visible=\(panel?.isVisible ?? false)"
-        print(diag)
-        try? diag.write(to: URL(fileURLWithPath: "/tmp/permission_guide_log.txt"),
-                        atomically: true, encoding: .utf8)
+        repositionUntilAttached()
+    }
+
+    /// 轮询重定位：最多 10 次 × 0.6s，找到系统设置窗口即附着并停止。
+    private func repositionUntilAttached() {
+        Task { @MainActor in
+            for attempt in 0..<10 {
+                if panel == nil { return }   // 已被关闭
+                if findSystemSettingsWindowFrame() != nil {
+                    positionBelowSettings()
+                    let diag = "[PermissionGuide] attached attempt=\(attempt) "
+                        + "panel=\(panel?.frame ?? .zero) "
+                        + "settings=\(findSystemSettingsWindowFrame().map { NSStringFromRect($0) } ?? "?")"
+                    print(diag)
+                    try? diag.write(to: URL(fileURLWithPath: "/tmp/permission_guide_log.txt"),
+                                    atomically: true, encoding: .utf8)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(600))
+            }
+        }
     }
 
     func dismiss() {
@@ -191,13 +208,15 @@ private struct PermissionGuideFloatingContent: View {
         .padding(14)
         .frame(width: 420)
         .background(
+            // 纯黑实底（用户要求）：regularMaterial 是实时模糊材质，
+            // GPU 开销大；纯色渲染成本接近零。
             RoundedRectangle(cornerRadius: 14)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+                .fill(Color.black)
+                .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(.quaternary, lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
         )
     }
 }

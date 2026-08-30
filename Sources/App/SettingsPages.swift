@@ -1424,33 +1424,16 @@ struct AudioSettingsView: View {
 
         Form {
             Section(header: IconSectionHeader("输入权限", icon: "mic.badge.xmark", color: .mint)) {
-                // 屏幕捕获：未授权直接显示拖拽式授权引导；已授权显示
-                // 正常行 + 可展开的引导（拖拽体验随时可用，不必先去
-                // 系统设置移除授权）。
-                if screenCaptureMonitor.screenCaptureGranted {
-                    DisclosureGroup {
-                        PermissionDragGuide(
-                            permissionName: "屏幕录制",
-                            settingsURL: URL(string:
-                                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
-                            onRecheck: { screenCaptureMonitor.refresh() }
-                        )
-                        .padding(.top, 4)
-                    } label: {
-                        PermissionRow(
-                            title: "屏幕捕获（系统音频）",
-                            granted: true,
-                            hint: "系统设置 → 隐私与安全性 → 屏幕录制"
-                        )
-                    }
-                } else {
-                    PermissionDragGuide(
-                        permissionName: "屏幕录制",
-                        settingsURL: URL(string:
-                            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
-                        onRecheck: { screenCaptureMonitor.refresh() }
-                    )
-                }
+                // 屏幕捕获：始终显示拖拽式授权引导卡（状态徽标随授权
+                // 变化）——引导入口常驻可见，拖拽体验不必先去系统设置
+                // 移除授权才能看到。
+                PermissionDragGuide(
+                    permissionName: "屏幕录制",
+                    settingsURL: URL(string:
+                        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
+                    isGranted: screenCaptureMonitor.screenCaptureGranted,
+                    onRecheck: { screenCaptureMonitor.refresh() }
+                )
                 PermissionRow(
                     title: "麦克风",
                     granted: screenCaptureMonitor.microphoneGranted,

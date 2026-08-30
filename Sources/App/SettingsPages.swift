@@ -33,10 +33,10 @@ struct GeneralSettingsView: View {
             }
 
             Section(header: IconSectionHeader("基础选项", icon: "switch.2", color: .gray)) {
-                Toggle("录制后生成转录记录", isOn: $general.enableLiveTranscription)
-                Text("关闭后录制结束不生成转录历史条目、不保留录音文件；实时字幕与翻译不受影响。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: $general.enableLiveTranscription) {
+                    RowLabel(title: "录制后生成转录记录",
+                             detail: "关闭后不生成历史条目、不保留录音；实时字幕与翻译不受影响")
+                }
             }
 
             Section(header: IconSectionHeader("本地 API 服务器（兼容 OpenAI）", icon: "server.rack", color: .cyan)) {
@@ -245,10 +245,12 @@ struct RecognitionSettingsView: View {
             }
 
             Section(header: IconSectionHeader("音频处理", icon: "waveform.path.ecg", color: .red)) {
-                Picker("音频分片模式", selection: $recognition.audioChunkingMode) {
+                Picker(selection: $recognition.audioChunkingMode) {
                     ForEach(AudioChunkingMode.allCases, id: \.self) { mode in
                         Text(mode.label).tag(mode)
                     }
+                } label: {
+                    RowLabel(title: "音频分片模式", detail: recognition.audioChunkingMode.appliesToText)
                 }
                 .pickerStyle(.menu)
                 if recognition.audioChunkingMode != .off {
@@ -266,12 +268,6 @@ struct RecognitionSettingsView: View {
                                 value: $recognition.audioChunkingMaxWaitSeconds,
                                 in: AudioChunkingConfig.maxWaitRange, step: 1)
                     }
-                    Text("音频按最短识别时间聚合后发送；未达标时最长等待指定时间后强制发送，避免请求过于频繁。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(recognition.audioChunkingMode.appliesToText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 HStack {
@@ -359,16 +355,16 @@ struct RecognitionSettingsView: View {
                 let _ = recognition.asrLanguage
                 switch TranscriptionService.languageSupport {
                 case .selectable:
-                    Picker("识别语言", selection: $recognition.asrLanguage) {
+                    Picker(selection: $recognition.asrLanguage) {
                         Text("自动检测").tag("auto")
                         ForEach(TranscriptionService.availableLanguages(), id: \.code) { lang in
                             Text("\(lang.name)（\(lang.code)）").tag(lang.code)
                         }
+                    } label: {
+                        RowLabel(title: "识别语言",
+                                 detail: "可跳过语种检测提升速度；实时与文件转录同时生效")
                     }
                     .pickerStyle(.menu)
-                    Text("可跳过语种检测提升速度；实时识别与文件转录同时生效。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 case .autoOnly(let reason):
                     HStack {
                         Text("语言检测")
@@ -875,41 +871,27 @@ struct TranslationSettingsView: View {
 
         Form {
             Section(header: IconSectionHeader("翻译", icon: "character.bubble", color: .orange)) {
-                Picker("翻译方式", selection: $translation.mode) {
+                Picker(selection: $translation.mode) {
                     ForEach(TranslationMode.allCases, id: \.self) { mode in
                         Text(mode.label).tag(mode)
                     }
+                } label: {
+                    RowLabel(title: "翻译方式",
+                             detail: mode == .off ? "关闭实时字幕翻译"
+                                 : mode == .localModel ? "LM Studio / Ollama / llama.cpp；地址与模型可自动探测"
+                                 : mode == .onlineAPI ? "音频 → 实时识别 → 在线 API 翻译 → 目标语言字幕"
+                                 : "音频 → 实时识别 → Apple 翻译 → 目标语言字幕（macOS 15+）")
                 }
 
-                switch mode {
-                case .off:
-                    Text("关闭实时字幕翻译。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .localModel:
-                    Text("LM Studio / Ollama / llama.cpp；地址与模型名留空自动探测。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .onlineAPI:
-                    Picker("目标语言", selection: $translation.targetLanguage) {
+                if mode != .off {
+                    Picker(selection: $translation.targetLanguage) {
                         Text("关闭").tag("")
                         ForEach(TargetLanguage.available) { lang in
                             Text(lang.nativeName).tag(lang.id)
                         }
+                    } label: {
+                        RowLabel(title: "目标语言")
                     }
-                    Text("音频 → 本地实时识别 → 原文字幕 → 在线 API 翻译 → 目标语言字幕。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .apple:
-                    Picker("目标语言", selection: $translation.targetLanguage) {
-                        Text("关闭").tag("")
-                        ForEach(TargetLanguage.available) { lang in
-                            Text(lang.nativeName).tag(lang.id)
-                        }
-                    }
-                    Text("源语言自动检测。音频 → 本地实时识别 → 原文字幕 → Apple 翻译（TranslationSession）→ 目标语言字幕。需要 macOS 15+ 的系统翻译框架。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -990,8 +972,8 @@ struct TranslationSettingsView: View {
                     }
 
                     Text(mode == .localModel
-                         ? "兼容 OpenAI 格式（/v1/chat/completions）。自动探测 127.0.0.1:1234（LM Studio）、11434（Ollama）、8080（llama.cpp/本应用 API 服务器）。"
-                         : "兼容 OpenAI API 格式（/v1/chat/completions）。示例模型：Qwen3、GPT-5-mini、DeepSeek、Claude。翻译请求异步执行，失败自动重试，不阻塞字幕显示。")
+                         ? "自动探测 1234（LM Studio）/ 11434（Ollama）/ 8080（llama.cpp）"
+                         : "请求异步执行，失败自动重试，不阻塞字幕显示")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -1437,10 +1419,10 @@ struct AudioSettingsView: View {
             }
 
             Section(header: IconSectionHeader("录制", icon: "record.circle", color: .red)) {
-                Toggle("默认包含麦克风", isOn: $audio.defaultIncludeMicrophone)
-                Text("打开后，录制系统音频时默认同时收录麦克风；浮层内仍可临时切换。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: $audio.defaultIncludeMicrophone) {
+                    RowLabel(title: "默认包含麦克风",
+                             detail: "录制系统音频时默认同时收录；浮层内可临时切换")
+                }
             }
 
             Section(header: IconSectionHeader("当前输入状态", icon: "waveform", color: .red)) {

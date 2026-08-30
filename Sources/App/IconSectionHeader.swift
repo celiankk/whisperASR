@@ -69,3 +69,25 @@ extension SettingsCategory {
         self == .appleServices ? Color(white: 0.35) : iconColor
     }
 }
+
+// MARK: - 行内标签（RowLabel）
+//
+// 参考图行样式：粗体标题 + 灰色说明第二行（说明属于行本身，
+// 不再游离在整行下方）。控制项（Toggle/Picker/Slider）放右侧。
+
+struct RowLabel: View {
+    let title: String
+    var detail: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}

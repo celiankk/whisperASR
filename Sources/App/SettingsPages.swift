@@ -535,13 +535,6 @@ private struct ModelCatalogSection: View {
                     }
                 }
             }
-            // 能力清单：当前本地模型解析出的引擎（能力描述层动态渲染）。
-            VStack(alignment: .leading, spacing: 4) {
-                Text("当前模型能力").font(.caption).foregroundStyle(.secondary)
-                ASRCapabilitySummaryView(
-                    engine: TranscriptionService.engineType(
-                        forModelPath: ModelPathResolver.resolveLiveModelPath()))
-            }
             Text("选择已下载的模型用于转录。模型越小速度越快，但准确率越低。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -651,8 +644,6 @@ private struct OnlineASRSection: View {
         Section(header: IconSectionHeader("在线识别 API", icon: "icloud.and.arrow.down", color: .green)) {
             Toggle("启用在线识别", isOn: $recognition.onlineASREnabled)
             if recognition.onlineASREnabled {
-                // 能力清单（统一能力描述层动态渲染）。
-                ASRCapabilitySummaryView(engine: .online)
                 Picker("API 类型", selection: $recognition.onlineASRApiType) {
                     ForEach(OnlineASRApiType.allCases, id: \.self) { type in
                         Text(type.label).tag(type)
@@ -784,7 +775,6 @@ private struct RemoteASRSettingsSection: View {
                             .lineLimit(2)
                     }
                 }
-                ASRCapabilitySummaryView(engine: .remote)
             }
             Text("识别音频将发送到你所配置的服务器（请确保为可信网络）；端点不可达时该轮识别失败，不影响本地引擎。")
                 .font(.caption)
@@ -2007,8 +1997,6 @@ struct AppleSpeechSettingsSection: View {
         @Bindable var asr = settings.asr
 
         Section(header: IconSectionHeader("Apple Speech（系统语音识别）", icon: "apple.logo", color: .primary)) {
-            // 能力清单（统一能力描述层动态渲染，UI 不感知引擎细节）。
-            ASRCapabilitySummaryView(engine: .apple)
             StatusRow(title: "授权",
                       text: authText,
                       level: authLevel)

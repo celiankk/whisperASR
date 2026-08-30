@@ -38,14 +38,58 @@ struct DetailView: View {
 
     // MARK: - Placeholder
 
+    /// 未选中条目的占位页：应用主视觉（首次启动即此页）——
+    /// 三条核心功能引导卡（录制 / 导入文件 / 实时字幕），替代单行灰字。
     private var placeholderView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "text.quote")
-                .font(.system(size: 40))
-                .foregroundStyle(.quaternary)
-            Text("选择一个转录内容查看")
-                .foregroundStyle(.secondary)
+        VStack(spacing: 28) {
+            // 品牌标识。
+            VStack(spacing: 10) {
+                Image(systemName: "waveform.badge.mic")
+                    .font(.system(size: 44, weight: .light))
+                    .foregroundStyle(.tint)
+                Text("WhisperASR")
+                    .font(.title2.bold())
+                Text("实时语音转字幕 · 多引擎识别 · 实时翻译")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 20)
+
+            // 功能引导卡（三列）。
+            HStack(spacing: 14) {
+                featureCard(icon: "record.circle", color: .red,
+                            title: "开始录制",
+                            detail: "工具栏录制按钮，\n实时出字幕与翻译")
+                featureCard(icon: "square.and.arrow.down", color: .blue,
+                            title: "导入文件",
+                            detail: "拖放音频到左侧列表，\n批量文件转录")
+                featureCard(icon: "captions.bubble", color: .purple,
+                            title: "实时字幕",
+                            detail: "字幕浮层可穿透、缩放，\n支持 OBS 采集")
+            }
+            .padding(.horizontal, 24)
+
+            Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// 单张功能引导卡：图标 + 标题 + 两行说明。
+    private func featureCard(icon: String, color: Color, title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 22))
+                .foregroundStyle(color)
+            Text(title)
+                .font(.headline)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
     }
 
     // MARK: - Item Detail

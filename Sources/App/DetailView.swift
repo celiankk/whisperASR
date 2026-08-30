@@ -61,7 +61,10 @@ struct DetailView: View {
                 featureCard(icon: "record.circle", color: .red,
                             title: "开始录制",
                             detail: "工具栏录制按钮，\n实时出字幕与翻译") {
-                    // 与工具栏录制按钮同流程：一体化浮层 + 选择应用。
+                    // 录制入口授权闸（同工具栏录制按钮）。
+                    guard PermissionGuidePanelController.shared.authorizeForRecording() else {
+                        return
+                    }
                     FloatingLetterOverlayHost.shared.startRecordingFlow(
                         appState: appState, recorder: recorder
                     ) {

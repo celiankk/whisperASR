@@ -392,9 +392,11 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 // 系统只弹一次，之后需经系统设置）。SCStream 在未授权时
                 // 只会静默产出空音频——必须在启动前拦截。
                 if !CGPreflightScreenCaptureAccess() {
-                    _ = CGRequestScreenCaptureAccess()
+                    // 防御兜底（正常路径已在录制入口拦截）：触发系统请求 +
+                    // 悬浮授权窗 + 打开系统设置录屏面板。
+                    await PermissionGuidePanelController.shared.authorizeForRecording()
                     await MainActor.run {
-                        self.error = "需要屏幕录制权限：请允许授权或在系统设置 → 隐私与安全性 → 屏幕录制中添加 WhisperASR"
+                        self.error = "需要屏幕录制权限：请在弹出的引导中完成授权后重试"
                     }
                     return
                 }
@@ -788,9 +790,11 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 // 系统只弹一次，之后需经系统设置）。SCStream 在未授权时
                 // 只会静默产出空音频——必须在启动前拦截。
                 if !CGPreflightScreenCaptureAccess() {
-                    _ = CGRequestScreenCaptureAccess()
+                    // 防御兜底（正常路径已在录制入口拦截）：触发系统请求 +
+                    // 悬浮授权窗 + 打开系统设置录屏面板。
+                    await PermissionGuidePanelController.shared.authorizeForRecording()
                     await MainActor.run {
-                        self.error = "需要屏幕录制权限：请允许授权或在系统设置 → 隐私与安全性 → 屏幕录制中添加 WhisperASR"
+                        self.error = "需要屏幕录制权限：请在弹出的引导中完成授权后重试"
                     }
                     return
                 }

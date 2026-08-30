@@ -26,7 +26,16 @@ final class MenuBarController: NSObject {
         self.appState = appState
         self.audioRecorder = audioRecorder
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "WhisperASR")
+        if let button = item.button {
+            let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "WhisperASR")
+            // SF Symbol 按菜单栏标准尺寸重排（默认模板渲染随系统深浅色
+            // 自动反色）；不配置时个别系统版本符号过宽被 squareLength
+            // 裁切，视觉上「图标不见了」。
+            image?.size = NSSize(width: 18, height: 18)
+            image?.isTemplate = true
+            button.image = image
+            button.imageScaling = .scaleProportionallyDown
+        }
         item.menu = buildMenu()
         statusItem = item
     }
@@ -186,6 +195,10 @@ final class MenuBarController: NSObject {
                 FloatingLetterOverlayHost.shared.dismiss()
             }
         } else {
+            // 录制入口授权闸：未授权直接跳授权流程。
+            guard PermissionGuidePanelController.shared.authorizeForRecording() else {
+                return
+            }
             FloatingLetterOverlayHost.shared.startRecordingFlow(
                 appState: appState, recorder: recorder) {
                 FloatingLetterOverlayHost.shared.dismiss()

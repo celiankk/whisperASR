@@ -67,6 +67,12 @@ struct ContentView: View {
                     }
                 } else {
                     Button {
+                        // 录制入口授权闸：未授权时点录制直接跳授权
+                        //（系统弹窗 + 悬浮授权窗附着系统设置 + 打开录屏面板），
+                        // 不进应用选择流程。
+                        guard PermissionGuidePanelController.shared.authorizeForRecording() else {
+                            return
+                        }
                         // 一体化浮层：点击"录制"后浮层内选择应用并开始录制。
                         FloatingLetterOverlayHost.shared.startRecordingFlow(
                             appState: appState,

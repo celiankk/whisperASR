@@ -51,6 +51,21 @@ final class PermissionGuidePanelController {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
+    /// 录制入口统一授权闸：已授权返回 true；未授权则一键直达授权
+    ///（触发系统弹窗 + 悬浮授权窗附着到系统设置 + 打开录屏面板），
+    /// 返回 false。所有录制入口（工具栏/主界面卡/菜单栏/浮层选应用）
+    /// 在启动流程前调用。
+    @discardableResult
+    func authorizeForRecording() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        _ = CGRequestScreenCaptureAccess()   // 系统弹窗（仅首次；之后静默）
+        let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+        NSWorkspace.shared.open(url)
+        show(permissionName: "屏幕录制", settingsURL: url)
+        return false
+    }
+
     /// 跨进程查找系统设置主窗口的 frame（CGWindowList，
     /// Cocoa 坐标系与 NSWindow.frame 可直接互换）。
     private func findSystemSettingsWindowFrame() -> NSRect? {

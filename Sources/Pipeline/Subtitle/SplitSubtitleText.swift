@@ -55,6 +55,22 @@ struct SplitSubtitleText: View {
                 .lineLimit(2)
                 .multilineTextAlignment(alignment == .leading ? .leading : .center)
                 .fixedSize(horizontal: false, vertical: true)
+        } else if commonPrefix == 0, !current.isEmpty {
+            // 句子更替（与上一句无公共前缀）：整行作为单一单位快速淡入。
+            // 逐字重播在整句替换场景是「全屏重打」——旧句瞬间消失、新句
+            // 几十个字逐个浮现，读完时间远超更新节奏，正是刷新难受的主因；
+            // 追加场景（同一句增长）仍走逐字入场（打字感保留）。
+            Text(text)
+                .font(.system(size: fontSize, weight: fontWeight))
+                .foregroundStyle(foregroundStyle)
+                .multilineTextAlignment(alignment == .leading ? .leading : .center)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(nil)
+                .frame(maxWidth: .infinity, alignment: alignment)
+                .transition(.opacity)
+                .onAppear {
+                    withAnimation(.easeOut(duration: 0.22)) {}
+                }
         } else {
             SubtitleFlowLayout(
                 horizontalSpacing: 0,

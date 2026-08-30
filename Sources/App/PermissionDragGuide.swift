@@ -19,7 +19,8 @@ struct PermissionDragGuide: View {
     let settingsURL: URL
     /// 当前是否已授权（true = 卡片顶部显示已授权徽标）。
     var isGranted: Bool = false
-    /// 授权状态变化回调（重试检测）。
+    /// 授权状态变化回调（「请求授权…」按钮 + 「重新检测」共用：
+    /// 调用方注入 CGRequestScreenCaptureAccess + refresh）。
     var onRecheck: (() -> Void)? = nil
 
     @State private var appURL: URL? = Bundle.main.bundleURL
@@ -97,8 +98,15 @@ struct PermissionDragGuide: View {
 
                 Spacer()
 
-                // 替代路径：打开系统设置 + 重新检测。
+                // 主路径：请求授权（系统弹窗）；替代路径：打开系统设置。
                 VStack(spacing: 6) {
+                    if !isGranted {
+                        Button("请求授权…") {
+                            onRecheck?()   // 调用方注入 requestAccess
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
                     Button("打开系统设置") {
                         NSWorkspace.shared.open(settingsURL)
                     }

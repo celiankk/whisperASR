@@ -28,6 +28,15 @@ final class ScreenCaptureMonitor {
         microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
+    /// 主动请求屏幕录制授权（CGRequestScreenCaptureAccess）：
+    /// 触发系统授权弹窗（「允许 WhisperASR 录制屏幕」）。注意系统只弹
+    /// 一次——之后调用静默返回 false，用户需经系统设置（拖拽引导卡
+    /// 的替代路径）；弹窗出现与否由系统决定，本方法总是刷新状态。
+    func requestAccess() {
+        _ = CGRequestScreenCaptureAccess()
+        refresh()
+    }
+
     /// 指定应用进程是否仍在运行（用于屏幕共享/捕获源被关闭的检测）。
     func isProcessRunning(processIdentifier: pid_t?, bundleIdentifier: String?) -> Bool {
         guard let bundleIdentifier else { return true }

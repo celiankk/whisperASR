@@ -1432,7 +1432,7 @@ struct AudioSettingsView: View {
                     settingsURL: URL(string:
                         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
                     isGranted: screenCaptureMonitor.screenCaptureGranted,
-                    onRecheck: { screenCaptureMonitor.refresh() }
+                    onRecheck: { screenCaptureMonitor.requestAccess() }
                 )
                 PermissionRow(
                     title: "麦克风",
@@ -1479,7 +1479,14 @@ struct AudioSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { screenCaptureMonitor.refresh() }
+        .onAppear {
+            screenCaptureMonitor.refresh()
+            // 进音频页时若未授权：主动请求一次（触发系统弹窗）。
+            // 系统只弹一次，之后静默——引导卡的「打开系统设置」为兜底。
+            if !screenCaptureMonitor.screenCaptureGranted {
+                screenCaptureMonitor.requestAccess()
+            }
+        }
     }
 
     private var recorderStateText: String {

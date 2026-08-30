@@ -388,6 +388,17 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     return
                 }
 
+                // 屏幕录制授权前置检查：未授权时主动请求（触发系统弹窗；
+                // 系统只弹一次，之后需经系统设置）。SCStream 在未授权时
+                // 只会静默产出空音频——必须在启动前拦截。
+                if !CGPreflightScreenCaptureAccess() {
+                    _ = CGRequestScreenCaptureAccess()
+                    await MainActor.run {
+                        self.error = "需要屏幕录制权限：请允许授权或在系统设置 → 隐私与安全性 → 屏幕录制中添加 WhisperASR"
+                    }
+                    return
+                }
+
                 let filter = SCContentFilter(display: display, including: [app], exceptingWindows: [])
 
                 let config = SCStreamConfiguration()
@@ -770,6 +781,17 @@ class AudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
                 guard let display = content.displays.first else {
                     isRestartingStream = false
+                    return
+                }
+
+                // 屏幕录制授权前置检查：未授权时主动请求（触发系统弹窗；
+                // 系统只弹一次，之后需经系统设置）。SCStream 在未授权时
+                // 只会静默产出空音频——必须在启动前拦截。
+                if !CGPreflightScreenCaptureAccess() {
+                    _ = CGRequestScreenCaptureAccess()
+                    await MainActor.run {
+                        self.error = "需要屏幕录制权限：请允许授权或在系统设置 → 隐私与安全性 → 屏幕录制中添加 WhisperASR"
+                    }
                     return
                 }
 

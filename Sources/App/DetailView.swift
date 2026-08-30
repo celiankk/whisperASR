@@ -516,8 +516,12 @@ struct TranscriptContentView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(item.segments.enumerated()), id: \.offset) { index, segment in
-                        segmentView(index: index, segment: segment)
+                    // indices 直接遍历（Range<Int> 零拷贝）：Array(enumerated())
+                    // 会在每次 body 重算时全量拷贝段数组（数千段 × 播放期 10Hz
+                    // 重算 = 每秒上万次元素拷贝）；id 用位置（段数组渲染期不可变，
+                    // 与既有 offset 索引体系一致）。
+                    ForEach(item.segments.indices, id: \.self) { index in
+                        segmentView(index: index, segment: item.segments[index])
                     }
                 }
                 .padding()

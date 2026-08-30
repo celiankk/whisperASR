@@ -85,10 +85,36 @@ final class TranscriptionService: @unchecked Sendable {
     }
 
     /// Engine for the live-transcription model selection. The user's ASR
+    /// 实时引擎解析缓存：实时循环每轮调用 resolveLiveEngine() 3-5 次
+    ///（transcribeChunk 入口 / emptyNormalizedResult / liveMergePolicy×2），
+    /// auto 档每次走完整 fileExists 链（liveModelFile → catalog → GGUF 头
+    /// 探测）——纯主线程磁盘 IO。按解析出的模型路径缓存；路径未变时
+    /// 直接复用（引擎选择档变化会改变解析结果，故键含选择档）。
+    private var liveEngineCache: (selectionKey: String, modelPath: String, engine: ResolvedEngine)?
+    private let liveEngineLock = NSLock()
+
     /// Engine selection takes precedence; otherwise the live model path
     /// (`liveModelFile`, falling back to the main model) decides, matching 1.4.
     private func resolveLiveEngine() -> ResolvedEngine {
-        switch ASREngineSelection.current {
+        let selection = ASREngineSelection.current
+        // 缓存键含选择档与在线/远程开关（影响回落判定）。
+        let selectionKey = "\(selection.rawValue)|\(OnlineASRConfig.isEnabled)|\(RemoteASRConfig.isConfigured)"
+        return liveEngineLock.withLock { () -> ResolvedEngine in
+            if let cache = liveEngineCache,
+               cache.selectionKey == selectionKey {
+                let currentPath = ModelPathResolver.resolveLiveModelPath()
+                if currentPath == cache.modelPath {
+                    return cache.engine
+                }
+            }
+            let engine = resolveLiveEngineUncached(selection)
+            liveEngineCache = (selectionKey, ModelPathResolver.resolveLiveModelPath(), engine)
+            return engine
+        }
+    }
+
+    private func resolveLiveEngineUncached(_ selection: ASREngineSelection) -> ResolvedEngine {
+        switch selection {
         case .online:
             // 开关未启用时回落自动判定（本地模型）。
             guard OnlineASRConfig.isEnabled else {

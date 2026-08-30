@@ -391,6 +391,12 @@ final class FloatingLetterOverlayController: NSObject {
 
     /// 紧凑/展开切换：锚定右上角缩放窗口。
     private func applyPanelSize() {
+        // 用户拖拽 resize 期间彻底挂起自动尺寸：resize 每帧触发
+        // windowFrameChanged → syncContainer 回写容器镜像 → observation
+        // 触发本方法又 setFrame——双向回写打架（窗口被两股力拉扯，
+        // 拖拽卡顿回弹、字幕刷新时调整被抢夺）。live-resize 中窗口是
+        // 唯一事实来源；结束后 handleNativeResizeEnded 统一收口。
+        if panel.inLiveResize { return }
         let target = targetSize
         var frame = panel.frame
         let anchor = NSPoint(x: frame.maxX, y: frame.maxY)
@@ -631,12 +637,15 @@ final class FloatingLetterOverlayController: NSObject {
         applyObservedWindowState()
     }
 
-    /// 尺寸签名：只有这三个字段才允许驱动窗口尺寸变化。
+    /// 尺寸签名：只有模式切换字段才允许驱动窗口尺寸变化。
+    /// 不含 requiredSubtitleHeight（= subtitleContainerHeight 镜像）——
+    /// 镜像被用户 resize 回写时驱动 setFrame 是双向回写打架的另一半；
+    /// 窗口尺寸的事实来源是窗口本身（live-resize）+ 模式切换（compact/
+    /// maxLines）。
     private func sizeSignature(for viewModel: FloatingLetterViewModel) -> Int {
         var hasher = Hasher()
         hasher.combine(viewModel.isCompact)
         hasher.combine(viewModel.maxLines)
-        hasher.combine(viewModel.requiredSubtitleHeight)
         return hasher.finalize()
     }
 

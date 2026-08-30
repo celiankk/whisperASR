@@ -115,7 +115,7 @@ struct GeneralSettingsView: View {
                     EmptyView()
                 }
 
-                Text("将你的设置（模型选择、翻译 API 配置、字体大小、最近使用的应用）保存到一个文件中。在新 Mac 上，将 Recordings 和 Transcriptions 文件夹复制到 ~/Library/Application Support/WhisperASR/ — 转录内容会从那里加载，音频链接会自动修复 — 然后在此处恢复设置。该文件包含你的翻译 API 密钥，请妥善保管。")
+                Text("导出全部设置到文件（含翻译 API 密钥，请妥善保管）；转录内容需另行复制文件夹。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -272,10 +272,6 @@ struct RecognitionSettingsView: View {
                     Text(recognition.audioChunkingMode.appliesToText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } else {
-                    Text("关闭：所有识别引擎保持原实时识别流程（每个音频块直接发送）。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 HStack {
@@ -291,7 +287,7 @@ struct RecognitionSettingsView: View {
                     .frame(width: 140)
                     .pickerStyle(.menu)
                 }
-                Text("推理输入补零对齐到固定时长桶：稳定 GPU 推理形状、减少延迟毛刺；禁用则恢复原始输入长度。")
+                Text("推理输入对齐固定时长桶，稳定 GPU 推理形状；禁用则按原始长度发送。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -349,7 +345,7 @@ struct RecognitionSettingsView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(3)
                     }
-                    Text("提示词注入 Online API 与本地 Whisper（initial_prompt）；Nemotron / Qwen 不受影响；关闭后行为与之前一致。")
+                    Text("注入 Online API 与本地 Whisper；Nemotron / Qwen 不受影响。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -370,7 +366,7 @@ struct RecognitionSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    Text("指定语言可跳过语种检测，略微提升准确率与速度；不确定时保持自动检测。实时识别与文件转录同时生效。")
+                    Text("可跳过语种检测提升速度；实时识别与文件转录同时生效。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .autoOnly(let reason):
@@ -535,7 +531,6 @@ private struct ModelCatalogSection: View {
                     }
                 }
             }
-            Text("选择已下载的模型用于转录。模型越小速度越快，但准确率越低。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -658,7 +653,7 @@ private struct LocalModelsSection: View {
                     }
                 }
             }
-            Text("本地扫描不联网；按引擎分组（.onnx→FunASR、目录→Nemotron、GGUF 架构→Qwen3/Whisper）。悬停模型行可直接启用（自定义路径优先级最高，同时只生效一个）。")
+            Text("本地扫描不联网；悬停模型行可直接启用，三处启用互斥。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -716,14 +711,14 @@ private struct OnlineASRSection: View {
                         .labelsHidden()
                         .frame(width: 160)
                     }
-                    Text("小米 MiMo：POST {base}/chat/completions（messages 内 input_audio），认证头 api-key:，asr_options.language 按上方选择（文档推荐显式指定提升准确率）。流式输出按文档 stream=true 逐 chunk 返回识别内容。")
+                    Text("小米 MiMo：POST {base}/chat/completions，input_audio 多模态，认证头 api-key:。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     TextField("完整端点 URL", text: $recognition.onlineASRBaseURL,
                               prompt: Text("https://your-server.com/asr/recognize"))
                         .textFieldStyle(.roundedBorder)
-                    Text("Custom Endpoint：填写完整请求 URL，原样发送不做路径加工。")
+                    Text("原样发送完整 URL，不做路径加工。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -732,7 +727,7 @@ private struct OnlineASRSection: View {
                 TextField("Model Name", text: $recognition.onlineASRModel,
                           prompt: Text("whisper-1 / mini-V2.5-asr"))
                     .textFieldStyle(.roundedBorder)
-                Text("OpenAI Compatible 音频转录（POST /audio/transcriptions，multipart form-data）；识别不使用 /chat/completions。")
+                Text("POST /audio/transcriptions（multipart form-data）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -756,11 +751,7 @@ private struct OnlineASRSection: View {
                             .lineLimit(2)
                     }
                 }
-                Text("在线识别失败不会导致 App 崩溃或影响本地识别；切换到其他引擎立即生效，无需重启。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("启用后可使用 OpenAI 兼容 Whisper API（如 OpenAI / Groq / 自建服务）进行识别。")
+                Text("失败不影响本地识别；切换引擎立即生效。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -896,7 +887,7 @@ struct TranslationSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .localModel:
-                    Text("使用本机运行的 OpenAI 兼容服务（LM Studio / Ollama / llama.cpp）。地址留空时自动探测；模型名称留空时自动识别。")
+                    Text("LM Studio / Ollama / llama.cpp；地址与模型名留空自动探测。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .onlineAPI:
@@ -954,7 +945,7 @@ struct TranslationSettingsView: View {
                         .frame(width: 190)
                         .pickerStyle(.menu)
                     }
-                    Text("思考模型（DeepSeek-R1 / GLM / Qwen3 等）默认注入禁思考参数防止译文为空；自动按模型名识别。")
+                    Text("DeepSeek-R1 / GLM / Qwen3 等思考模型自动禁思考，防止译文为空。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -964,7 +955,7 @@ struct TranslationSettingsView: View {
                         Stepper("\(contextRounds) 句", value: contextRoundsBinding, in: 0...8)
                             .frame(width: 130)
                     }
-                    Text("批量/实时翻译携带最近 N 句译文作上下文（保持术语一致）；0 = 关闭。")
+                    Text("携带最近 N 句译文保持术语一致；0 = 关闭。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -1343,7 +1334,7 @@ struct CaptionSettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 40, alignment: .trailing)
                 }
-                Text("字幕框填满浮窗内容区：拖动任意空白处移动窗口，左上角 40×40 区域缩放。")
+                Text("字幕框填满浮窗内容区：拖空白处移动窗口，拖边缘缩放。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1555,7 +1546,7 @@ struct HistorySettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("超出上限自动清理最旧记录；录制生成的音频在删除记录时移入废纸篓（可恢复），导入的原始文件保留。搜索与批量删除在历史侧栏内操作。")
+                Text("超出上限自动清理最旧；删除的录音移入废纸篓（可恢复）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 10) {
@@ -1569,7 +1560,6 @@ struct HistorySettingsView: View {
                     }
                     Spacer()
                 }
-                Text("转录内容实时自动保存，无需手动操作。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1620,7 +1610,7 @@ struct HistorySettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("提示词显示在转录内容上方的会议纪要菜单中。超过上下文窗口的转录内容会先分块摘要，然后合并为纪要。使用「翻译」页配置的 OpenAI 兼容 API。")
+                Text("长转录自动分块摘要后合并；使用「翻译」页配置的 API。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2082,7 +2072,7 @@ struct AppleSpeechSettingsSection: View {
                 }
             }
             .pickerStyle(.menu)
-            Text("已安装语言可直接离线使用；未安装语言不可选（需在系统设置下载语言包后进入本页刷新）。")
+            Text("未安装语言需先在系统设置下载语言包。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -2128,7 +2118,7 @@ struct AppleSpeechSettingsSection: View {
                     AppleSpeechManager.openSystemPermissionSettings()
                 }
             }
-            Text("启用方式：识别 → 识别引擎 → Apple。授权在首次使用时请求（系统设置 → 隐私与安全性 → 语音识别）。")
+            Text("授权在首次使用时请求（系统设置 → 隐私与安全性 → 语音识别）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !debugSummary.isEmpty {
@@ -2298,7 +2288,7 @@ struct AppleServicesSettingsView: View {
                               ? "检测中…"
                               : "\(translationStatus.installedLanguageCount) 种",
                           level: .ok)
-                Text("状态由系统实际能力决定（Framework / 会话可创建性 / 语言资源），不依赖固定系统版本。启用方式：翻译 → 翻译方式 → Apple。")
+                Text("状态由系统实际能力决定；启用方式：翻译方式 → Apple。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2434,7 +2424,7 @@ private struct SileroVADDownloadRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            Text("Silero VAD 提升音乐底噪 / 掌声等非人声场景的静音判定准确率；未下载时使用内置能量启发式（行为不变）。录制中自动生效。")
+            Text("提升音乐底噪等非人声场景的静音判定准确率；未下载时行为不变。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

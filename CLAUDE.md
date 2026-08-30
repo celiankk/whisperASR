@@ -8,9 +8,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 swift build          # Build the project
 swift run            # Build and launch the app
 open Package.swift   # Open in Xcode (Cmd+R to run)
+bash Scripts/build_release.sh   # Release app bundle -> WhisperASR.app
 ```
 
-There are no tests in this project.
+Test suite (XCTest, 160+ tests; requires full Xcode, not just CLT):
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app swift test
+```
 
 **After making code changes, always run `swift run &` in the background to launch the app so the user can verify the changes immediately.**
 

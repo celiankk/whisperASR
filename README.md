@@ -123,8 +123,8 @@ Turn your Mac into an OpenAI-compatible speech transcription server for your loc
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-repo/SonicScribe.git
-cd SonicScribe
+git clone https://github.com/celiankk/whisperASR.git
+cd whisperASR
 
 # 2. Build release binary
 # Requires the Xcode toolchain (SwiftUI macros live there). If `xcode-select -p`

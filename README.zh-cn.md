@@ -121,8 +121,8 @@ App 内置轻量级高性能 HTTP API 服务，可将你的 Mac 瞬间变为兼�
 
 ```bash
 # 1. 克隆项目仓库
-git clone https://github.com/your-repo/SonicScribe.git
-cd SonicScribe
+git clone https://github.com/celiankk/whisperASR.git
+cd whisperASR
 
 # 2. 编译可执行文件
 # 需要 Xcode 工具链（SwiftUI 宏只随 Xcode 提供）。若 `xcode-select -p` 指向

@@ -52,32 +52,60 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @State private var settings = ConfigurationManager.shared
     @State private var selection: SettingsCategory = .general
+    // 悬停聚焦：与历史 rail 同一手法（hover 行外兄弟压到 0.4）。
+    @State private var hoveredCategory: SettingsCategory?
 
     var body: some View {
-        NavigationSplitView {
-            List(SettingsCategory.allCases, selection: $selection) { category in
-                HStack(spacing: 8) {
-                    Image(systemName: category.icon)
-                        .foregroundStyle(category.iconColor)
-                        .frame(width: 18)
-                    Text(category.title)
-                }
-                .tag(category)
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 210)
-        } detail: {
-            VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 0) {
+            navRail
+                .frame(width: 176)
+
+            HairlineDivider(vertical: true)
+
+            VStack(alignment: .leading, spacing: Metrics.lg) {
                 SettingsPageHeader(
                     title: selection.title,
                     icon: selection.icon,
                     color: selection.pageHeaderColor)
                 detailView(for: selection)
             }
-            .padding(.top, 8)
+            .padding(.horizontal, Metrics.gutter)
+            .padding(.top, Metrics.xl)
+            .padding(.bottom, Metrics.md)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(minWidth: 660, minHeight: 460)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { settings.reload() }
+    }
+
+    /// 左栏导航：自绘行（露边圆角 + 激活点），不用系统 List 的满宽实心选中块。
+    private var navRail: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("设置")
+                .font(Type.mono(Type.label, weight: .medium))
+                .tracking(Type.labelTracking)
+                .foregroundStyle(Ink.secondary)
+                .padding(.horizontal, Metrics.md)
+                .padding(.bottom, Metrics.xs)
+
+            ForEach(SettingsCategory.allCases) { category in
+                SettingsNavRow(
+                    category: category,
+                    isSelected: selection == category,
+                    dimmed: hoveredCategory != nil && hoveredCategory != category,
+                    onSelect: { selection = category }
+                )
+                .onHover { inside in
+                    hoveredCategory = inside ? category : (hoveredCategory == category ? nil : hoveredCategory)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, Metrics.md)
+        .padding(.vertical, Metrics.lg)
+        .background(Ink.faint)
     }
 
     @ViewBuilder

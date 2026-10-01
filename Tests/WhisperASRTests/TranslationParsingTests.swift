@@ -77,6 +77,54 @@ final class TranslationParsingTests: XCTestCase {
         XCTAssertEqual(TranslationService.stripSingleLineNoise("\"带引号的译文\""), "带引号的译文")
         XCTAssertEqual(TranslationService.stripSingleLineNoise("  普通译文  "), "普通译文")
     }
+
+    // MARK: 编号前缀误伤防护（正文以数字开头）
+
+    func testDecimalNumberIsNotStripped() {
+        // "3.5 美元" 曾被剥成 "5 美元"（真实数据损坏）。
+        XCTAssertEqual(TranslationService.stripSingleLineNoise("3.5 美元"), "3.5 美元")
+        XCTAssertEqual(TranslationService.parseNumberedLines("3.5 美元", count: 1),
+                       ["3.5 美元"])
+    }
+
+    func testYearLikePrefixIsNotStripped() {
+        // "2024. 年" 曾被剥成 "年"；行号不可能超过本批行数。
+        XCTAssertEqual(TranslationService.stripSingleLineNoise("2024. 年"), "2024. 年")
+        XCTAssertEqual(TranslationService.parseNumberedLines("2024. 年", count: 2),
+                       ["2024. 年", ""])
+    }
+
+    func testLineNumberBeyondBatchSizeIsNotStripped() {
+        // 2 行批量里 "12. xxx" 不是行号，是正文。
+        XCTAssertEqual(TranslationService.parseNumberedLines("12. 第十二条", count: 2),
+                       ["12. 第十二条", ""])
+    }
+
+    func testRealLineNumbersStillStripped() {
+        // 真行号照常剥离（含小数判据不误伤 "1. 5 折" —— 点后有空格）。
+        XCTAssertEqual(TranslationService.parseNumberedLines("1. 第一句\n2. 第二句", count: 2),
+                       ["第一句", "第二句"])
+        XCTAssertEqual(TranslationService.stripSingleLineNoise("1. 5 折优惠"), "5 折优惠")
+    }
+
+    // MARK: chat/completions 端点拼接（带查询串）
+
+    func testChatCompletionsURLKeepsQuery() {
+        // 字符串拼接会把路径拼进 query（Azure 风格端点必然失败）。
+        let base = "https://gateway.example.com/v1?api-version=2024-10-21"
+        let url = TranslationService.chatCompletionsURL(base)
+        XCTAssertTrue(url.hasPrefix("https://gateway.example.com/v1/chat/completions?"),
+                      "路径必须在 query 之前，实际: \(url)")
+        XCTAssertTrue(url.contains("api-version=2024-10-21"),
+                      "查询串必须保留，实际: \(url)")
+    }
+
+    func testChatCompletionsURLIdempotent() {
+        let full = "https://api.openai.com/v1/chat/completions"
+        XCTAssertEqual(TranslationService.chatCompletionsURL(full), full)
+        XCTAssertEqual(TranslationService.chatCompletionsURL("http://127.0.0.1:1234/v1"),
+                       "http://127.0.0.1:1234/v1/chat/completions")
+    }
 }
 
 

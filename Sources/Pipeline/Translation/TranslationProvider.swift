@@ -24,6 +24,12 @@ enum TranslationProviderKind: String, Sendable {
     case onlineAPI
     /// 系统翻译框架（macOS 15+；低版本报告不可用）。
     case apple
+    /// 公共免 key：Google 翻译 v1（translate_a/single）。
+    case googleV1
+    /// 公共免 key：Google 翻译 v2（translate_a/t）。
+    case googleV2
+    /// 公共免 key：微软翻译（Edge 同源）。
+    case microsoft
 }
 
 /// 连接测试结果（testConnection() 返回值）。

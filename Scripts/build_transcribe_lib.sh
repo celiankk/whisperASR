@@ -111,12 +111,15 @@ EOF
 
 echo ""
 echo "Creating xcframework..."
+# 头文件放进 `Headers/CTranscribe/` 子目录：swiftbuild 引擎把各 binaryTarget 的
+# Headers 摊平到同一个 `Products/<Config>/include/`，多个 target 各带根级
+# module.modulemap 时会报 "Multiple commands produce .../module.modulemap"。
 rm -rf "$XCF_DIR"
-mkdir -p "$XCF_DIR/macos-arm64/Headers"
+mkdir -p "$XCF_DIR/macos-arm64/Headers/CTranscribe"
 cp "$MERGED_LIB" "$XCF_DIR/macos-arm64/libtranscribe_all.a"
-cp "$HEADERS_DIR/transcribe.h" "$XCF_DIR/macos-arm64/Headers/"
-cp "$HEADERS_DIR/transcribe_shim.h" "$XCF_DIR/macos-arm64/Headers/"
-cp "$HEADERS_DIR/module.modulemap" "$XCF_DIR/macos-arm64/Headers/"
+cp "$HEADERS_DIR/transcribe.h" "$XCF_DIR/macos-arm64/Headers/CTranscribe/"
+cp "$HEADERS_DIR/transcribe_shim.h" "$XCF_DIR/macos-arm64/Headers/CTranscribe/"
+cp "$HEADERS_DIR/module.modulemap" "$XCF_DIR/macos-arm64/Headers/CTranscribe/"
 cat > "$XCF_DIR/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -152,4 +155,11 @@ PLIST
 echo ""
 echo "=== Build complete ==="
 echo "XCFramework: $XCF_DIR"
+
+# 收尾清理中间头文件目录：`Frameworks/transcribe-headers/` 只是本脚本组装
+# xcframework 时的暂存目录，真身是 `macos-arm64/Headers/CTranscribe/`。
+# 留在仓库里会形成双份事实源（改了 xcframework 内头文件却忘了这份，
+# SwiftPM 编译期会用到过期头）。目录已在 .gitignore 中；此处只清构建中间
+# 产物，不动已入库的 xcframework 文件。
+rm -rf "$HEADERS_DIR"
 echo "Metal GPU acceleration is enabled."

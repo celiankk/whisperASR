@@ -197,9 +197,17 @@ final class ModelDownloader {
             let path: String
         }
         let entries = try JSONDecoder().decode([TreeEntry].self, from: data)
+        // HF 在 `folder == "."` 时把 `/tree/main/.` 301 到 `/tree/main`，
+        // 返回的是根相对路径（`model.int8.onnx`）而非 `./model.int8.onnx`。
+        // 早先按 `dropFirst(folder.count + 1)` 无条件裁剪，`"."` 会砍掉
+        // 每个路径的前两个字符（`model.int8.onnx` → `del.int8.onnx`），
+        // 落盘文件名全错 → 后续完整性校验永远失败。改为只在真的带前缀时裁剪。
+        let prefix = folder.isEmpty || folder == "." ? "" : folder + "/"
         return entries.compactMap { entry in
             guard entry.type == "file" else { return nil }
-            let relative = String(entry.path.dropFirst(folder.count + 1))
+            let relative = entry.path.hasPrefix(prefix)
+                ? String(entry.path.dropFirst(prefix.count))
+                : entry.path
             let escaped = entry.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? entry.path
             guard let url = URL(string: DownloadSource.rewrite(
                 "https://huggingface.co/\(repo)/resolve/main/\(escaped)")) else { return nil }
@@ -271,7 +279,7 @@ final class ModelDownloader {
         let expectedBytes: Int64? = currentFolderFile?.size
             ?? downloadTask?.response?.expectedContentLength
         if let actual = actualBytes, let expected = expectedBytes, expected > 0,
-           abs(actual - expected) > max(1024, expected / 100) {
+           Self.shouldRejectDownload(actual: actual, expected: expected) {
             DispatchQueue.main.async {
                 self.state = .failed("下载不完整（\(actual)/\(expected) 字节），请重试")
             }
@@ -365,6 +373,22 @@ final class ModelDownloader {
             let minutes = Int(ceil((seconds - Double(hours * 3600)) / 60))
             return "About \(hours)h \(minutes)m remaining"
         }
+    }
+
+    /// 下载完整性判定。
+    ///
+    /// 旧规则 `abs(actual - expected) > max(1024, expected/100)` 是**双向
+    /// 1% 容差**：3.1GB 的 Breeze 少 31MB 仍算完整，随后 `isComplete` 只查
+    /// 文件存在 → 被当成可用模型，加载时炸在推理内核里或产出乱码。
+    /// 截断只会让文件**变短**，所以两个方向分开处理：
+    /// - 少于期望：一律拒绝（>1KB 才算显著，避免长度取整噪声）；
+    /// - 多于期望：容忍 1%（少数 CDN 会附加内容，或 expectedContentLength
+    ///   是压缩前长度——严格相等会误杀），小文件用 64B 下限，否则 1KB
+    ///   下限会让「1KB 文件收到 2KB」这种明显错误通过。
+    static func shouldRejectDownload(actual: Int64, expected: Int64) -> Bool {
+        guard expected > 0 else { return false }
+        if actual < expected { return expected - actual > 1024 }
+        return actual - expected > max(64, expected / 100)
     }
 
     fileprivate func handleError(_ error: Error) {

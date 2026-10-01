@@ -217,7 +217,10 @@ final class AppleSpeechStatus {
         let installed = await AppleLanguageManager.shared.installedLanguages()
         installedLocaleCount = installed.count
         currentLocale = AppleSpeechManager.localeIdentifier
-        localeSupported = installed.contains { $0.identifier == currentLocale }
+        // 按规范键比较：配置里可能是 zh-CN，Apple 返回的是 zh_CN。
+        localeSupported = installed.contains {
+            AppleLanguageManager.isSameLocale($0.identifier, currentLocale)
+        }
 
         // 服务可用：已授权 + 新 Speech 框架能力（Transcriber 可用 + 语言可解析）。
         var localeResolvable = false

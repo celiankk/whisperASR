@@ -22,51 +22,86 @@ enum GGUFInspector {
         case float32 = 6, bool = 7, string = 8, array = 9, uint64 = 10, int64 = 11, float64 = 12
     }
 
+    /// 首次读取窗口（原实现值：多数模型的 general.architecture 就在最前面）。
+    private static let initialWindowBytes = 64 * 1024
+    /// 读取窗口上限：只读文件头、绝不整文件读入，4MB 对任何 GGUF 头都够。
+    private static let maxWindowBytes = 4 * 1024 * 1024
+    /// KV 扫描上限：此前只扫前 8 个键，architecture 靠后（如 Qwen3-ASR 的
+    /// 量化/分词器键在前）就直接放弃 → 回落 whisper → whisper.cpp 加载
+    /// GGUF 失败。64 个键配合按需增长的窗口足以覆盖现实模型头。
+    private static let maxKeys = 64
+
+    /// 头解析结果：区分「确实没有 general.architecture」与「当前窗口读不完
+    /// KV 列表」——后者需要扩大窗口重试，不是失败。
+    private enum Outcome {
+        case found(String)
+        case notFound
+        /// 数据窗口不足（KV 尚未读完）。调用方扩大窗口重读。
+        case truncated
+    }
+
     /// 从 GGUF 文件读取 "general.architecture"（找不到或解析失败返回 nil）。
+    /// 读取窗口按需增长（64KB → 4MB）：只扩大文件头读取量，不做整文件读入，
+    /// 也不引入大内存分配；失败（含非法头）仍安全返回 nil 由调用方回落。
     static func architecture(atPath path: String) -> String? {
-        guard let data = readHeader(path: path) else { return nil }
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+
+        var window = initialWindowBytes
+        while true {
+            guard let data = try? handle.read(upToCount: window), !data.isEmpty else { return nil }
+            switch parse(data) {
+            case .found(let arch):
+                return arch
+            case .notFound:
+                return nil
+            case .truncated:
+                // 窗口内没读完：文件已到底（读到的比请求的少）或已达上限就放弃。
+                guard data.count == window, window < maxWindowBytes else { return nil }
+                window = min(window * 4, maxWindowBytes)
+                do { try handle.seek(toOffset: 0) } catch { return nil }
+            }
+        }
+    }
+
+    private static func parse(_ data: Data) -> Outcome {
         var cursor = 0
 
         // magic + version + tensor_count + n_kv
         guard data.count >= 4 + 4 + 8,
-              data.readUInt32(at: &cursor) == 0x4655_4747 else { return nil }
+              data.readUInt32(at: &cursor) == 0x4655_4747 else { return .notFound }
         _ = data.readUInt32(at: &cursor)   // version
         _ = data.readUInt64(at: &cursor)   // tensor_count
         _ = data.readUInt64(at: &cursor)   // n_kv
 
-        // 解析元数据 KV（只找 general.architecture，通常第一个就是）。
-        let maxKeys = 8
+        // 解析元数据 KV（只找 general.architecture）。
+        // 读取/跳过失败一律按「窗口不足」处理：由调用方扩大窗口重试，
+        // 上限封顶 → 畸形文件只是多读几次头，不会无限增长或误判。
         for _ in 0..<maxKeys {
             guard let key = data.readString(at: &cursor),
                   let rawType = data.readUInt32(at: &cursor),
-                  let type = ValueType(rawValue: rawType) else { return nil }
+                  let type = ValueType(rawValue: rawType) else { return .truncated }
 
             switch type {
             case .string:
                 if key == "general.architecture" {
-                    return data.readString(at: &cursor)
+                    guard let arch = data.readString(at: &cursor) else { return .truncated }
+                    return .found(arch)
                 }
-                guard data.skipString(at: &cursor) else { return nil }
+                guard data.skipString(at: &cursor) else { return .truncated }
             case .uint8, .int8, .bool:
-                guard data.skipBytes(1, at: &cursor) else { return nil }
+                guard data.skipBytes(1, at: &cursor) else { return .truncated }
             case .uint16, .int16:
-                guard data.skipBytes(2, at: &cursor) else { return nil }
+                guard data.skipBytes(2, at: &cursor) else { return .truncated }
             case .uint32, .int32, .float32:
-                guard data.skipBytes(4, at: &cursor) else { return nil }
+                guard data.skipBytes(4, at: &cursor) else { return .truncated }
             case .uint64, .int64, .float64:
-                guard data.skipBytes(8, at: &cursor) else { return nil }
+                guard data.skipBytes(8, at: &cursor) else { return .truncated }
             case .array:
-                guard data.skipArray(at: &cursor) else { return nil }
+                guard data.skipArray(at: &cursor) else { return .truncated }
             }
         }
-        return nil
-    }
-
-    private static func readHeader(path: String) -> Data? {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? handle.close() }
-        // 前 64KB 足够覆盖所有元数据键；超出部分不需要。
-        return try? handle.read(upToCount: 64 * 1024)
+        return .notFound
     }
 }
 

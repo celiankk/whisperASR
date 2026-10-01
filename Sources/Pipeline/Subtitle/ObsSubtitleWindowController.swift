@@ -22,9 +22,12 @@ final class ObsSubtitleWindowController: NSObject {
     var isVisible: Bool { panel?.isVisible ?? false }
 
     func toggle(viewModel: FloatingLetterViewModel) {
-        if isVisible {
+        if isVisible, self.viewModel === viewModel {
             dismiss()
         } else {
+            // 未显示，或已显示但绑的是上一次录制的 VM（重新录制后重绑，
+            // 否则 OBS 窗会永久冻结在旧 VM 的字幕上）。
+            if isVisible { dismiss() }
             present(viewModel: viewModel)
         }
     }
@@ -50,6 +53,10 @@ final class ObsSubtitleWindowController: NSObject {
     }
 
     func dismiss() {
+        // 先断开内容视图对 ViewModel 的强引用：controller 侧持的是 weak，
+        // 若不置空 contentView，面板连同 hosting 视图会继续持有旧 VM
+        //（teardown 后 isTornDown=true，字幕永远不再更新）。
+        panel?.contentView = nil
         panel?.orderOut(nil)
         panel = nil
         viewModel = nil
@@ -80,7 +87,7 @@ private struct ObsSubtitleView: View {
                 .font(.system(size: 32, weight: .semibold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
-                .lineLimit(3)
+                .lineLimit(max(1, viewModel.maxLines))
                 .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 0)
                 .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
                 .shadow(color: .black.opacity(0.9), radius: 2, x: 1, y: 0)
@@ -93,7 +100,7 @@ private struct ObsSubtitleView: View {
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.white.opacity(0.95))
                     .multilineTextAlignment(.center)
-                    .lineLimit(2)
+                    .lineLimit(max(1, viewModel.maxLines))
                     .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 0)
                     .shadow(color: .black.opacity(0.9), radius: 2, x: 1, y: 0)
                     .shadow(color: .black.opacity(0.9), radius: 2, x: -1, y: 0)

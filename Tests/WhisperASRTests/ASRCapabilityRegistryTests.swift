@@ -148,6 +148,8 @@ final class ASRCapabilityRegistryTests: XCTestCase {
 
     /// engineType(forModelPath:) 与 debugEngineDescription 同一判定：
     /// 设置页能力查询与转录调度使用同一事实源。
+    /// debugEngineDescription 仅 DEBUG 编译（同 TranscriptionService）。
+    #if DEBUG
     func testEngineTypeResolutionMatchesDebugDescription() {
         let path = ModelPathResolver.resolveModelPath()
         let type = TranscriptionService.engineType(forModelPath: path)
@@ -155,4 +157,5 @@ final class ASRCapabilityRegistryTests: XCTestCase {
         XCTAssertTrue(description.hasSuffix("engine=\(type.rawValue)"),
                       "engineType 判定(\(type.rawValue))与调试描述不一致：\(description)")
     }
+    #endif
 }

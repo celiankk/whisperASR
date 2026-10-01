@@ -27,10 +27,15 @@ final class SherpaVAD: @unchecked Sendable {
     private let lock = NSLock()
     /// 加载失败后不再重试的时间戳（避免每轮循环反复读盘/建会话）。
     private var lastLoadFailure: Date = .distantPast
-    /// 喂音水位线：已喂入的总采样数（调用方传绝对区间时按此裁增量）。
+    /// 喂音水位线：**已实际喂入模型**的总采样数（调用方传绝对区间时按此裁增量）。
     /// Silero 是流式状态机——重复喂已喂过的音频浪费推理且让实时态
     /// 被旧音频反复刷新；调用方（ASRManager 循环）每轮传同一 tail 区间，
     /// 内部只喂新增采样。reset() 清零（新录制会话）。
+    ///
+    /// 只按 512 对齐的**实际喂入量**推进（见 detectSpeech）：尾部不足一个
+    /// 窗口的样本必须留在水位线之后，下次调用与新增样本拼接后再喂；
+    /// 此前按 samples.count 推进会把从未进过模型的尾部样本标记为"已喂"，
+    /// 每次调用永久丢 ≤511 样本（≈32ms @16kHz）。
     private var fedSampleCount = 0
 
     private init() {}
@@ -55,18 +60,27 @@ final class SherpaVAD: @unchecked Sendable {
     ///   - samples: 16kHz 单声道 PCM（任意长度，内部按 512 窗口切）。
     ///   - absoluteStart: samples 在录制时间轴上的起始采样位置；提供时
     ///     内部按喂音水位线裁剪，只喂纯新增采样（tail 重访零重复推理）。
-    ///     nil = 全量喂入（调用方无法提供位置时）。
+    ///     nil = 全量喂入（调用方无法提供位置时；此时无时间轴信息，
+    ///     不足一个窗口的尾部无法在下轮找回）。
+    ///
+    /// 尾部保留：不足 512 的尾样本不喂入也不推进水位线，留给下次调用与新
+    /// 样本拼接——提供 absoluteStart 时调用方每轮重传同一 tail 区间，
+    /// 因此这些样本必然被重新纳入（不会丢音频）。
     ///
     /// 本封装只用 Detected() 的实时语音态判定，不消费语音段输出——
     /// 每次查询后 Flush + Clear 清空内部段队列：否则检测到的段在
     /// circular buffer 无限堆积（长录制内存泄漏），队列满后 Detected()
     /// 语义漂移。
-    func detectSpeech(_ samples: [Float], absoluteStart: Int? = nil) -> Bool? {
+    func detectSpeech(_ samples: ArraySlice<Float>, absoluteStart: Int? = nil) -> Bool? {
         guard !samples.isEmpty else { return nil }
         return lock.withLock { () -> Bool? in
             guard ensureLoadedLocked(), let detector else { return nil }
             // 增量裁剪：调用方给绝对位置时跳过已喂区间（水位线之前）。
+            // dropFirst 产生零拷贝切片且下标自动正确（入参切片下标
+            // 继承调用方 buffer，不能按相对下标直接切片）。
             let feed: ArraySlice<Float>
+            // feed 首样本在录制时间轴上的绝对位置（推进水位线用）。
+            let feedAbsoluteStart: Int
             if let absoluteStart {
                 let newStart = max(0, fedSampleCount - absoluteStart)
                 guard newStart < samples.count else {
@@ -76,13 +90,18 @@ final class SherpaVAD: @unchecked Sendable {
                     SherpaOnnxVoiceActivityDetectorClear(detector)
                     return detected
                 }
-                feed = samples[newStart...]
-                fedSampleCount = absoluteStart + samples.count
+                feed = samples.dropFirst(newStart)
+                feedAbsoluteStart = absoluteStart + newStart
             } else {
-                feed = samples[...]
-                fedSampleCount += samples.count
+                feed = samples
+                feedAbsoluteStart = fedSampleCount
             }
             // 按 512 窗口步进喂入（Silero 输入窗 @16kHz = 32ms）。
+            // 水位线只推进**实际喂入**的 512 对齐样本数：尾部不足一个窗口的
+            // 样本（≤511，≈32ms）保留在水位线之后，下次调用会与新样本拼接后
+            // 一起喂入；若按 feed.count 推进，这些样本被永久标记为"已喂"却
+            // 从未进过模型（每轮固定丢一段音频，语音起始点判定随之漂移）。
+            let fedCount = (feed.count / 512) * 512
             feed.withUnsafeBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
                 var offset = 0
@@ -92,6 +111,7 @@ final class SherpaVAD: @unchecked Sendable {
                     offset += 512
                 }
             }
+            fedSampleCount = feedAbsoluteStart + fedCount
             let detected = SherpaOnnxVoiceActivityDetectorDetected(detector) == 1
             // 丢弃段输出（只要实时态）：flush 收口当前段、clear 清队列。
             SherpaOnnxVoiceActivityDetectorFlush(detector)

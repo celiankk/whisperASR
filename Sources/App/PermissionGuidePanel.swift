@@ -14,9 +14,18 @@ import SwiftUI
 // - 拖拽数据用 NSItemProvider(contentsOf:)（Finder 同款注册，
 //   系统设置的 TCC 列表接受 .app 的 file URL 拖入）。
 
+/// 悬浮窗的贴附状态（CGWindowList 轮询结果 → SwiftUI 内容）。
+@Observable
+@MainActor
+final class PermissionGuideModel {
+    var attached = false
+}
+
 @MainActor
 final class PermissionGuidePanelController {
     static let shared = PermissionGuidePanelController()
+
+    private let guideModel = PermissionGuideModel()
 
     private var panel: NSPanel?
     private var permissionName = "屏幕录制"
@@ -36,8 +45,12 @@ final class PermissionGuidePanelController {
         if panel == nil {
             createPanel()
         }
+        guideModel.attached = false
         positionBelowSettings()
-        panel?.orderFrontRegardless()
+        guard let panel else { return }
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        fadeIn(panel)
         repositionUntilAttached()
     }
 
@@ -48,12 +61,14 @@ final class PermissionGuidePanelController {
                 if panel == nil { return }   // 已被关闭
                 if findSystemSettingsWindowFrame() != nil {
                     positionBelowSettings()
+                    self.guideModel.attached = true
                     let diag = "[PermissionGuide] attached attempt=\(attempt) "
                         + "panel=\(panel?.frame ?? .zero) "
                         + "settings=\(findSystemSettingsWindowFrame().map { NSStringFromRect($0) } ?? "?")"
-                    print(diag)
-                    try? diag.write(to: URL(fileURLWithPath: "/tmp/permission_guide_log.txt"),
-                                    atomically: true, encoding: .utf8)
+                    // 走项目统一日志（AppLogger 已把 stdout 重定向到
+                    // ~/Library/Logs/WhisperASR/app.log）：此前另写一份
+                    // /tmp/permission_guide_log.txt，日志分散且 /tmp 会被系统清理。
+                    AppLogger.shared.log(.ui, diag)
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(600))
@@ -62,8 +77,32 @@ final class PermissionGuidePanelController {
     }
 
     func dismiss() {
-        panel?.orderOut(nil)
-        panel = nil
+        guard let panel else { return }
+        self.panel = nil
+        if MotionPrefs.shared.reduceMotion {
+            panel.orderOut(nil)
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            panel.orderOut(nil)
+        })
+    }
+
+    /// 出场：expo-out（cubic-bezier(.16, 1, .3, 1)），与主窗口面板同一曲线。
+    private func fadeIn(_ panel: NSPanel) {
+        if MotionPrefs.shared.reduceMotion {
+            panel.alphaValue = 1
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.26
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+            panel.animator().alphaValue = 1
+        }
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -128,10 +167,17 @@ final class PermissionGuidePanelController {
         panel.titleVisibility = .hidden
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isMovableByWindowBackground = true
+        // 钉在系统设置下方：禁用一切用户拖动（含标题条），位置只由
+        // positionBelowSettings() 通过 setFrame 决定。
+        panel.isMovable = false
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
 
+        // 注意：这里【不】转发背景 mouseDown 到 performDrag。本面板的定位
+        // 语义是「钉在系统设置窗口下方」，让用户拖走会脱离锚点、也拖不回
+        // 列表；面板位置只由 positionBelowSettings() 决定。
         let host = NSHostingView(rootView: PermissionGuideFloatingContent(
+            model: guideModel,
             onClose: { [weak self] in self?.dismiss() }
         ))
         panel.contentView = host
@@ -173,7 +219,12 @@ final class PermissionGuidePanelController {
 
 /// 悬浮授权窗内容：app 图标（可拖拽）+ 说明 + 关闭。
 private struct PermissionGuideFloatingContent: View {
+    let model: PermissionGuideModel
     let onClose: () -> Void
+
+    /// 未贴附时的描边脉冲：1.5pt 内描边在 0.25 ↔ 0.7 之间呼吸
+    ///（站点的 inset 0 0 0 1.5px 描边手法，用来指「看哪里」而不是加色块）。
+    @State private var pulse = false
 
     private var appURL: URL { Bundle.main.bundleURL }
 
@@ -184,13 +235,30 @@ private struct PermissionGuideFloatingContent: View {
             DraggableAppIcon(fileURL: appURL, iconSide: 48)
                 .frame(width: 56, height: 56)
                 .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.6)))
+                .overlay(alignment: .bottomTrailing) {
+                    Image(systemName: model.attached ? "checkmark.circle.fill" : "arrow.up.circle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(model.attached ? Palette.ok : Color.white.opacity(0.75))
+                        .background(Circle().fill(Color.black))
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(.easeInOut(duration: 0.24), value: model.attached)
+                }
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("把图标拖进上方的列表")
                     .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white)
                 Text("松手即完成授权，完成后点右侧 ✕ 关闭")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.6))
+                // 贴附状态（等宽微标签）：找到设置窗口前一直是「正在贴附」。
+                Text(model.attached ? "已贴附系统设置" : "正在贴附系统设置…")
+                    .font(Type.mono(Type.micro))
+                    .foregroundStyle(model.attached
+                                     ? Palette.ok.opacity(0.9)
+                                     : Color.white.opacity(0.45))
+                    .contentTransition(.opacity)
+                    .animation(.easeInOut(duration: 0.24), value: model.attached)
             }
 
             Spacer()
@@ -207,6 +275,22 @@ private struct PermissionGuideFloatingContent: View {
         }
         .padding(14)
         .frame(width: 420)
+        .overlay(
+            // 锚点脉冲只画在拖拽源（app 图标）上：告诉用户「从这里拖」。
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(
+                    Color.white.opacity(model.attached ? 0.0 : (pulse ? 0.7 : 0.25)),
+                    lineWidth: 1.5
+                )
+                .padding(6)
+                .allowsHitTesting(false)
+        )
+        .onAppear {
+            guard !model.attached, !MotionPrefs.shared.reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
         .background(
             // 纯黑实底（用户要求）：regularMaterial 是实时模糊材质，
             // GPU 开销大；纯色渲染成本接近零。
@@ -216,7 +300,10 @@ private struct PermissionGuideFloatingContent: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                .strokeBorder(
+                    model.attached ? Color.white.opacity(0.22) : Color.white.opacity(0.15),
+                    lineWidth: 1
+                )
         )
     }
 }

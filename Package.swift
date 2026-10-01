@@ -26,17 +26,30 @@ let package = Package(
             name: "SherpaONNX",
             path: "Frameworks/SherpaONNX.xcframework"
         ),
+        // C11 原子操作 shim（仅头文件，static inline）：SPSC 环形缓冲的
+        // 64 位游标 acquire/release 内存顺序（Swift 不暴露 _Atomic 类型）。
+        .target(
+            name: "CRealtimeAtomics",
+            path: "SourcesC/CRealtimeAtomics",
+            publicHeadersPath: "."
+        ),
         .executableTarget(
             name: "WhisperASR",
             dependencies: [
                 "CWhisper",
                 "CTranscribe",
                 "SherpaONNX",
+                "CRealtimeAtomics",
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "FlyingFox", package: "FlyingFox"),
                 .product(name: "FlyingSocks", package: "FlyingFox"),
             ],
             path: "Sources",
+            resources: [
+                // MSL 着色器源码（SPM 不编译 .metal → 运行时
+                // device.makeLibrary(source:) 一次性编译缓存）。
+                .copy("Pipeline/Subtitle/FloatingLetter/Metal"),
+            ],
             linkerSettings: [
                 .linkedFramework("Metal"),
                 .linkedFramework("MetalKit"),
@@ -45,11 +58,6 @@ let package = Package(
                 .linkedLibrary("c++"),
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("WebKit"),
-                .linkedFramework("Metal"),
-                .linkedFramework("MetalKit"),
-                .linkedFramework("Accelerate"),
-                .linkedFramework("Foundation"),
-                .linkedLibrary("c++"),
             ]
         ),
         // 纯逻辑单元测试（字幕断句/累积/去重/分割等，见 HANDOFF 坑 13——

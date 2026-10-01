@@ -51,7 +51,7 @@ struct PermissionDragGuide: View {
                     // 冲突导致拖拽根本无法启动。
                     DraggableAppIcon(fileURL: Bundle.main.bundleURL, iconSide: 40)
                         .frame(width: 36, height: 36)
-                    Text("WhisperASR")
+                    Text("声记 SonicScribe")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.primary)
                 }

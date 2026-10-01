@@ -19,6 +19,15 @@ final class OnlineASRProvider: @unchecked Sendable, ASRProvider {
     private let audioBuffer = OnlineASRBuffer()
     /// 在线结果合并（碎片 → 完整句）。
     private let resultAccumulator = OnlineResultAccumulator()
+    /// 喂水水位线：上层每轮重发整个未封口 tail（无状态引擎语义），
+    /// 而本 Provider 的句子缓冲**跨调用累积**——不去重就会把同一段音频
+    /// 反复 append（连续说话时实测重复率可达 2~3 倍，字幕出现
+    /// 「我们 我们 我们 觉得」）。此处按绝对采样区间只取新增部分。
+    /// 这是 Provider 内部的一层，不改变协议声明（合并策略仍是 replaceTail：
+    /// OnlineResultAccumulator 已自行累积到句末，与 appendIncrement 叠加会重复）。
+    /// 水位线从实时循环读写、从主线程 reset → 加锁保护。
+    private var feedWaterline = StreamingFeedWaterline()
+    private let waterlineLock = NSLock()
 
     var engine: ASRProviderEngine { .online }
 
@@ -40,19 +49,45 @@ final class OnlineASRProvider: @unchecked Sendable, ASRProvider {
         stats.setState(.ready, detail: "已停止")
     }
 
+    /// 带绝对区间的实时分块转录：先按水位线剔除已缓冲过的重复音频，
+    /// 再走句子模式。上层每轮重发整个未封口 tail（无状态引擎契约），
+    /// 若直接 append 会把同一段音频反复送入缓冲（见 feedWaterline 注释）。
+    func transcribeChunk(samples: ArraySlice<Float>,
+                         absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
+        let newSamples: ArraySlice<Float>
+        if let range = absoluteRange {
+            let start = waterlineLock.withLock { feedWaterline.unfedStart(in: range) }
+            guard let start else {
+                // 区间已全部缓冲过：无需再次发送，也不该触发达标判定。
+                return TranscriptionResult(text: "", segments: [])
+            }
+            newSamples = samples.dropFirst(start)
+        } else {
+            // 调用方无法提供区间（聚合路径）：保守全量喂并清空水位线。
+            waterlineLock.withLock { feedWaterline.markUntrackedFeed() }
+            newSamples = samples
+        }
+        return try await transcribeChunk(samples: newSamples)
+    }
+
     /// 实时分块转录：句子模式（sentence mode）——
     /// 音频经 OnlineASRBuffer 累计（目标 ~2.5s / 停顿提前 / 上限兜底），
     /// 达标才发送 API；结果经 OnlineResultAccumulator 合并至句完成。
     /// 未达标返回空（AppState 继续累积，不发送碎片短音频）。
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+    /// 输入零拷贝切片（P0 链路）；句子缓冲内部 append 零拷贝累积。
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
         guard !samples.isEmpty else {
-            return TranscriptionResult(text: "", segments: [])
+            // 无新音频 = 本轮无产出，同样属「聚合中」而非「结果为空」。
+            return TranscriptionResult(text: "", segments: [], isAggregationPending: true)
         }
         // 1. 缓冲累积（不直接发送实时 chunk）。
         audioBuffer.append(samples)
         // 2. 达标判定：目标时长 / 末尾停顿 / 上限。
+        // 未达标 = 音频仍在缓冲累积，不是「引擎听清了空」——必须标记
+        // isAggregationPending，否则调度层按 .replaceTail 提交空 tail 会把
+        // 屏幕上正在显示的当前句抹掉（每 0.3s 一轮 pass 都会闪一次）。
         guard audioBuffer.shouldSend() else {
-            return TranscriptionResult(text: "", segments: [])
+            return TranscriptionResult(text: "", segments: [], isAggregationPending: true)
         }
         let chunk = audioBuffer.takeAll()
 
@@ -146,6 +181,9 @@ final class OnlineASRProvider: @unchecked Sendable, ASRProvider {
     func cancelPending() {
         audioBuffer.clear()
         resultAccumulator.clear()
+        // 会话结束：水位线一并清零，下次录制从 0 重新计（否则新录制的
+        // 采样区间会被当作「已喂过」而整体跳过）。
+        waterlineLock.withLock { feedWaterline.reset() }
         Task { await requestQueue.cancelPending() }
     }
 

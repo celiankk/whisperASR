@@ -29,8 +29,50 @@ final class ASRPromptManager: @unchecked Sendable {
     /// 注入历史词库数据源（AppRuntimeManager.attach 时注入）。
     weak var appState: AppState?
 
+    /// 保护 `_currentPrompt`。写入点是任意线程（refresh 由配置变更 / 启动
+    /// 识别触发），读取点在 WhisperProvider actor 内（推理线程）——
+    /// 此前无锁读取是真实数据竞争（读到半更新状态或撕裂的 String）。
+    private let lock = NSLock()
+    private var _currentPrompt: String?
+
     /// 当前生效的 Prompt（Provider 注入用；关闭 / 无内容时为 nil）。
-    private(set) var currentPrompt: String?
+    var currentPrompt: String? { lock.withLock { _currentPrompt } }
+
+    /// 写入 Prompt（唯一写入口，持锁；`private(set)` 的加锁等价物）。
+    private func setCurrentPrompt(_ value: String?) {
+        lock.withLock { _currentPrompt = value }
+    }
+
+    /// 始终注入的**书写脚本提示**（与用户的提示词开关无关）。
+    ///
+    /// 为什么必须有：whisper 在 `language=zh` 下**不区分简繁**，只按音频内容
+    /// 猜，实测普通话默认被输出成繁体（"今天天氣很好"）。端到端工作台量到的
+    /// 差距是 23.8% → 3.9% 平均字错率，而耗时无变化（1.81s → 1.84s）。
+    /// 提示内容是简体汉字，initial_prompt 里出现简体字形会把解码明显拉向简体。
+    ///
+    /// 放在开关之外的理由：这是**语言正确性**问题，不是"可选优化"——
+    /// 把它绑在默认关闭的提示词开关上，等于所有新用户开箱都拿到繁体输出。
+    /// 且它只有 8 个字，实测对英文识别无影响（同一英文样本错误率 0.0%）。
+    private static let scriptHint = "请用简体中文转写。"
+
+    /// 把脚本提示与用户内容合并（用户内容为空时也保留脚本提示）。
+    ///
+    /// `internal`（非 private）以便单测直接验证合并语义——这段逻辑决定了
+    /// 每次识别真正送进 initial_prompt 的内容，出错会静默影响所有中文识别。
+    static func mergedPrompt(base: String?) -> String {
+        let trimmed = base?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { return scriptHint }
+        // 用户内容已含脚本提示时不重复追加（用户在自定义提示里自己写过）。
+        if trimmed.contains(scriptHint) { return trimmed }
+        // 避免重复句号："...。" + "请用..." → 不插入第二个句号。
+        let separator = trimmed.hasSuffix("。") || trimmed.hasSuffix(".")
+            || trimmed.hasSuffix("；") || trimmed.hasSuffix("\n") ? "" : "。"
+        return trimmed + separator + scriptHint
+    }
+
+    private func withScriptHint(_ base: String?) -> String {
+        Self.mergedPrompt(base: base)
+    }
 
     private init() {}
 
@@ -38,23 +80,25 @@ final class ASRPromptManager: @unchecked Sendable {
     /// 同步来源（手动/场景/历史）立即重算；AI 来源读缓存，缓存为空时异步生成。
     func refresh() {
         let config = ConfigurationManager.shared.asrPrompt
+        // 提示词开关关闭时**不再置空**：仍要注入脚本提示，否则中文会输出繁体
+        //（见 scriptHint 注释）。用户关掉的是"热词"，不是"语言正确性"。
         guard config.enabled else {
-            currentPrompt = nil
+            setCurrentPrompt(withScriptHint(nil))
             return
         }
         switch config.source {
         case .manual:
-            currentPrompt = assemble(base: config.customPrompt)
+            setCurrentPrompt(withScriptHint(assemble(base: config.customPrompt)))
         case .scene:
-            currentPrompt = assemble(base: config.sceneTemplate.promptText)
+            setCurrentPrompt(withScriptHint(assemble(base: config.sceneTemplate.promptText)))
         case .history:
-            currentPrompt = assemble(base: extractFromHistory())
+            setCurrentPrompt(withScriptHint(assemble(base: extractFromHistory())))
         case .ai:
             if !config.aiGeneratedPrompt.isEmpty {
-                currentPrompt = assemble(base: config.aiGeneratedPrompt)
+                setCurrentPrompt(withScriptHint(assemble(base: config.aiGeneratedPrompt)))
             } else {
-                // 尚未生成：先置空（不注入），异步生成后下次 refresh 生效。
-                currentPrompt = nil
+                // 尚未生成：只带脚本提示（不注入未生成的 AI 内容），异步生成后下次 refresh 生效。
+                setCurrentPrompt(withScriptHint(nil))
                 Task { [weak self] in
                     guard let generated = await self?.generateWithAI() else { return }
                     let cfg = ConfigurationManager.shared.asrPrompt

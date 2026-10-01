@@ -11,8 +11,8 @@ enum ModelEngine: Equatable {
     /// directory bundle (encoder/decoder/joint .mlmodelc + metadata + tokenizer).
     case nemotron
     /// Alibaba Qwen3-ASR GGUF（30 种语言 + 22 种中文方言，自动语种识别与时间戳）。
-    /// 注意：当前构建的 whisper.cpp 尚不支持该架构，选择后可下载，但推理需要
-    /// 后续集成 ggml/Qwen3-ASR 后端（详见 TranscriptionService 中的明确报错）。
+    /// 经 `QwenProvider` / `Qwen3ASRBackend` 推理（已接线，见 TranscriptionService
+    /// 的 `.qwen3asr` 分派）。
     case qwen3asr
     /// 阿里 FunASR ONNX 模型（SenseVoice / Paraformer / Fun-ASR-Nano），
     /// 经 sherpa-onnx 后端推理。
@@ -163,17 +163,19 @@ enum ModelCatalog {
             approxBytes: 850_000_000,
             engine: .funasr
         ),
-        // Fun-ASR-Nano（LLM 多语）：目录（encoder-adaptor/llm/embedding/tokenizer）。
+        // Fun-ASR-Nano（LLM 多语）：目录（encoder-adaptor/llm/embedding +
+        // Qwen3-0.6B/tokenizer）。仓库曾用 `sherpa-onnx-funasr-nano-2512-int8`，
+        // 该仓库已私有化/下线（API 返回 401），改用官方 2025-12-30 发布版。
         WhisperModelInfo(
             id: "fun-asr-nano",
             displayName: "Fun-ASR-Nano",
             detail: "FunASR 高质量多语识别（LLM，大型本地模型选项）",
             fileName: "fun-asr-nano-2512-int8",   // 目录语义
             source: .hfFolder(
-                repo: "csukuangfj/sherpa-onnx-funasr-nano-2512-int8",
+                repo: "csukuangfj/sherpa-onnx-funasr-nano-int8-2025-12-30",
                 folder: "."
             ),
-            approxBytes: 900_000_000,
+            approxBytes: 1_000_000_000,
             engine: .funasr
         ),
     ]
@@ -203,9 +205,16 @@ enum ModelCatalog {
         case .whisper, .qwen3asr:
             return FileManager.default.fileExists(atPath: base.path)
         case .funasr:
-            // 目录语义：目录存在且含主权重即视为完整（tokens 同目录约定）。
-            return FileManager.default.fileExists(
-                atPath: base.appendingPathComponent("model.int8.onnx").path)
+            // 目录语义：必须按该模型自己的文件清单校验。此前硬编码
+            // `model.int8.onnx`，而 streaming-paraformer（encoder/decoder）
+            // 与 fun-asr-nano（encoder-adaptor/llm/embedding）都没有这个
+            // 文件 → isComplete 恒 false → 下载成功也无法选中（UI 显示
+            // 「下载成功」，模型却永远不可用）。清单事实源 = FunASRModelConfig，
+            // 与 Runtime 加载时用的是同一份，避免两处再次漂移。
+            let required = FunASRModelConfig.config(for: base).requiredFiles
+            return required.allSatisfy {
+                FileManager.default.fileExists(atPath: base.appendingPathComponent($0).path)
+            }
         case .nemotron:
             let required = [
                 "metadata.json",
@@ -310,15 +319,23 @@ final class ModelManager {
 
     /// Re-scan the Models directory. Catalog directory bundles only count as
     /// downloaded when all their required files are present.
+    ///
+    /// 只纳入 catalog 已知模型：此前把目录下**任何**非隐藏条目都塞进
+    /// downloadedFileNames → UI 可选中未知文件，随后落入启发式引擎判定
+    ///（GGUF 头 / 目录内容猜测），失败信息对用户完全不可解释。
+    /// 未知条目只记日志，便于用户排查「我的模型为什么没出现在列表里」。
     func refresh() {
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: ModelCatalog.modelDirectory.path)) ?? []
         var names: Set<String> = []
         for name in entries {
-            if let model = ModelCatalog.model(fileName: name) {
-                if ModelCatalog.isComplete(model) { names.insert(name) }
-            } else if !name.hasPrefix(".") {
-                names.insert(name)
+            guard let model = ModelCatalog.model(fileName: name) else {
+                if !name.hasPrefix(".") {
+                    AppLogger.shared.log(
+                        .model, "Model directory entry ignored (not in catalog): \(name)")
+                }
+                continue
             }
+            if ModelCatalog.isComplete(model) { names.insert(name) }
         }
         downloadedFileNames = names
         // Drop a selection whose file no longer exists (deleted externally)
@@ -342,6 +359,11 @@ final class ModelManager {
     private func downloadFinished(_ model: WhisperModelInfo) {
         refresh()
         selectedFileName = model.fileName
+        // 与 select(_:) 同一互斥规则：自定义路径（"modelPath"）解析优先级
+        // 更高，不清理会出现「下载列表显示使用中、实际生效的仍是旧自定义
+        // 模型」——下载完成后用户以为切过去了，转录结果却没变。
+        UserDefaults.standard.set("", forKey: "modelPath")
+        ConfigurationManager.shared.reload()
         AppLogger.shared.log(.model, "Download finished: \(model.fileName)")
     }
 }

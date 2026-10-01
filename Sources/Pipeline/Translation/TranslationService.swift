@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - 翻译方式
 
@@ -7,6 +8,12 @@ enum TranslationMode: String, CaseIterable, Codable {
     case off
     case localModel
     case onlineAPI
+    /// 公共免 key 通道：Google 翻译 v1（translate_a/single）。
+    case googleV1
+    /// 公共免 key 通道：Google 翻译 v2（translate_a/t）。
+    case googleV2
+    /// 公共免 key 通道：微软翻译（Edge 同源）。
+    case microsoft
     case apple
 
     var label: String {
@@ -15,6 +22,27 @@ enum TranslationMode: String, CaseIterable, Codable {
         case .localModel: return "本地模型"
         case .onlineAPI: return "在线 API"
         case .apple: return "Apple"
+        case .googleV1: return "Google v1"
+        case .googleV2: return "Google v2"
+        case .microsoft: return "微软翻译"
+        }
+    }
+
+    /// 是否为「公共免 key 通道」（设置页据此隐藏端点/Key/提示词配置）。
+    var isFreeWebChannel: Bool {
+        switch self {
+        case .googleV1, .googleV2, .microsoft: return true
+        case .off, .localModel, .onlineAPI, .apple: return false
+        }
+    }
+
+    /// 对应的免 key 通道（非免 key 通道返回 nil）。
+    var freeWebChannel: FreeWebTranslationChannel? {
+        switch self {
+        case .googleV1: return .googleV1
+        case .googleV2: return .googleV2
+        case .microsoft: return .microsoft
+        case .off, .localModel, .onlineAPI, .apple: return nil
         }
     }
 
@@ -68,6 +96,9 @@ enum TranslationError: LocalizedError {
     case parseError
     case localModelNotDetected
     case unavailable
+    /// 公共端点被风控拦截 / 返回非预期响应（如 Google 反滥用 HTML 页）。
+    /// 与 `.apiFailed` 分开，便于公共通道做「换端点回落」而不是直接失败。
+    case endpointBlocked(String)
 
     // Worded generically ("API error", not "Translation API error") because the
     // meeting-minutes feature shares this client and surfaces the same errors.
@@ -82,6 +113,7 @@ enum TranslationError: LocalizedError {
         case .parseError: return "Failed to parse the API response"
         case .localModelNotDetected: return "无法从本地服务获取模型列表 — 请确认本地服务已加载模型，或在设置中填写模型名称"
         case .unavailable: return "Requires an OpenAI-compatible API — set the API key in Settings"
+        case .endpointBlocked(let msg): return "公共翻译端点被拦截或返回异常（可能需要网络代理）：\(msg)"
         }
     }
 
@@ -89,7 +121,38 @@ enum TranslationError: LocalizedError {
     var isRetriable: Bool {
         switch self {
         case .serverError, .transport: return true
-        case .invalidEndpoint, .apiFailed, .authFailed, .rateLimited, .parseError, .localModelNotDetected, .unavailable: return false
+        case .invalidEndpoint, .apiFailed, .authFailed, .rateLimited, .parseError,
+             .localModelNotDetected, .unavailable, .endpointBlocked:
+            return false
+        }
+    }
+
+    /// 公共免 key 端点专用重试判据。
+    ///
+    /// 免费端点（Google / 微软 Edge）的 429 是「配额节流」而非「Key 失效」，
+    /// 属常态瞬时错误，退避后重试即可恢复——因此这里把 `.rateLimited` 也
+    /// 纳入可重试。付费 API 路径仍按 `.isRetriable` 处理（429 不重试，
+    /// 避免在真实配额耗尽时加重限流）。
+    var isRetryableOnFreeChannel: Bool {
+        switch self {
+        case .rateLimited, .serverError, .transport: return true
+        default: return false
+        }
+    }
+
+    /// 是否属于「靠换端点可能救回来」的网关可用性故障。
+    ///
+    /// 用于 Google 的 translate-pa → translate_a 回落判据：网关被拦/限流/
+    /// 网络故障时换一条端点有意义；而请求本身有问题（空文本、非法语言码
+    /// 导致的 400 `invalid argument`、响应结构漂移）换端点必然同样失败，
+    /// 回落只会多花一次往返并掩盖真实错误。
+    var isGatewayAvailabilityFailure: Bool {
+        switch self {
+        case .transport, .rateLimited, .serverError, .endpointBlocked, .authFailed:
+            return true
+        case .invalidEndpoint, .apiFailed, .parseError,
+             .localModelNotDetected, .unavailable:
+            return false
         }
     }
 }
@@ -169,6 +232,8 @@ enum TranslationService {
     private static let hkMarkers = Set<Character>("嘅咗嚟喺唔係乜嘢啲")
 
     /// 检测一批字幕文本的源语言（按字符区间统计，不依赖翻译模型）。
+    /// 使用占比判定（≥15% 有效字符）而非绝对数量，避免混合文本
+    ///（如中文含日文品牌名）被单个外来字符误判。
     static func detectSourceLanguage(_ texts: [String]) -> SourceLanguage {
         let joined = texts.joined(separator: " ")
         var han = 0, kana = 0, hangul = 0, cyrillic = 0, latin = 0
@@ -186,10 +251,25 @@ enum TranslationService {
                 latin += 1
             }
         }
-        if kana > 0 { return .ja }
-        if hangul > 0 { return .ko }
-        if cyrillic > 0 { return .ru }
-        if han > 0 { return chineseVariant(joined) }
+        let total = han + kana + hangul + cyrillic + latin
+        guard total > 0 else { return .other }
+
+        // 比率阈值：某文字系统占有效字符 ≥15% 才视为候选主体语言。
+        let threshold = Double(total) * 0.15
+
+        // 日语判定：假名占比 ≥15% 且假名数量超过汉字数量（纯日语或日语为主）。
+        // 中文夹带少量日文品牌名（如 "ソニー"）不满足此条件，回落到中文分支。
+        if Double(kana) >= threshold, kana > han { return .ja }
+
+        // 韩语判定：韩文占比 ≥15%（韩文字母与 CJK 正交，误判风险低）。
+        if Double(hangul) >= threshold { return .ko }
+
+        // 西里尔文占比 ≥15%。
+        if Double(cyrillic) >= threshold { return .ru }
+
+        // CJK 汉字（含少量假名的中文文本也归入此分支）。
+        if han > 0 || kana > 0 { return chineseVariant(joined) }
+
         if latin > 0 { return .en }
         return .other
     }
@@ -225,6 +305,7 @@ enum TranslationService {
               components.scheme != nil, components.host != nil else {
             return trimmed
         }
+        warnIfPlaintextHTTP(host: components.host ?? "", scheme: components.scheme ?? "")
         let path = components.path
         // 已是完整 chat 端点时不再拼接。
         if path.hasSuffix("/chat/completions") {
@@ -235,6 +316,48 @@ enum TranslationService {
             components.path = "/v1" + path
         }
         return components.url?.absoluteString ?? trimmed
+    }
+
+    /// 在（可能已归一化的）端点上补 `/chat/completions` 路径。
+    ///
+    /// 用 URLComponents 改 path，而不是字符串拼接 —— 端点带查询串时
+    /// （Azure OpenAI 风格 `https://host/v1?api-version=2024-10-21`）拼字符串
+    /// 会得到 `...?api-version=2024-10-21/chat/completions`，路径落进 query
+    /// 里，请求必然失败。
+    static func chatCompletionsURL(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              components.scheme != nil, components.host != nil else {
+            // 非标准 URL：保持旧行为（至少不比之前更差）。
+            if trimmed.hasSuffix("/chat/completions") { return trimmed }
+            return trimmed.hasSuffix("/") ? trimmed + "chat/completions"
+                                          : trimmed + "/chat/completions"
+        }
+        if components.path.hasSuffix("/chat/completions") {
+            return components.url?.absoluteString ?? trimmed
+        }
+        components.path = components.path.hasSuffix("/")
+            ? components.path + "chat/completions"
+            : components.path + "/chat/completions"
+        return components.url?.absoluteString ?? trimmed
+    }
+
+    /// 已告警过的明文主机（去重，避免每个请求刷屏）。
+    private static let insecureHTTPWarned = OSAllocatedUnfairLock(initialState: Set<String>())
+
+    /// 明文 HTTP 且非本机回环：Authorization（API Key）会以明文上线，
+    /// 记录明确告警（每个主机一次）。
+    private static func warnIfPlaintextHTTP(host: String, scheme: String) {
+        guard scheme.lowercased() == "http" else { return }
+        let h = host.lowercased()
+        let isLoopback = h == "localhost" || h == "127.0.0.1" || h == "::1" || h.hasSuffix(".local")
+        guard !isLoopback else { return }
+        let firstTime = insecureHTTPWarned.withLock { warned -> Bool in
+            warned.insert(h).inserted
+        }
+        guard firstTime else { return }
+        AppLogger.shared.log(.translation,
+            "WARNING: 明文 http 端点 \(h) — API Key 与译文将以明文传输，建议改用 https")
     }
 
     /// 本地模式：依次探测可用的 OpenAI 兼容服务，返回第一个可用的 base URL。
@@ -444,10 +567,7 @@ enum TranslationService {
         if effectiveModel.isEmpty {
             effectiveModel = "gpt-4o-mini"
         }
-        if !baseURL.hasSuffix("/chat/completions") {
-            if !baseURL.hasSuffix("/") { baseURL += "/" }
-            baseURL += "chat/completions"
-        }
+        baseURL = Self.chatCompletionsURL(baseURL)
 
         guard let url = URL(string: baseURL) else {
             throw TranslationError.invalidEndpoint
@@ -459,18 +579,38 @@ enum TranslationService {
         //（ASR 偶发输出全半角混排，归一化提升 LLM 翻译稳定性；
         // 对 CJK 表意文字无影响）。显示层不动——用户看到的字幕保持原样。
         let normalizedTexts = segmentTexts.map(Self.normalizeForTranslation)
-        let numberedInputFull = normalizedTexts.enumerated()
-            .map { "\($0.offset + 1). \($0.element.trimmingCharacters(in: .whitespaces))" }
-            .joined(separator: "\n")
+        // 输入预算（tokens ≈ 4 字符/token）：按**整行**截断，绝不切在编号行
+        // 中间。此前按字符 prefix 截断会切掉末尾编号行，而系统指令仍要求返回
+        // segmentTexts.count 条 → 截断点之后译文与原文**错位**（张冠李戴）。
+        // 这里记录实际纳入的行数 includedCount，指令与解析都以它为准，
+        // 被丢弃的尾部段由调用方保持空串（不翻译）而非错位填补。
+        let maxInputCharacters = maxContextTokens * 4
+        var numberedLines: [String] = []
+        var usedCharacters = 0
+        for (index, text) in normalizedTexts.enumerated() {
+            let line = "\(index + 1). \(text.trimmingCharacters(in: .whitespaces))"
+            let cost = line.count + 1 // + 换行
+            if !numberedLines.isEmpty, usedCharacters + cost > maxInputCharacters { break }
+            numberedLines.append(line)
+            usedCharacters += cost
+        }
+        let includedCount = numberedLines.count
+        let numberedInput = numberedLines.joined(separator: "\n")
 
         // Build context section from previous translations（受最大上下文长度约束）。
+        // 上下文轮数可配（设置 → 翻译；默认 2，0 = 关闭）。
+        // **上下文只走 system 的 contextSection 一条通道**：此前 system 已含
+        // contextSection，下方又追加 user/assistant 多轮历史，同一份上下文在
+        // 一次请求里发两遍（8 个内置预设都不含 {context}，多轮历史才是实际
+        // 生效路径，等于上下文整体重复外发）。
+        let configuredRounds = UserDefaults.standard.integer(forKey: "translationContextRounds")
+        let contextRounds = configuredRounds == 0
+            && UserDefaults.standard.object(forKey: "translationContextRounds") == nil
+            ? 2 : max(0, min(8, configuredRounds))
+
         var contextSection = ""
-        if !previousTranslations.isEmpty {
-            // 上下文轮数可配（设置 → 翻译；默认 2，0 = 关闭）。
-            let configuredRounds = UserDefaults.standard.integer(forKey: "translationContextRounds")
-            let rounds = configuredRounds == 0 && UserDefaults.standard.object(forKey: "translationContextRounds") == nil
-                ? 2 : max(0, min(8, configuredRounds))
-            let maxPairs = min(rounds, max(1, maxContextTokens / 500))
+        if !previousTranslations.isEmpty, contextRounds > 0 {
+            let maxPairs = min(contextRounds, max(1, maxContextTokens / 500))
             let pairs = previousTranslations.suffix(max(0, maxPairs))
                 .map { "\"\($0.original)\" → \"\($0.translated)\"" }
                 .joined(separator: "\n")
@@ -488,19 +628,13 @@ enum TranslationService {
         }
         request.timeoutInterval = timeout
 
-        // 按最大上下文长度（tokens ≈ 4 字符/token）截断输入，防止超长请求。
-        let maxInputCharacters = maxContextTokens * 4
-        let numberedInput = numberedInputFull.count <= maxInputCharacters
-            ? numberedInputFull
-            : String(numberedInputFull.prefix(maxInputCharacters))
-
         // 自定义翻译系统提示词（设置 → 翻译 → 系统提示词）为空时用默认指令。
         // 首次安装（无任何 Prompt 配置）：落默认预设「视频字幕」（应用核心
         // 场景是实时字幕）——落盘必须在运行时读取点，只放设置页 onAppear
         // 时用户不进设置页就永远不生效。已有配置（含显式清空）不覆盖。
         // 变量替换统一走 PromptBuilder（唯一收口）：模板含 {text} 时文本
-        // 已嵌入模板（system 内），user 消息仍发编号原文（批量格式解析
-        // 依赖编号行）；不含变量时保持现行结构（模板作指令，文本走 user）。
+        // 已嵌入模板（system 内），user 消息不再重复发送（见下方消息构造）；
+        // 不含变量时保持现行结构（模板作指令，文本走 user）。
         let rawPrompt = UserDefaults.standard.string(forKey: ConfigKeys.systemPrompt) ?? ""
         let hasPresetSelection = UserDefaults.standard.string(forKey: "translationPromptPreset") != nil
         var customPromptTemplate: String
@@ -537,29 +671,29 @@ enum TranslationService {
             baseInstruction = rendered + ironRules
         }
         let formatInstruction: String
-        if segmentTexts.count > 1 {
-            formatInstruction = " Output ONLY a JSON array of exactly \(segmentTexts.count) translated strings in order, e.g. [\"...\", \"...\"]. No other text."
+        if includedCount > 1 {
+            formatInstruction = " Output ONLY a JSON array of exactly \(includedCount) translated strings in order, e.g. [\"...\", \"...\"]. No other text."
         } else {
             formatInstruction = " Output ONLY the translation itself, no explanations, no numbering."
         }
         let systemContent = baseInstruction + formatInstruction + contextSection
 
-        // 上下文双路径：自定义模板含 {context} 占位符 → 历史嵌入 system
-        //（contextSection 已含）；否则历史转 user/assistant 交替多轮消息
-        //（对话形态 token 效率更高，LLM 指代消解更强）。
+        // 文本也只发一次：
+        // - 模板含 {text}（8 个内置预设全部如此）：编号原文已嵌在 system 内，
+        //   末尾 user 只留一句不重复文本的应答锚点（保留 user 轮，避免部分
+        //   网关/模型对"无 user 轮"或"以 assistant 结尾"的兼容问题）；
+        // - 模板不含 {text}：system 只作指令，编号原文走 user（旧结构）。
         var messages: [[String: Any]] = [
             ["role": "system", "content": systemContent],
         ]
-        if customPromptTemplate.contains("{context}"), !previousTranslations.isEmpty {
-            // 占位符路径：contextSection 已在 system 内，无需多轮。
-        } else if !previousTranslations.isEmpty {
-            let history = previousTranslations.suffix(10)
-            for pair in history {
-                messages.append(["role": "user", "content": pair.original])
-                messages.append(["role": "assistant", "content": pair.translated])
-            }
+        if PromptBuilder.embedsText(customPromptTemplate) {
+            let anchor = includedCount > 1
+                ? "Translate the numbered lines above."
+                : "Translate the input above."
+            messages.append(["role": "user", "content": anchor])
+        } else {
+            messages.append(["role": "user", "content": numberedInput])
         }
-        messages.append(["role": "user", "content": numberedInput])
 
         var body: [String: Any] = [
             "model": effectiveModel,
@@ -574,53 +708,62 @@ enum TranslationService {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        // 流式路径：SSE 逐 token，delta.content 喂 onDelta（思考增量丢弃），
-        // 拼接完整译文后按格式解析（单句直接返回）。
+        // 解析结果统一收集后一次返回：便于对「超预算被截断的尾部段」补空串，
+        // 保持与入参 segmentTexts 下标一一对齐（调用方按 batchStart+offset
+        // 回填译文，错位会把译文填到别的段上）。
+        let parsed: [String]
         if stream {
+            // 流式路径：SSE 逐 token，delta.content 喂 onDelta（思考增量丢弃），
+            // 拼接完整译文后按格式解析（单句直接返回）。
             let full = try await performStreamingRequest(request, onDelta: onDelta)
-            if segmentTexts.count == 1 {
-                return [Self.stripSingleLineNoise(full)]
+            if includedCount == 1 {
+                parsed = [Self.stripSingleLineNoise(full)]
+            } else if let json = Self.parseTranslationArray(full, count: includedCount) {
+                parsed = json
+            } else {
+                // JSON 解析失败回退编号解析。
+                parsed = Self.parseNumberedLines(full, count: includedCount)
             }
-            if let json = Self.parseTranslationArray(full, count: segmentTexts.count) {
-                return json
+        } else {
+            let data = try await performRequestWithRetry(request)
+
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let firstChoice = choices.first,
+                  let message = firstChoice["message"] as? [String: Any] else {
+                throw TranslationError.parseError
             }
-            // JSON 解析失败回退编号解析。
-            return Self.parseNumberedLines(full, count: segmentTexts.count)
-        }
-
-        let data = try await performRequestWithRetry(request)
-
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any] else {
-            throw TranslationError.parseError
-        }
-        // #8 空 completion 诊断：有 tokens 消耗但内容空 = reasoning 烧光
-        // max_tokens 预算（思考模型常见），明确指路而非笼统 parseError。
-        if let content = Self.extractContent(from: message), !content.isEmpty {
-            // #7 复读机检测：长输出的周期性重复（小模型循环输出）。
-            if Self.hasRepetition(content) {
+            // #8 空 completion 诊断：有 tokens 消耗但内容空 = reasoning 烧光
+            // max_tokens 预算（思考模型常见），明确指路而非笼统 parseError。
+            if let content = Self.extractContent(from: message), !content.isEmpty {
+                // #7 复读机检测：长输出的周期性重复（小模型循环输出）。
+                if Self.hasRepetition(content) {
+                    AppLogger.shared.log(.translation,
+                        "Repetition detected (\(content.count) chars) — possible model loop, treating as failure")
+                    throw TranslationError.apiFailed("翻译模型输出重复循环，请重试或更换模型")
+                }
+            } else if let usage = json["usage"] as? [String: Any],
+                      let completionTokens = usage["completion_tokens"] as? Int,
+                      completionTokens > 0 {
                 AppLogger.shared.log(.translation,
-                    "Repetition detected (\(content.count) chars) — possible model loop, treating as failure")
-                throw TranslationError.apiFailed("翻译模型输出重复循环，请重试或更换模型")
+                    "Empty translation but \(completionTokens) completion tokens — max_tokens likely consumed by reasoning; adjust thinking mode or increase max tokens")
+                throw TranslationError.apiFailed("译文为空：思考过程耗尽了输出预算（请调整思考模式或增大 max_tokens）")
             }
-        } else if let usage = json["usage"] as? [String: Any],
-                  let completionTokens = usage["completion_tokens"] as? Int,
-                  completionTokens > 0 {
-            AppLogger.shared.log(.translation,
-                "Empty translation but \(completionTokens) completion tokens — max_tokens likely consumed by reasoning; adjust thinking mode or increase max tokens")
-            throw TranslationError.apiFailed("译文为空：思考过程耗尽了输出预算（请调整思考模式或增大 max_tokens）")
+            guard let content = Self.extractContent(from: message) else {
+                throw TranslationError.parseError
+            }
+            // 批量优先 JSON 数组解析；失败回退编号行解析（旧模型兼容）。
+            if includedCount > 1, let array = Self.parseTranslationArray(content, count: includedCount) {
+                parsed = array
+            } else {
+                parsed = Self.parseNumberedLines(content, count: includedCount)
+            }
         }
-        guard let content = Self.extractContent(from: message) else {
-            throw TranslationError.parseError
+        // 截断保护：超预算被丢弃的尾部段补空串（保持下标对齐而非错位填补）。
+        if parsed.count < segmentTexts.count {
+            return parsed + Array(repeating: "", count: segmentTexts.count - parsed.count)
         }
-
-        // 批量优先 JSON 数组解析；失败回退编号行解析（旧模型兼容）。
-        if segmentTexts.count > 1, let array = Self.parseTranslationArray(content, count: segmentTexts.count) {
-            return array
-        }
-        return Self.parseNumberedLines(content, count: segmentTexts.count)
+        return parsed
     }
 
     /// 复读机检测：≥40 字输出中，8 字片段重复 ≥3 次 **且重复覆盖文本 ≥30%**
@@ -656,15 +799,46 @@ enum TranslationService {
             .components(separatedBy: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .map { line -> String in
-                if let range = line.range(of: #"^\d+\.\s*"#, options: .regularExpression) {
-                    return String(line[range.upperBound...])
-                }
-                return line
+                Self.strippingLineNumberPrefix(line, maxLineNumber: count)
             }
         if lines.count >= count {
             return Array(lines.prefix(count))
         }
         return lines + Array(repeating: "", count: count - lines.count)
+    }
+
+    /// 剥离行首编号前缀（"12. " / "12."）。
+    ///
+    /// 不能无条件剥 `^\d+\.\s*`：译文本身以数字开头时会被吃掉正文——
+    /// "3.5 美元" → "5 美元"、"2024. 年" → "年"（真实数据损坏）。
+    /// 两个判据排除误伤：
+    /// - 小数点后紧跟数字（"3.5"）→ 小数，不是编号；
+    /// - 编号大于本批行数（`maxLineNumber`，如 1..N 的 N）→ 不是编号
+    ///  （"2024." 在 2 行批量里不可能行号 2024）。
+    /// `maxLineNumber` 为 nil（单句路径未知批量大小）时只靠小数判据。
+    static func strippingLineNumberPrefix(_ line: String, maxLineNumber: Int?) -> String {
+        guard let range = line.range(of: #"^(\d+)\.(\s*)"#, options: .regularExpression) else {
+            return line
+        }
+        // 点号位置：数字串紧邻的那个 "."；判"后面是否紧跟数字"必须看
+        // **紧邻点号的下一个字符**，不能用 range.upperBound（`\s*` 会把
+        // 空格吃掉，导致 "3. 5" 与 "3.5" 都指向数字）。
+        let matched = line[range]
+        guard let dotIndex = matched.firstIndex(of: ".") else { return line }
+        let digits = matched[..<dotIndex]
+        guard let number = Int(digits) else { return line }
+        // 判据 1：行号必须落在本批范围内。单句路径（nil）最多容忍 2——
+        // 单句只可能是第 1 行（含模型偶发从 2 起算），而 "2024. 年"
+        // 这种正文年份必须保住。
+        if let maxLineNumber {
+            if number > maxLineNumber { return line }
+        } else if number > 2 {
+            return line
+        }
+        // 判据 2：点号后紧跟数字 = 小数（"3.5 美元"），不剥。
+        let afterDot = line.index(after: dotIndex)
+        if afterDot < line.endIndex, line[afterDot].isNumber { return line }
+        return String(line[range.upperBound...])
     }
 
     /// JSON 数组解析：剥离 markdown 代码围栏后取 [ ... ]，长度不符返回 nil
@@ -692,9 +866,10 @@ enum TranslationService {
     /// 单句流式结果的净化：剥离可能的编号前缀与代码围栏。
     static func stripSingleLineNoise(_ text: String) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let range = result.range(of: #"^\d+\.\s*"#, options: .regularExpression) {
-            result = String(result[range.upperBound...])
-        }
+        // 单句路径无批量上下文：用 nil（不按行号范围判据）——
+        // 单句的 "1. " 前缀是模型加的行号，剥掉；小数（"3.5 美元"）
+        // 由小数判据保护。
+        result = Self.strippingLineNumberPrefix(result, maxLineNumber: nil)
         if result.hasPrefix("\"") && result.hasSuffix("\"") && result.count >= 2 {
             result = String(result.dropFirst().dropLast())
         }

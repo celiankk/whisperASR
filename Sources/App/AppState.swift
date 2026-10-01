@@ -50,9 +50,18 @@ class AppState {
     var transientToast: String?
     private var toastDismissTask: Task<Void, Never>?
     /// Monotonic-ish marker for the last toast shown, used to suppress repeats.
-    private var lastToastText: String?
+    /// @ObservationIgnored：纯内部去重标记，不参与视图依赖追踪
+    ///（否则每次 toast 都会把观察者标脏，持续失败时反复刷新）。
+    @ObservationIgnored private var lastToastText: String?
 
     // Live translation state (per-segment)
+    //
+    // ⚠️ 历史遗留，全项目没有任何写入点（恒为空数组）。实时译文实际由
+    // SubtitleHistoryManager 在每句结束时收口（原文/译文/语言），录制落库与
+    // 崩溃恢复经 alignedTranslations(for:) 按原文回填。读取本字段的旧路径
+    //（FloatingLetterIntegration.pushState 的 translations[index]）因此恒为
+    // nil，属待清理死代码。**不要在这里补写入**——浮层的译文渲染走的是
+    // ViewModel 自己的 translationRenderer，补写入会造成重复显示。
     var liveTranslatedSegments: [String] = []
     /// 翻译方式：不翻译 / 本地模型 / 在线 API。
     /// 统一状态管理：存储属性（@Observable 可跟踪），setTranslationMode 为唯一写入口，
@@ -174,6 +183,8 @@ class AppState {
     /// 文件转录队列任务句柄（shutdown 时统一取消，避免后台任务残留）。
     private var transcriptionQueueTask: Task<Void, Never>?
     var isTranscribing = false
+    /// 收尾闸：finishRecording 重入保护（按钮 / 菜单栏 / 退出收尾）。
+    @ObservationIgnored private var isFinishingRecording = false
 
     init() {
         history.load()
@@ -204,12 +215,12 @@ class AppState {
     }
 
     func retranscribe(_ item: TranscriptionItem) {
+        // 不预清空内容。此前先把 segments/fullText/译文置空并立即落盘，
+        // 若转录失败（startNextTranscription 的 catch 会再 save 一次），
+        // 磁盘上的原转录就被空数组永久覆盖 —— 而「重新转录」入口
+        //（SidebarView）对任何非转录中状态（含已完成）都开放，属真实
+        // 数据丢失。现在保留原内容：成功分支整体覆盖，失败分支原样保留。
         item.status = .pending
-        item.segments = []
-        item.fullText = ""
-        item.translatedSegments = []
-        item.translationLanguage = nil
-        history.save(item)
         enqueueTranscription(for: item)
     }
 
@@ -253,9 +264,18 @@ class AppState {
     /// being silently dropped with the recording.
     @MainActor
     func finishRecording(recorder: AudioRecorder) async {
+        // 幂等闸：浮层「结束录制」按钮、菜单栏、退出收尾三处入口都可触发，
+        // 重复调用会并发 stopRecording（同一 writer 二次 finishWriting）。
+        guard !isFinishingRecording else { return }
+        isFinishingRecording = true
+        defer { isFinishingRecording = false }
+
         let segments = liveSegments
         let fullText = segments.map { $0.text }.joined()
-        let translations = liveTranslatedSegments
+        // 实时译文按原文从字幕历史回填（liveTranslatedSegments 无写入点，
+        // 读它恒为空 → 录完的条目丢失用户刚看过的双语字幕）。必须在
+        // stopLiveTranscription() 之前取，且 stopLive 不清字幕历史。
+        let translations = SubtitleHistoryManager.shared.alignedTranslations(for: segments)
         let lang: String? = !translations.isEmpty
             ? UserDefaults.standard.string(forKey: "targetLanguage") : nil
         let hadLiveResults = isLiveTranscribing && !segments.isEmpty
@@ -300,20 +320,22 @@ class AppState {
     // MARK: - Toast
 
     /// Show a transient, auto-dismissing toast. Repeats of the same message are
-    /// ignored (the timer just restarts) so a continuously-failing translation
-    /// queue surfaces the problem once rather than flickering on every retry.
+    /// ignored (the timer is NOT restarted) so a continuously-failing translation
+    /// queue surfaces the problem once instead of flickering forever.
     @MainActor
     func showToast(_ text: String, duration: Duration = .seconds(6)) {
+        // 同文本仍在显示（transientToast 未清空）= 重复上报：直接忽略。
+        // 不能「重启计时器」——持续失败的重试队列会不断续期，toast 永不消失。
+        if transientToast == text, lastToastText == text { return }
+
         transientToast = text
         lastToastText = text
         toastDismissTask?.cancel()
         toastDismissTask = Task { [weak self] in
             try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                // Only clear if it's still the same message we scheduled.
-                if self?.lastToastText == text { self?.transientToast = nil }
-            }
+            // Only clear if it's still the same message we scheduled.
+            if self?.lastToastText == text { self?.transientToast = nil }
         }
     }
 
@@ -327,9 +349,10 @@ class AppState {
     }
 
     func clearTranslation(_ item: TranscriptionItem) {
-        item.translatedSegments = []
-        item.translationLanguage = nil
-        history.save(item)
+        // 走 HistoryManager 的语义化入口：它保证「未 hydrate 的条目先 hydrate
+        // 再写」。此前直接改内存字段 + history.save(item)，而 save 对未 hydrate
+        // 条目走 saveMetadata（不写译文字段）→ 磁盘译文保留、重启后"复活"。
+        history.clearTranslations(for: item)
     }
 
     /// 整句翻译（字幕层检测到一句结束后调用，一次一句、单飞）：
@@ -399,8 +422,13 @@ class AppState {
 
     // MARK: - 历史记录操作（页面状态）
 
+    @MainActor
     func removeItem(_ item: TranscriptionItem) {
-        history.remove(item)
+        let removed = history.remove(item)
+        if !removed {
+            showToast("转录进行中，无法删除。请等转录结束后再移除。")
+            return
+        }
         if selectedItemID == item.id {
             selectedItemID = items.first?.id
         }
@@ -455,11 +483,15 @@ class AppState {
                     //（懒加载条目未标记时 save 只回写元数据，结果会丢失）。
                     item.transcriptHydrated = true
                     item.status = .completed
+                    // 防御：条目若已被删除（批量删除/上限裁剪/用户移除），
+                    // 不再回写磁盘 —— 否则一份 JSON 被重新写出，条目复活。
+                    guard history.contains(id: item.id) else { return }
                     history.save(item)
                 }
             } catch {
                 await MainActor.run {
                     item.status = .failed(error.localizedDescription)
+                    guard history.contains(id: item.id) else { return }
                     history.save(item)
                 }
             }

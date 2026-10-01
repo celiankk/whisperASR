@@ -1,6 +1,10 @@
+import AVFoundation
 import SwiftUI
-import UniformTypeIdentifiers
 
+/// 转录工作台（主窗口右栏）。原 DetailView 重构版：
+/// • 顶部工作条：标题（负字距）+ 中性徽章（时长/日期/段数/语言）+ 动作；
+/// • 转录正文：分段行 + 共享几何「游标」高亮（随播放滑动）；
+/// • 播放器悬浮在右栏底部（PlayerCapsule），不再是底部常驻条。
 struct DetailView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioPlayerManager.self) var audioPlayer
@@ -17,7 +21,11 @@ struct DetailView: View {
             if let item = appState.selectedItem {
                 itemDetailView(item)
             } else {
-                placeholderView
+                PlaceholderView(
+                    onRecord: startRecording,
+                    onImport: openFileImportPanel,
+                    onShowSubtitle: showSubtitleOverlay
+                )
             }
         }
         .onAppear {
@@ -28,71 +36,75 @@ struct DetailView: View {
             showSearch = false
             appState.selectedItem?.hydrateTranscriptIfNeeded()
         }
-        // Lives in the detail toolbar (not the sidebar) so the narrow sidebar
-        // never pushes the Record button into the overflow menu.
-        .toolbar {
-            ToolbarItem {
-                ModelPickerMenu()
+    }
+
+    // MARK: - 状态路由
+
+    @ViewBuilder
+    private func itemDetailView(_ item: TranscriptionItem) -> some View {
+        switch item.status {
+        case .pending:
+            WorkspaceShell(item: item) {
+                PendingStateView()
+            }
+
+        case .transcribing:
+            WorkspaceShell(item: item) {
+                TranscribingView(item: item)
+            }
+
+        case .failed(let error):
+            WorkspaceShell(item: item) {
+                FailedStateView(item: item, error: error) {
+                    appState.retranscribe(item)
+                }
+            }
+
+        case .completed:
+            WorkspaceShell(item: item, actions: .init(
+                item: item,
+                showSearch: $showSearch,
+                showTimestamps: $showTimestamps,
+                translationOnly: $translationOnly,
+                onTranslate: { appState.translateItem(item, targetLanguage: $0) },
+                onClearTranslation: { appState.clearTranslation(item) },
+                minutesPromptStore: minutesPromptStore,
+                openWindow: openWindow,
+                openSettings: { openSettings() }
+            )) {
+                TranscriptContentView(
+                    item: item,
+                    showSearch: $showSearch,
+                    showTimestamps: showTimestamps,
+                    translationOnly: translationOnly
+                )
+            }
+            .overlay(alignment: .bottom) {
+                PlayerCapsule()
+                    .padding(.horizontal, Metrics.xl)
             }
         }
     }
 
-    // MARK: - Placeholder
+    // MARK: - 占位页动作
 
-    /// 未选中条目的占位页：应用主视觉（首次启动即此页）——
-    /// 三条核心功能引导卡（录制 / 导入文件 / 实时字幕），替代单行灰字。
-    private var placeholderView: some View {
-        VStack(spacing: 28) {
-            // 品牌标识。
-            VStack(spacing: 10) {
-                Image(systemName: "waveform.badge.mic")
-                    .font(.system(size: 44, weight: .light))
-                    .foregroundStyle(.tint)
-                Text("WhisperASR")
-                    .font(.title2.bold())
-                Text("实时语音转字幕 · 多引擎识别 · 实时翻译")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 20)
-
-            // 功能引导卡（三列，可点击直接调用对应功能）。
-            HStack(spacing: 14) {
-                featureCard(icon: "record.circle", color: .red,
-                            title: "开始录制",
-                            detail: "工具栏录制按钮，\n实时出字幕与翻译") {
-                    // 录制入口授权闸（同工具栏录制按钮）。
-                    guard PermissionGuidePanelController.shared.authorizeForRecording() else {
-                        return
-                    }
-                    FloatingLetterOverlayHost.shared.startRecordingFlow(
-                        appState: appState, recorder: recorder
-                    ) {
-                        FloatingLetterOverlayHost.shared.dismiss()
-                    }
-                }
-                featureCard(icon: "square.and.arrow.down", color: .blue,
-                            title: "导入文件",
-                            detail: "拖放音频到左侧列表，\n批量文件转录") {
-                    openFileImportPanel()
-                }
-                featureCard(icon: "captions.bubble", color: .purple,
-                            title: "实时字幕",
-                            detail: "字幕浮层可穿透、缩放，\n支持 OBS 采集") {
-                    // 展示字幕浮层（不进入录制流程；录制仍从录制入口开始）。
-                    FloatingLetterOverlayHost.shared.present(
-                        appState: appState, recorder: recorder
-                    )
-                }
-            }
-            .padding(.horizontal, 24)
-
-            Spacer()
+    private func startRecording() {
+        // 录制入口授权闸：未授权时直接跳授权流程。
+        guard PermissionGuidePanelController.shared.authorizeForRecording() else { return }
+        FloatingLetterOverlayHost.shared.startRecordingFlow(
+            appState: appState, recorder: recorder
+        ) {
+            FloatingLetterOverlayHost.shared.dismiss()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 导入文件：多选音频/视频（与侧栏「添加文件」同一入口语义）。
+    private func showSubtitleOverlay() {
+        // 展示字幕浮层（不进入录制流程；录制仍从录制入口开始）。
+        FloatingLetterOverlayHost.shared.present(
+            appState: appState, recorder: recorder
+        )
+    }
+
     private func openFileImportPanel() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -105,302 +117,412 @@ struct DetailView: View {
             }
         }
     }
+}
 
-    /// 单张功能引导卡：图标 + 标题 + 两行说明；点击直接调用功能。
-    private func featureCard(icon: String, color: Color, title: String,
-                             detail: String, action: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+// MARK: - 工作台外壳（标题条 + 内容区）
+
+/// 右栏统一外壳：标题条在上，内容由各状态填充；
+/// 未完成状态不给动作（传 nil 时标题条只展示徽章）。
+private struct WorkspaceShell<Content: View>: View {
+    let item: TranscriptionItem
+    var actions: WorkspaceActions?
+    var content: Content
+
+    /// 音频总时长：点开条目后异步量一次（AVURLAsset.load，失败不显示）。
+    @State private var duration: Double?
+
+    init(item: TranscriptionItem, actions: WorkspaceActions? = nil,
+         @ViewBuilder content: () -> Content) {
+        self.item = item
+        self.actions = actions
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            HairlineDivider()
+            content
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .task(id: item.id) {
+            duration = nil
+            guard item.fileURL.isFileURL else { return }
+            let asset = AVURLAsset(url: item.fileURL)
+            let seconds = try? await asset.load(.duration).seconds
+            guard !Task.isCancelled else { return }
+            duration = (seconds?.isFinite ?? false) ? seconds : nil
+        }
+    }
+
+    private var title: String {
+        item.fileURL.deletingPathExtension().lastPathComponent
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: Metrics.lg) {
+            VStack(alignment: .leading, spacing: Metrics.xs) {
+                Text(title)
+                    .font(Type.text(Type.title, weight: .semibold))
+                    .titleTracking(Type.title)
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: Metrics.sm) {
+                    if let duration {
+                        Text(duration.badgeString)
+                            .font(Type.mono(Type.micro))
+                            .foregroundStyle(Ink.secondary)
+                    }
+                    if !item.segments.isEmpty {
+                        Text("\(item.segments.count) 段")
+                            .font(Type.mono(Type.micro))
+                            .foregroundStyle(Ink.secondary)
+                    }
+                    Text(item.dateAdded.formatted(.dateTime.year().month().day()))
+                        .font(Type.mono(Type.micro))
+                        .foregroundStyle(Ink.secondary)
+                    if let lang = item.translationLanguage, !item.translatedSegments.isEmpty {
+                        TintBadge(text: lang.uppercased(), color: Palette.translation)
+                    }
+                    statusBadge
+                }
+            }
+
+            Spacer(minLength: Metrics.xl)
+
+            if let actions { actionsRow(actions) }
+        }
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, Metrics.lg)
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch item.status {
+        case .pending:
+            TintBadge(text: "排队", color: Ink.secondary)
+        case .transcribing:
+            TintBadge(text: "转录中", color: Color.accentColor)
+        case .completed:
+            EmptyView()
+        case .failed:
+            TintBadge(text: "失败", color: Palette.danger)
+        }
+    }
+
+    @ViewBuilder
+    private func actionsRow(_ a: WorkspaceActions) -> some View {
+        HStack(spacing: Metrics.xs) {
+            ModelPickerMenu()
+
+            if a.isTranslating {
+                ProgressView()
+                    .controlSize(.small)
+                    .help("翻译中…")
+            } else {
+                IconButtonMenu(systemImage: "character.bubble", help: "翻译") {
+                    ForEach(TargetLanguage.available) { lang in
+                        Button {
+                            a.onTranslate(lang.id)
+                        } label: {
+                            HStack {
+                                Text(lang.nativeName)
+                                if item.translationLanguage == lang.id
+                                    && !item.translatedSegments.isEmpty {
+                                    Spacer()
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                    if !item.translatedSegments.isEmpty {
+                        Divider()
+                        Button("清除翻译", action: a.onClearTranslation)
+                    }
+                }
+            }
+
+            if !item.translatedSegments.isEmpty {
+                GhostIconButton(
+                    systemImage: a.translationOnly ? "eye.fill" : "eye",
+                    help: a.translationOnly ? "显示原文和翻译" : "仅显示翻译",
+                    action: { a.translationOnly.toggle() }
+                )
+            }
+
+            GhostIconButton(
+                systemImage: a.showTimestamps ? "clock.fill" : "clock",
+                help: a.showTimestamps ? "隐藏时间戳" : "显示时间戳",
+                action: { a.showTimestamps.toggle() }
+            )
+
+            IconButtonMenu(systemImage: "list.bullet.clipboard", help: "使用提示词生成会议纪要") {
+                ForEach(a.minutesPromptStore.prompts) { prompt in
+                    Button {
+                        TranscriptActions.generateMinutes(
+                            item, prompt: prompt,
+                            store: a.minutesPromptStore, openWindow: a.openWindow
+                        )
+                    } label: {
+                        HStack {
+                            Text(prompt.name)
+                            if a.minutesPromptStore.selectedPromptID == prompt.id {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+                Divider()
+                if TranscriptActions.hasGeneratedMinutes(for: item) {
+                    Button("显示纪要") { a.openWindow(id: "minutes") }
+                }
+                Button("编辑提示词…", action: a.openSettings)
+            }
+
+            IconButtonMenu(systemImage: "square.and.arrow.up", help: "导出") {
+                Button("复制内容") { TranscriptActions.copyContent(item) }
+                if !item.translatedSegments.isEmpty {
+                    Button("复制翻译") { TranscriptActions.copyTranslation(item) }
+                }
+                Divider()
+                Button("导出文本…") { TranscriptActions.exportText(item) }
+                if !item.translatedSegments.isEmpty {
+                    Button("导出翻译…") { TranscriptActions.exportTranslation(item) }
+                }
+                if !item.segments.isEmpty {
+                    Menu("导出字幕") {
+                        ForEach(SubtitleFormat.allCases) { format in
+                            Button("\(format.displayName)…") {
+                                TranscriptActions.exportSubtitles(item, format: format)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 工作条动作的打包参数（避免 WorkspaceShell 泛型参数爆炸）。
+private struct WorkspaceActions {
+    @Binding var showSearch: Bool
+    @Binding var showTimestamps: Bool
+    @Binding var translationOnly: Bool
+    var onTranslate: (String) -> Void
+    var onClearTranslation: () -> Void
+    var minutesPromptStore: MinutesPromptStore
+    var openWindow: OpenWindowAction
+    var openSettings: () -> Void
+
+    var isTranslating: Bool = false
+
+    init(item: TranscriptionItem,
+         showSearch: Binding<Bool>,
+         showTimestamps: Binding<Bool>,
+         translationOnly: Binding<Bool>,
+         onTranslate: @escaping (String) -> Void,
+         onClearTranslation: @escaping () -> Void,
+         minutesPromptStore: MinutesPromptStore,
+         openWindow: OpenWindowAction,
+         openSettings: @escaping () -> Void) {
+        self._showSearch = showSearch
+        self._showTimestamps = showTimestamps
+        self._translationOnly = translationOnly
+        self.onTranslate = onTranslate
+        self.onClearTranslation = onClearTranslation
+        self.minutesPromptStore = minutesPromptStore
+        self.openWindow = openWindow
+        self.openSettings = openSettings
+        self.isTranslating = item.isTranslating
+    }
+}
+
+/// ghost 图标按钮。
+private struct GhostIconButton: View {
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Ink.secondary)
+        }
+        .buttonStyle(GhostButtonStyle(size: 28))
+        .help(help)
+    }
+}
+
+/// 图标样式的 Menu（边框去 chrome + 发丝底，与 ghost 按钮同一视觉家族）。
+private struct IconButtonMenu<MenuContent: View>: View {
+    let systemImage: String
+    let help: String
+    var content: () -> MenuContent
+
+    init(systemImage: String, help: String, @ViewBuilder content: @escaping () -> MenuContent) {
+        self.systemImage = systemImage
+        self.help = help
+        self.content = content
+    }
+
+    var body: some View {
+        Menu(content: content) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Ink.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(help)
+    }
+}
+
+// MARK: - 占位页
+
+/// 未选中条目的占位页（首次启动即此页）：
+/// 品牌区 + 三张可点的 ghost 卡（点击直接调用对应功能）。
+private struct PlaceholderView: View {
+    let onRecord: () -> Void
+    let onImport: () -> Void
+    let onShowSubtitle: () -> Void
+
+    var body: some View {
+        VStack(spacing: Metrics.xxxl) {
+            VStack(spacing: Metrics.md) {
+                Image(systemName: "waveform.badge.mic")
+                    .font(.system(size: 40, weight: .light))
+                    .foregroundStyle(.tint)
+                Text("声记 SonicScribe")
+                    .font(Type.text(Type.display, weight: .semibold))
+                    .titleTracking(Type.display)
+                Text("实时语音转字幕 · 多引擎识别 · 实时翻译")
+                    .font(Type.text(Type.body))
+                    .foregroundStyle(Ink.secondary)
+            }
+            .padding(.top, 40)
+
+            HStack(spacing: Metrics.lg) {
+                FeatureCard(
+                    icon: "record.circle", tint: Palette.live,
+                    title: "开始录制",
+                    detail: "工具栏录制按钮，实时出字幕与翻译",
+                    action: onRecord
+                )
+                FeatureCard(
+                    icon: "square.and.arrow.down", tint: Palette.info,
+                    title: "导入文件",
+                    detail: "拖放音频到左侧列表，批量文件转录",
+                    action: onImport
+                )
+                FeatureCard(
+                    icon: "captions.bubble", tint: Palette.ok,
+                    title: "实时字幕",
+                    detail: "字幕浮层可穿透、缩放，支持 OBS 采集",
+                    action: onShowSubtitle
+                )
+            }
+            .padding(.horizontal, Metrics.xxxl)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// 功能引导卡：ghost 变体（透明底 + hover 淡底 + 发丝环），点击即调用。
+private struct FeatureCard: View {
+    let icon: String
+    let tint: Color
+    let title: String
+    let detail: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Metrics.md) {
             Image(systemName: icon)
-                .font(.system(size: 22))
-                .foregroundStyle(color)
+                .font(.system(size: 20))
+                .foregroundStyle(tint)
+                .frame(width: 36, height: 36)
+                .background(Corner.rect(Corner.small).fill(Ink.soft(tint, 0.12)))
+
             Text(title)
-                .font(.headline)
+                .font(Type.text(Type.emphasis, weight: .medium))
+
             Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Type.text(Type.caption))
+                .foregroundStyle(Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
-        .contentShape(RoundedRectangle(cornerRadius: 10))
-        .onHover { hovering in
-            if hovering {
+        .padding(Metrics.lg)
+        .background(
+            Corner.rect(Corner.card)
+                .fill(hovering ? Ink.hover : Ink.faint)
+        )
+        .overlay(Corner.rect(Corner.card).strokeBorder(Ink.hairline, lineWidth: 0.5))
+        .contentShape(Corner.rect(Corner.card))
+        .onHover { inside in
+            hovering = inside
+            if inside {
                 NSCursor.pointingHand.push()
             } else {
                 NSCursor.pop()
             }
         }
+        .motionAnimation(Motion.standard(0.2), value: hovering)
         .onTapGesture(perform: action)
-    }
-
-    // MARK: - Item Detail
-
-    @ViewBuilder
-    private func itemDetailView(_ item: TranscriptionItem) -> some View {
-        switch item.status {
-        case .pending:
-            VStack(spacing: 8) {
-                Image(systemName: "clock")
-                    .font(.title)
-                    .foregroundStyle(.secondary)
-                Text("等待开始…")
-                    .foregroundStyle(.secondary)
-            }
-
-        case .transcribing:
-            TranscribingView(item: item)
-
-        case .completed:
-            TranscriptContentView(item: item, showSearch: $showSearch, showTimestamps: showTimestamps, translationOnly: translationOnly)
-                .toolbar {
-                    ToolbarItem {
-                        HStack(spacing: 4) {
-                            Button {
-                                showSearch.toggle()
-                            } label: {
-                                Image(systemName: "magnifyingglass")
-                            }
-                            .help("搜索转录")
-
-                            if item.isTranslating {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .help("翻译中…")
-                            } else {
-                                Menu {
-                                    ForEach(TargetLanguage.available) { lang in
-                                        Button {
-                                            appState.translateItem(item, targetLanguage: lang.id)
-                                        } label: {
-                                            HStack {
-                                                Text(lang.nativeName)
-                                                if item.translationLanguage == lang.id && !item.translatedSegments.isEmpty {
-                                                    Spacer()
-                                                    Image(systemName: "checkmark")
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if !item.translatedSegments.isEmpty {
-                                        Divider()
-                                        Button("清除翻译") {
-                                            appState.clearTranslation(item)
-                                        }
-                                    }
-                                } label: {
-                                    Label("翻译", systemImage: "character.bubble")
-                                }
-                                .menuIndicator(.hidden)
-                            }
-
-                            if !item.translatedSegments.isEmpty {
-                                Button {
-                                    translationOnly.toggle()
-                                } label: {
-                                    Image(systemName: translationOnly ? "eye.fill" : "eye")
-                                }
-                                .help(translationOnly ? "显示原文和翻译" : "仅显示翻译")
-                            }
-
-                            Button {
-                                showTimestamps.toggle()
-                            } label: {
-                                Image(systemName: showTimestamps ? "clock.fill" : "clock")
-                            }
-                            .help(showTimestamps ? "隐藏时间戳" : "显示时间戳")
-
-                            Menu {
-                                ForEach(minutesPromptStore.prompts) { prompt in
-                                    Button {
-                                        generateMinutes(item, prompt: prompt)
-                                    } label: {
-                                        HStack {
-                                            Text(prompt.name)
-                                            if minutesPromptStore.selectedPromptID == prompt.id {
-                                                Spacer()
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                                Divider()
-                                if hasGeneratedMinutes(for: item) {
-                                    Button("显示纪要") { openWindow(id: "minutes") }
-                                }
-                                Button("编辑提示词…") { openSettings() }
-                            } label: {
-                                Label("会议纪要", systemImage: "list.bullet.clipboard")
-                            }
-                            .menuIndicator(.hidden)
-                            .help("使用提示词生成会议纪要")
-
-                            Menu {
-                                Button("复制内容") { copyContent(item) }
-                                if !item.translatedSegments.isEmpty {
-                                    Button("复制翻译") { copyTranslation(item) }
-                                }
-                                Divider()
-                                Button("导出文本…") { exportText(item) }
-                                if !item.translatedSegments.isEmpty {
-                                    Button("导出翻译…") { exportTranslation(item) }
-                                }
-                                if !item.segments.isEmpty {
-                                    Menu("导出字幕") {
-                                        ForEach(SubtitleFormat.allCases) { format in
-                                            Button("\(format.displayName)…") { exportSubtitles(item, format: format) }
-                                        }
-                                    }
-                                }
-                            } label: {
-                                Label("导出", systemImage: "square.and.arrow.up")
-                            }
-                            .menuIndicator(.hidden)
-                        }
-                    }
-                }
-
-        case .failed(let error):
-            VStack(spacing: 16) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.title)
-                    .foregroundStyle(.red)
-                Text("转录失败")
-                    .font(.headline)
-
-                ScrollView {
-                    Text(error)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                }
-                .frame(maxHeight: 240)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .frame(maxWidth: 560)
-
-                HStack(spacing: 12) {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(error, forType: .string)
-                    } label: {
-                        Label("复制错误", systemImage: "doc.on.doc")
-                    }
-
-                    Button {
-                        appState.retranscribe(item)
-                    } label: {
-                        Label("重试", systemImage: "arrow.clockwise")
-                    }
-                    .keyboardShortcut("r", modifiers: .command)
-                }
-            }
-            .padding()
-        }
-    }
-
-    // MARK: - Meeting Minutes
-
-    private func generateMinutes(_ item: TranscriptionItem, prompt: MinutesPrompt) {
-        minutesPromptStore.selectedPromptID = prompt.id
-        MinutesGenerator.shared.generate(item: item, prompt: prompt)
-        openWindow(id: "minutes")
-    }
-
-    private func hasGeneratedMinutes(for item: TranscriptionItem) -> Bool {
-        let generator = MinutesGenerator.shared
-        return generator.sourceItemID == item.id && generator.phase == .completed
-    }
-
-    // MARK: - Copy & Export
-
-    private func copyContent(_ item: TranscriptionItem) {
-        let text = item.segments.isEmpty
-            ? item.fullText
-            : item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func copyTranslation(_ item: TranscriptionItem) {
-        let text = item.translatedSegments
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func exportText(_ item: TranscriptionItem) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = (item.fileName as NSString).deletingPathExtension + ".txt"
-
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            let text = item.segments.isEmpty
-                ? item.fullText
-                : item.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: "\n")
-            try? text.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-
-    private func exportSubtitles(_ item: TranscriptionItem, format: SubtitleFormat) {
-        let baseName = (item.fileName as NSString).deletingPathExtension
-        let panel = NSSavePanel()
-        if let type = UTType(filenameExtension: format.fileExtension) {
-            panel.allowedContentTypes = [type]
-        }
-        panel.nameFieldStringValue = baseName + "." + format.fileExtension
-
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            let content = SubtitleFormatter.make(format, segments: item.segments, title: baseName)
-            try? content.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-
-    private func exportTranslation(_ item: TranscriptionItem) {
-        let lang = item.translationLanguage ?? "translation"
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = (item.fileName as NSString).deletingPathExtension + "-\(lang).txt"
-
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            let text = item.translatedSegments
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
-            try? text.write(to: url, atomically: true, encoding: .utf8)
-        }
     }
 }
 
-// MARK: - Transcribing Progress View
+// MARK: - 各状态内容
 
+private struct PendingStateView: View {
+    var body: some View {
+        VStack(spacing: Metrics.md) {
+            Image(systemName: "clock")
+                .font(.system(size: 22, weight: .light))
+                .foregroundStyle(Ink.secondary)
+            Text("等待开始…")
+                .font(Type.text(Type.body))
+                .foregroundStyle(Ink.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// 转录中：细进度条 + 等宽百分比滚动 + ETA。
 struct TranscribingView: View {
     let item: TranscriptionItem
 
     var body: some View {
-        VStack(spacing: 16) {
-            ProgressView(value: item.progress, total: 1.0)
-                .progressViewStyle(.linear)
-                .frame(maxWidth: 300)
-
-            Text("\(Int(item.progress * 100))%")
-                .font(.system(.title, design: .monospaced))
-                .foregroundStyle(.secondary)
+        VStack(spacing: Metrics.xl) {
+            LinearProgressBar(progress: item.progress, showsValue: true)
+                .frame(maxWidth: 320)
 
             Text("正在转录 \(item.fileName)…")
-                .foregroundStyle(.secondary)
+                .font(Type.text(Type.caption))
+                .foregroundStyle(Ink.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
 
             if let eta = estimatedTimeRemaining {
                 Text(eta)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(Type.mono(Type.micro))
+                    .foregroundStyle(Ink.secondary.opacity(0.8))
+                    .contentTransition(.numericText())
+                    .animation(Motion.anim(Motion.standard(0.25)), value: eta)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
     }
 
@@ -423,22 +545,75 @@ struct TranscribingView: View {
     }
 }
 
-// MARK: - Transcript Content (with synced highlighting)
+private struct FailedStateView: View {
+    let item: TranscriptionItem
+    let error: String
+    let onRetry: () -> Void
 
+    var body: some View {
+        VStack(spacing: Metrics.xl) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 22, weight: .light))
+                .foregroundStyle(Palette.danger)
+            Text("转录失败")
+                .font(Type.text(Type.emphasis, weight: .medium))
+
+            ScrollView {
+                Text(error)
+                    .font(Type.mono(Type.micro))
+                    .foregroundStyle(Ink.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Metrics.md)
+            }
+            .frame(maxHeight: 220)
+            .background(Corner.rect(Corner.small).fill(Ink.subtle))
+            .overlay(Corner.rect(Corner.small).strokeBorder(Ink.hairline, lineWidth: 0.5))
+            .frame(maxWidth: 560)
+
+            HStack(spacing: Metrics.lg) {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(error, forType: .string)
+                } label: {
+                    Label("复制错误", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    onRetry()
+                } label: {
+                    Label("重试", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .keyboardShortcut("r", modifiers: .command)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+}
+
+// MARK: - 转录正文（含播放跟随高亮）
+
+/// 分段正文：搜索条（浮动）+ 滚动区（上下渐隐）+ 当前句「游标」高亮。
 struct TranscriptContentView: View {
     let item: TranscriptionItem
     @Environment(AudioPlayerManager.self) var audioPlayer
     @State private var currentIndex: Int?
     @Binding var showSearch: Bool
     @State private var searchQuery = ""
-    @State private var committedQuery = ""  // debounced query actually used for highlighting
+    @State private var committedQuery = ""  // 防抖后真正用于高亮的查询
     @State private var currentMatchIndex = 0
     @State private var cachedMatches: [(segmentIndex: Int, matchIndex: Int)] = []
-    @State private var matchingSegmentIndices: Set<Int> = []  // segments that contain matches
+    @State private var matchingSegmentIndices: Set<Int> = []
     @State private var searchDebounceTask: Task<Void, Never>?
     var showTimestamps: Bool = true
     var translationOnly: Bool = false
     @FocusState private var isSearchFieldFocused: Bool
+    @Namespace private var cursorNS
 
     var body: some View {
         VStack(spacing: 0) {
@@ -518,7 +693,7 @@ struct TranscriptContentView: View {
     private var transcriptScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: 2) {
                     // indices 直接遍历（Range<Int> 零拷贝）：Array(enumerated())
                     // 会在每次 body 重算时全量拷贝段数组（数千段 × 播放期 10Hz
                     // 重算 = 每秒上万次元素拷贝）；id 用位置（段数组渲染期不可变，
@@ -527,8 +702,12 @@ struct TranscriptContentView: View {
                         segmentView(index: index, segment: item.segments[index])
                     }
                 }
-                .padding()
+                // 底部留出悬浮胶囊的高度，最后一行不被盖住。
+                .padding(.top, Metrics.lg)
+                .padding(.horizontal, Metrics.gutter)
+                .padding(.bottom, 84)
             }
+            .edgeFadeVertical(EdgeFade.length)
             .onChange(of: audioPlayer.currentTime) { _, newTime in
                 updateHighlight(time: newTime, proxy: proxy)
             }
@@ -541,11 +720,19 @@ struct TranscriptContentView: View {
             .onAppear {
                 audioPlayer.load(url: item.fileURL)
             }
+            // 切换历史条目必须重载播放器：TranscriptContentView 在条目之间
+            // 被复用（无 .id(item.id)），onAppear 不会重跑 —— 否则播放胶囊
+            // 仍指向上一段录音，点新条目的段落才切过去，暂停/播放操作的是
+            // 上一条音频。
+            .onChange(of: item.id) { _, _ in
+                currentIndex = nil
+                audioPlayer.load(url: item.fileURL)
+            }
         }
     }
 
     private func segmentView(index: Int, segment: TranscriptionSegment) -> some View {
-        // Only pass search query to segments that actually have matches
+        // 只把搜索词传给真正有命中的段。
         let hasMatch = matchingSegmentIndices.contains(index)
         let query = hasMatch ? committedQuery : ""
         let activeIndices = activeMatchIndicesForSegment(index)
@@ -557,7 +744,8 @@ struct TranscriptContentView: View {
             searchQuery: query,
             highlightedMatchIndices: activeIndices,
             showTimestamp: showTimestamps,
-            translationOnly: translationOnly
+            translationOnly: translationOnly,
+            cursorNamespace: cursorNS
         )
         .id(index)
         .onTapGesture {
@@ -580,19 +768,17 @@ struct TranscriptContentView: View {
 
     @ViewBuilder
     private var searchBar: some View {
-        VStack(spacing: 0) {
-            SearchBarContent(
-                searchQuery: $searchQuery,
-                currentMatchIndex: $currentMatchIndex,
-                isSearchFieldFocused: $isSearchFieldFocused,
-                totalMatches: cachedMatches.count,
-                onNavigate: { navigateMatch(forward: $0) },
-                onDismiss: {
-                    showSearch = false
-                }
-            )
-            Divider()
-        }
+        SearchBarContent(
+            searchQuery: $searchQuery,
+            currentMatchIndex: $currentMatchIndex,
+            isSearchFieldFocused: $isSearchFieldFocused,
+            totalMatches: cachedMatches.count,
+            onNavigate: { navigateMatch(forward: $0) },
+            onDismiss: { showSearch = false }
+        )
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, Metrics.sm)
+        .overlay(alignment: .bottom) { HairlineDivider() }
     }
 
     private func navigateMatch(forward: Bool) {
@@ -610,13 +796,12 @@ struct TranscriptContentView: View {
         let safeIndex = min(currentMatchIndex, cachedMatches.count - 1)
         guard safeIndex >= 0 else { return }
         let segIndex = cachedMatches[safeIndex].segmentIndex
-        withAnimation(.easeInOut(duration: 0.3)) {
+        Motion.run(Motion.inOut(0.3)) {
             proxy.scrollTo(segIndex, anchor: .center)
         }
     }
 
-    /// Index of the last segment whose start is <= time. Binary search — segments
-    /// are ordered by start time, and this runs on every playback tick.
+    /// 播放期二分定位当前段（段按 start 有序，每个 tick 跑一次）。
     private func segmentIndex(at time: TimeInterval) -> Int? {
         var low = 0
         var high = item.segments.count - 1
@@ -642,17 +827,20 @@ struct TranscriptContentView: View {
 
         let newIndex = segmentIndex(at: time)
         guard newIndex != currentIndex else { return }
-        currentIndex = newIndex
-        if let idx = newIndex {
-            withAnimation(.easeInOut(duration: 0.3)) {
+        Motion.run(Motion.standard(0.26)) {
+            currentIndex = newIndex
+            if let idx = newIndex {
                 proxy.scrollTo(idx, anchor: .center)
             }
         }
     }
 }
 
-// MARK: - Segment Row
+// MARK: - 分段行
 
+/// 一行转录：等宽时间戳列 + 正文/译文列。
+/// 当前行的高亮走 matchedGeometryEffect「游标」：同一 id 每次只出现在
+/// 当前行上，行间切换时 SwiftUI 会做 frame 过渡（替代瞬变的实色块）。
 struct SegmentRow: View {
     let segment: TranscriptionSegment
     let isCurrent: Bool
@@ -661,16 +849,19 @@ struct SegmentRow: View {
     var highlightedMatchIndices: Set<Int> = []
     var showTimestamp: Bool = true
     var translationOnly: Bool = false
+    var cursorNamespace: Namespace.ID
 
     @AppStorage("transcriptFontSize") private var transcriptFontSizeRaw = TranscriptFontSize.normal.rawValue
     private var fontSize: TranscriptFontSize { TranscriptFontSize(rawValue: transcriptFontSizeRaw) ?? .normal }
 
+    @State private var hovering = false
+
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: Metrics.lg) {
             if showTimestamp {
                 Text(formatTimestamp(segment.start))
                     .font(fontSize.timestampFont)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.secondary)
                     .frame(width: 55, alignment: .trailing)
                     .padding(.top, 7)
             }
@@ -680,40 +871,42 @@ struct SegmentRow: View {
                     highlightedText(segment.text.trimmingCharacters(in: .whitespaces))
                         .font(fontSize.bodyFont)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .opacity(isCurrent ? 1.0 : 0.85)
+                        .foregroundStyle(isCurrent ? Color.primary : Color.primary.opacity(0.82))
                 }
 
                 if let translation, !translation.isEmpty {
                     Text(translation)
                         .font(translationOnly ? fontSize.bodyFont : fontSize.translationFont)
-                        .foregroundStyle(Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
-                            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                                ? NSColor.systemTeal.withAlphaComponent(0.85)
-                                : NSColor.systemBlue.withAlphaComponent(0.75)
-                        })))
+                        .foregroundStyle(Palette.translation)
                         .italic(translationOnly ? false : true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                isCurrent
-                    ? Color.accentColor.opacity(0.18)
-                    : Color.clear
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .padding(.horizontal, Metrics.md)
+            .padding(.vertical, Metrics.sm)
         }
-        .contentShape(Rectangle())
+        .background {
+            ZStack {
+                Corner.rect(Corner.small)
+                    .fill(hovering && !isCurrent ? Ink.hover : .clear)
+                if isCurrent {
+                    Corner.rect(Corner.small)
+                        .fill(Ink.soft(Color.accentColor, 0.10))
+                        .matchedGeometryEffect(id: "transcriptCursor", in: cursorNamespace)
+                }
+            }
+        }
+        .contentShape(Corner.rect(Corner.small))
+        .onHover { hovering = $0 }
+        .motionAnimation(Motion.standard(0.18), value: hovering)
     }
 
     private func highlightedText(_ text: String) -> Text {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return Text(text) }
 
-        // Search the original string case-insensitively. Computing ranges on a
-        // lowercased() copy and slicing `text` with them crashes when lowercasing
-        // changes the string's length (e.g. "İ" becomes "i" + combining dot).
+        // 在原字符串上做不区分大小写搜索。lowercased() 副本上算 range 再回切
+        // 会崩（如 "İ" 小写后长度变化：i + 组合点）。
         var ranges: [Range<String.Index>] = []
         var searchStart = text.startIndex
         while searchStart < text.endIndex,
@@ -733,8 +926,9 @@ struct SegmentRow: View {
             let isActive = highlightedMatchIndices.contains(matchIdx)
             let attr = AttributedString(text[range])
             var container = AttributeContainer()
-            container.backgroundColor = isActive ? .orange : .yellow.opacity(0.6)
-            container.foregroundColor = .black
+            container.backgroundColor = isActive
+                ? Color.orange.opacity(0.85)
+                : Color.yellow.opacity(0.35)
             let styledMatch = Text(attr.mergingAttributes(container))
             result = result + styledMatch
             currentPos = range.upperBound
@@ -752,7 +946,7 @@ struct SegmentRow: View {
     }
 }
 
-// MARK: - Search Bar Content
+// MARK: - 搜索条
 
 struct SearchBarContent: View {
     @Binding var searchQuery: String
@@ -763,7 +957,7 @@ struct SearchBarContent: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Metrics.md) {
             searchField
             if !searchQuery.isEmpty {
                 matchCounter
@@ -771,46 +965,42 @@ struct SearchBarContent: View {
             }
             dismissButton
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var searchField: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Metrics.sm) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.caption)
+                .font(.system(size: 11))
+                .foregroundStyle(Ink.secondary)
             TextField("在转录中查找…", text: $searchQuery)
                 .textFieldStyle(.plain)
-                .font(.callout)
+                .font(Type.text(Type.caption))
                 .focused(isSearchFieldFocused)
-                .onSubmit {
-                    onNavigate(true)
-                }
+                .onSubmit { onNavigate(true) }
             if !searchQuery.isEmpty {
                 Button {
                     searchQuery = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Ink.secondary)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, Metrics.md)
         .padding(.vertical, 5)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .background(Corner.rect(Corner.small).fill(Ink.subtle))
+        .overlay(Corner.rect(Corner.small).strokeBorder(Ink.hairline, lineWidth: 0.5))
     }
 
     private var matchCounter: some View {
         let displayIndex = totalMatches > 0 ? min(currentMatchIndex + 1, totalMatches) : 0
         return Text("\(displayIndex)/\(totalMatches)")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
+            .font(Type.mono(Type.micro, weight: .medium))
+            .foregroundStyle(Ink.secondary)
+            .contentTransition(.numericText())
+            .animation(Motion.anim(Motion.standard(0.2)), value: currentMatchIndex)
             .frame(minWidth: 40)
     }
 
@@ -818,20 +1008,16 @@ struct SearchBarContent: View {
         HStack(spacing: 2) {
             Button { onNavigate(false) } label: {
                 Image(systemName: "chevron.up")
-                    .font(.body.bold())
-                    .frame(width: 28, height: 24)
-                    .contentShape(Rectangle())
+                    .font(.system(size: 10, weight: .semibold))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GhostButtonStyle(size: 24))
             .disabled(totalMatches == 0)
 
             Button { onNavigate(true) } label: {
                 Image(systemName: "chevron.down")
-                    .font(.body.bold())
-                    .frame(width: 28, height: 24)
-                    .contentShape(Rectangle())
+                    .font(.system(size: 10, weight: .semibold))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GhostButtonStyle(size: 24))
             .disabled(totalMatches == 0)
         }
     }
@@ -839,8 +1025,25 @@ struct SearchBarContent: View {
     private var dismissButton: some View {
         Button(action: onDismiss) {
             Text("完成")
-                .font(.callout)
+                .font(Type.text(Type.caption))
         }
         .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
+    }
+}
+
+// MARK: - 工具
+
+extension Double {
+    /// 3661.2 → "1:01:01"；96.5 → "1:36"（徽章用）。
+    var badgeString: String {
+        guard isFinite, !isNaN, self >= 0 else { return "--:--" }
+        let total = Int(self)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
     }
 }

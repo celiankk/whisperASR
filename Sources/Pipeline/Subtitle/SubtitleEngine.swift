@@ -150,6 +150,34 @@ final class SubtitleHistoryManager {
         defer { lock.unlock() }
         return buffer.items
     }
+
+    /// 把本会话已翻译的句子按「原文」对齐到给定分段，供落库/崩溃恢复使用。
+    ///
+    /// 背景：`AppState.liveTranslatedSegments` 全项目没有任何写入点（恒为空数组），
+    /// 但录制落库（`AppState.finishRecording`）与崩溃恢复快照
+    /// （`ASRManager.autoSaveLiveTranscription`）都读它 —— 结果是用户录完一段
+    /// 带双语字幕的会议，打开历史条目时译文全部丢失、`translationLanguage`
+    /// 恒为 nil。实时译文实际由本管理器在每句结束时收口（含原文/译文/语言），
+    /// 因此在这里按原文回填。
+    ///
+    /// - Returns: 与 `segments` 等长的译文数组（未命中的位置为空串）；
+    ///   本会话没有任何可用译文、或全部段落都没命中时返回空数组
+    ///   （调用方据此判定 `translationLanguage`，避免出现全空的译文列）。
+    func alignedTranslations(for segments: [TranscriptionSegment]) -> [String] {
+        let entries = recent
+        guard !entries.isEmpty else { return [] }
+        var byText: [String: String] = [:]
+        for entry in entries {
+            guard let translation = entry.translation, !translation.isEmpty else { continue }
+            byText[entry.original] = translation
+        }
+        guard !byText.isEmpty else { return [] }
+        let aligned = segments.map {
+            byText[$0.text.trimmingCharacters(in: .whitespacesAndNewlines)] ?? ""
+        }
+        // 一个都没命中：视为「本会话无译文」，而不是给出一列空白。
+        return aligned.contains(where: { !$0.isEmpty }) ? aligned : []
+    }
 }
 
 // MARK: - 性能监控

@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Observation
 import QuartzCore
+import Combine
 
 // MARK: - 无边框、非激活浮层面板
 //
@@ -119,10 +120,11 @@ final class FloatingLetterOverlayController: NSObject {
     private var localClickMonitor: Any?
     private var globalClickMonitor: Any?
     private var hoverPollTask: Task<Void, Never>?
-    private var resizeObserver: NSObjectProtocol?
-    private var moveObserver: NSObjectProtocol?
     private var liveResizeEndObserver: NSObjectProtocol?
     private var observationTask: Task<Void, Never>?
+    /// 窗口移动/缩放节流管道（Combine）：didResize + didMove 合并 →
+    /// removeDuplicates → debounce(50ms, RunLoop.main) → 单次收口。
+    private var frameCancellables = Set<AnyCancellable>()
     /// 窗口状态持久化键（窗口尺寸/原点）。
     private enum FrameKeys {
         static let width = "subtitleWindowWidth"
@@ -197,6 +199,8 @@ final class FloatingLetterOverlayController: NSObject {
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
         // 原生 live-resize 结束：一次性落盘窗口帧 + 锁尺寸签名。
+        // （与 Combine 节流管道互补：拖拽进行中节流收口被 inLiveResize
+        // 守卫跳过，结束瞬间由本通知立即收口，拖拽手感不受 50ms 延迟。）
         liveResizeEndObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didEndLiveResizeNotification,
             object: panel,
@@ -205,41 +209,38 @@ final class FloatingLetterOverlayController: NSObject {
             Task { @MainActor in self?.handleNativeResizeEnded() }
         }
 
-        // 窗口移动/缩放统一走 windowFrameChanged（单向流：Window → 状态 → UI）。
-        // 高频通知（didResize 跟随原生 resize 每帧触发）通过 frameSyncBox 合并：
-        // 任意时刻最多只有一个排队中的同步任务，不随事件数产生 Task 风暴。
-        resizeObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: panel,
-            queue: .main
-        ) { [weak self] _ in
-            self?.requestFrameSync()
-        }
-        moveObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification,
-            object: panel,
-            queue: .main
-        ) { [weak self] _ in
-            self?.requestFrameSync()
-        }
+        // 窗口移动/缩放统一走 Combine 节流管道（单向流：Window → 状态 → UI）。
+        // didResize 跟随原生 resize 每帧触发、didMove 跟随拖拽每帧触发——
+        // 两路合并后：
+        // 1. removeDuplicates(0.5pt 容差)：亚像素抖动/重复帧直接丢弃；
+        // 2. debounce(50ms, RunLoop.main)：高频事件流合并为「静默 50ms 后
+        //    一次收口」，布局同步（容器镜像）与持久化写入（UserDefaults）
+        //    在同一个 handler 里完成，不再各自被事件频率驱动。
+        // live-resize 期间 handler 内有 inLiveResize 守卫跳过收口，
+        // 最终落盘由 didEndLiveResize 立即完成（见下）。
+        let resizeEvents = NotificationCenter.default.publisher(
+            for: NSWindow.didResizeNotification, object: panel)
+        let moveEvents = NotificationCenter.default.publisher(
+            for: NSWindow.didMoveNotification, object: panel)
+
+        resizeEvents
+            .merge(with: moveEvents)
+            .compactMap { ($0.object as? NSWindow)?.frame }
+            .removeDuplicates(by: Self.framesAlmostEqual)
+            .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.handleSettledWindowFrame() }
+            }
+            .store(in: &frameCancellables)
     }
 
-    /// 帧同步合并盒：通知闭包（非隔离上下文）只翻转标志位，
-    /// 真正的工作最多排队一个 MainActor 任务。
-    private final class FrameSyncBox: @unchecked Sendable {
-        var pending = false
-    }
-
-    private nonisolated let frameSyncBox = FrameSyncBox()
-
-    private nonisolated func requestFrameSync() {
-        guard !frameSyncBox.pending else { return }
-        frameSyncBox.pending = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.frameSyncBox.pending = false
-            self.windowFrameChanged()
-        }
+    /// 帧近似相等（0.5pt 容差，与 saveWindowFrame 的去抖阈值一致）：
+    /// removeDuplicates 的比较器——亚像素抖动不产生新事件。
+    private static func framesAlmostEqual(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.width - b.width) < 0.5
+            && abs(a.height - b.height) < 0.5
+            && abs(a.origin.x - b.origin.x) < 0.5
+            && abs(a.origin.y - b.origin.y) < 0.5
     }
 
     // MARK: - 展示 / 关闭
@@ -566,23 +567,7 @@ final class FloatingLetterOverlayController: NSObject {
         passthroughControlsHideTask?.cancel()
     }
 
-    // MARK: - 淡入淡出
-
-    /// 淡出隐藏：5 秒无操作后调用。
-    private func fadeOutAndHide() {
-        guard panel.isVisible, !isHidden else { return }
-        isHidden = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = FloatingLetterMetrics.fadeDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            self.panel.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.isHidden else { return }
-                self.panel.orderOut(nil)
-            }
-        }
-    }
+    // MARK: - 淡入
 
     /// 淡入显示：鼠标移入/点击时调用。
     private func showPanel() {
@@ -623,7 +608,11 @@ final class FloatingLetterOverlayController: NSObject {
                 _ = self.viewModel?.isPinned
                 _ = self.viewModel?.isCompact
                 _ = self.viewModel?.maxLines
+                // requiredSubtitleHeight 是 subtitleContainerHeight 的镜像；
+                // 宽度没有镜像属性，必须单独读——否则设置页只改宽度时
+                // 观察不触发，浮层尺寸不跟随（见 sizeSignature 注释）。
                 _ = self.viewModel?.requiredSubtitleHeight
+                _ = self.viewModel?.subtitleContainerWidth
                 _ = self.viewModel?.controlVisibility
                 _ = self.viewModel?.mousePassthrough
             } onChange: {
@@ -637,15 +626,25 @@ final class FloatingLetterOverlayController: NSObject {
         applyObservedWindowState()
     }
 
-    /// 尺寸签名：只有模式切换字段才允许驱动窗口尺寸变化。
-    /// 不含 requiredSubtitleHeight（= subtitleContainerHeight 镜像）——
-    /// 镜像被用户 resize 回写时驱动 setFrame 是双向回写打架的另一半；
-    /// 窗口尺寸的事实来源是窗口本身（live-resize）+ 模式切换（compact/
-    /// maxLines）。
+    /// 尺寸签名：驱动窗口尺寸变化的字段。
+    ///
+    /// 含容器宽/高（= 设置页「字幕容器尺寸」滑杆的镜像）：不含它时，用户
+    /// 在设置里拖动容器尺寸对已打开的浮层完全无效——不触发观察、不调
+    /// applyPanelSize，且下一次手动拖窗的 syncContainerFromWindowFrame
+    /// 会把窗口尺寸**写回设置**，把用户刚调的值覆盖掉（设置实际只写不读）。
+    ///
+    /// 同时含 isCompact / maxLines（模式切换也要改窗口）。
+    ///
+    /// 双向回写打架的防护不靠"排除字段"，而靠 syncContainerFromWindowFrame
+    /// 写完镜像后立即重锁本签名（见该方法）：窗口 resize 回写 → 签名不变
+    /// → 不 setFrame；设置变更 → 签名变 → setFrame。两条路径由"谁改的"
+    /// 决定，而不是由字段是否参与签名决定。
     private func sizeSignature(for viewModel: FloatingLetterViewModel) -> Int {
         var hasher = Hasher()
         hasher.combine(viewModel.isCompact)
         hasher.combine(viewModel.maxLines)
+        hasher.combine(viewModel.subtitleContainerWidth)
+        hasher.combine(viewModel.requiredSubtitleHeight)
         return hasher.finalize()
     }
 
@@ -712,13 +711,14 @@ final class FloatingLetterOverlayController: NSObject {
         AppLogger.shared.log(.window, "Window mode=\(windowManager.mode) passthrough=\(viewModel.mousePassthrough)")
     }
 
-    /// 窗口移动/缩放回调：更新 currentFrame 并保存。
+    /// 节流收口（Combine debounce 到达）：更新 currentFrame 并保存。
     /// live-resize 拖拽中【不同步容器】：每帧 syncContainer 会触发
     /// onContainerResized → appState 写 UserDefaults + @Observable 通知
     /// → binder observation → pushState 全量重跑 → VM 容器属性写入 →
     /// SwiftUI 内容 invalidate——整条链每帧跑一遍就是「调整难受」。
-    /// 容器与帧的落盘统一到 didEndLiveResize 一次性完成。
-    private func windowFrameChanged() {
+    /// 容器与帧的落盘统一到 didEndLiveResize 一次性完成（拖拽中本方法
+    /// 只刷新 lastKnownFrame / windowManager 镜像）。
+    private func handleSettledWindowFrame() {
         syncLastKnownFrame()
         windowManager.markFrame(panel.frame)
         if !panel.inLiveResize {
@@ -742,11 +742,18 @@ final class FloatingLetterOverlayController: NSObject {
     /// 把当前窗口内容尺寸映射为容器配置（容器始终填满内容区）。
     /// 上限放宽到 4000/2160：窗口是尺寸的唯一事实来源，容器配置只做镜像，
     /// 不再把用户拖出的合法大窗口截断到设置滑杆的 UI 范围。
+    ///
+    /// 写完镜像后**重锁尺寸签名**：容器宽高现在参与 sizeSignature（设置页
+    /// 滑杆要能驱动窗口），若不重锁，用户拖窗 → 这里回写镜像 → 签名变化
+    /// → applyObservedWindowState 再 setFrame，窗口被两股力拉扯（回弹）。
+    /// 重锁后：resize 回写不触发 setFrame（窗口已是用户要的尺寸），
+    /// 而设置页改值走的是另一条路径（pushState 写 VM → 签名变化 → 应用）。
     private func syncContainerFromWindowFrame() {
         guard let viewModel else { return }
         let width = max(400, min(panel.frame.width - 48, 4000))
         let height = max(100, min(panel.frame.height - 72, 2160))
         viewModel.adjustSubtitleContainer(width: width, height: height)
+        lastAppliedSizeSignature = sizeSignature(for: viewModel)
     }
 
     /// 背景按下：原生窗口拖动（Finder 式，窗口整体跟随指针）。

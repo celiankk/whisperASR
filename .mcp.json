@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "asr-workbench": {
+      "command": "${ASR_WORKBENCH_PYTHON:-python3}",
+      "args": [
+        "${ASR_WORKBENCH_DIR:-.}/main.py",
+        "mcp",
+        "--no-web"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    "sonic-asr": {
+      "command": "${ASR_WORKBENCH_PYTHON:-python3}",
+      "args": [
+        "${CLAUDE_PROJECT_DIR:-.}/Scripts/sonic_asr_mcp.py"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

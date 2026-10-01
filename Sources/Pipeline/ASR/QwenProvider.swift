@@ -41,7 +41,7 @@ final class QwenProvider: @unchecked Sendable, ASRProvider {
         stateLock.withLock { loadedModelPath = nil }
     }
 
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
         try await backend.ensureLoaded(modelURL: liveModelURL())
         return try await backend.transcribe(samples: samples)
     }

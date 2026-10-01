@@ -11,10 +11,19 @@ Models/
 .hf-model/
 
 # Intermediate build artifacts
+# Frameworks/headers/（whisper 侧）与 Frameworks/transcribe-headers/（transcribe 侧）
+# 都只是喂给 xcframework 组装的暂存头文件目录，真身在
+# Frameworks/*.xcframework/macos-arm64/Headers/ 内；入库会形成双份事实源。
+# 脚本收尾会自行清理（见 Scripts/build_whisper_lib.sh / build_transcribe_lib.sh）。
 Frameworks/headers/
+Frameworks/transcribe-headers/
 
 # App bundle (build artifact)
 *.app/
+
+# Disk images (release artifacts — attach to a GitHub release, don't commit)
+*.dmg
+*.dmg.sha256
 
 # macOS
 .DS_Store
@@ -26,4 +35,5 @@ __pycache__/
 
 # WorkBuddy 本地工作区记忆（机器本地，不入库）
 .workbuddy/
+.workbuddy-ai/
 .transcribe.cpp/

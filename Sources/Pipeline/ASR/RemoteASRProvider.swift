@@ -17,6 +17,11 @@ final class RemoteASRProvider: @unchecked Sendable, ASRProvider {
     private let audioBuffer = OnlineASRBuffer()
     /// 结果合并（碎片 → 完整句）。
     private let resultAccumulator = OnlineResultAccumulator()
+    /// 喂水水位线：与 OnlineASRProvider 同理——上层每轮重发整个未封口
+    /// tail，而本 Provider 的句子缓冲跨调用累积，不去重会重复识别同一段
+    /// 音频（字幕出现重复词）。
+    private var feedWaterline = StreamingFeedWaterline()
+    private let waterlineLock = NSLock()
 
     var engine: ASRProviderEngine { .remote }
 
@@ -32,18 +37,45 @@ final class RemoteASRProvider: @unchecked Sendable, ASRProvider {
 
     func unloadModel() async {
         await requestQueue.cancelPending()
+        // 清空跨会话累积态：上一段录音末尾不足发送阈值的音频（以及
+        // 未到句末的累积文本）若不清理，会作为下一次录音的第一次请求
+        // 发出——新录制的第一句字幕混入上次的话。
+        audioBuffer.clear()
+        resultAccumulator.clear()
+        waterlineLock.withLock { feedWaterline.reset() }
         RemoteASRConfig.activateAsActiveSource(false)
     }
 
-    /// 实时分块转录：句子缓冲达标后发送（与在线同策略——远程端点
-    /// 每次请求有网络往返，碎片短音频浪费往返且服务端并发受限）。
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+    /// 实时分块转录：先按水位线剔除已缓冲过的重复音频，再走句子缓冲
+    /// （达标才发送——远程端点每次请求有网络往返，碎片短音频浪费往返）。
+    /// 输入零拷贝切片（P0 链路）。
+    func transcribeChunk(samples: ArraySlice<Float>,
+                         absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
+        let newSamples: ArraySlice<Float>
+        if let range = absoluteRange {
+            let start = waterlineLock.withLock { feedWaterline.unfedStart(in: range) }
+            guard let start else {
+                // 区间已全部喂过：本轮无新产出，属「聚合中」而非空结果。
+                return TranscriptionResult(text: "", segments: [], isAggregationPending: true)
+            }
+            newSamples = samples.dropFirst(start)
+        } else {
+            waterlineLock.withLock { feedWaterline.markUntrackedFeed() }
+            newSamples = samples
+        }
+        return try await transcribeChunk(samples: newSamples)
+    }
+
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
         guard !samples.isEmpty else {
-            return TranscriptionResult(text: "", segments: [])
+            return TranscriptionResult(text: "", segments: [], isAggregationPending: true)
         }
         audioBuffer.append(samples)
         guard audioBuffer.shouldSend() else {
-            return TranscriptionResult(text: "", segments: [])
+            // 未达标 = 音频仍在缓冲累积（远程端点每次请求有网络往返，
+            // 碎片短音频不发送）。标记 isAggregationPending，调度层不得
+            // 据此清掉屏幕上正在显示的当前句。
+            return TranscriptionResult(text: "", segments: [], isAggregationPending: true)
         }
         let chunk = audioBuffer.takeAll()
 

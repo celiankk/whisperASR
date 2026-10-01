@@ -16,11 +16,32 @@ import Translation
 // AppleTranslationDebug：Session 状态 / 语言状态 / 翻译耗时 / 错误信息。
 
 final class AppleTranslationEngine: @unchecked Sendable {
-    private(set) var state: AppleTranslationEngineState = .idle
+    /// 状态与调试统计的并发保护。
+    ///
+    /// 本引擎被 TranslationManager 的 static Apple provider 共享（同一个
+    /// 实例服务所有调用），而实时整句翻译并发上限为 8 —— 多个 task 会同时
+    /// 读改写同一份可变状态（`state` / `debug`）。`@unchecked Sendable` 只
+    /// 声明了意图，不加锁就是真实数据竞争，故统一走 NSLock 快照读写。
+    private let lock = NSLock()
+    private var _state: AppleTranslationEngineState = .idle
+    private var _debug = AppleTranslationDebug()
+
+    private(set) var state: AppleTranslationEngineState {
+        get { lock.withLock { _state } }
+        set { lock.withLock { _state = newValue } }
+    }
 
     // MARK: - 调试统计（AppleTranslationDebug）
 
-    private(set) var debug = AppleTranslationDebug()
+    private(set) var debug: AppleTranslationDebug {
+        get { lock.withLock { _debug } }
+        set { lock.withLock { _debug = newValue } }
+    }
+
+    /// 原子读改写调试统计（闭包内完成，避免「读出-修改-写回」之间丢更新）。
+    private func mutateDebug(_ body: (inout AppleTranslationDebug) -> Void) {
+        lock.withLock { body(&_debug) }
+    }
 
     /// 系统翻译框架是否可用（macOS 15+ 框架存在 + 系统支持）。
     var isSystemSupported: Bool {
@@ -57,8 +78,10 @@ final class AppleTranslationEngine: @unchecked Sendable {
         }
         state = .initializing
         let begin = Date()
-        debug.sessionCreated = true
-        debug.translateCount += 1
+        mutateDebug {
+            $0.sessionCreated = true
+            $0.translateCount += 1
+        }
         let target = Locale.Language(identifier: targetLanguage)
         // 源语言：显式指定优先，否则自动检测。
         let source: Locale.Language
@@ -68,7 +91,7 @@ final class AppleTranslationEngine: @unchecked Sendable {
             let detected = TranslationService.detectSourceLanguage(texts)
             source = Self.sourceLocale(for: detected)
         }
-        debug.languageStatus = source.minimalIdentifier
+        mutateDebug { $0.languageStatus = source.minimalIdentifier }
         let session = TranslationSession(installedSource: source, target: target)
         let requests = texts.map { TranslationSession.Request(sourceText: $0) }
         do {
@@ -90,7 +113,7 @@ final class AppleTranslationEngine: @unchecked Sendable {
                 return result
             } catch {
                 state = .error
-                debug.lastError = error.localizedDescription
+                mutateDebug { $0.lastError = error.localizedDescription }
                 AppLogger.shared.log(.translation, "AppleTranslationDebug: error \(error.localizedDescription) "
                     + "source=\(source.minimalIdentifier) target=\(target.minimalIdentifier)")
                 throw TranslationError.apiFailed(error.localizedDescription)
@@ -107,10 +130,13 @@ final class AppleTranslationEngine: @unchecked Sendable {
                                     begin: Date) async throws -> TranslationResult {
         let responses = try await session.translations(from: requests)
         let translated = responses.map(\.targetText)
-        debug.lastTranslateDuration = Date().timeIntervalSince(begin)
-        debug.lastError = nil
+        let duration = Date().timeIntervalSince(begin)
+        mutateDebug {
+            $0.lastTranslateDuration = duration
+            $0.lastError = nil
+        }
         AppLogger.shared.log(.translation, "AppleTranslationDebug: translate \(translated.count) lines "
-            + "in \(Int(debug.lastTranslateDuration * 1000))ms source=\(source.minimalIdentifier) "
+            + "in \(Int(duration * 1000))ms source=\(source.minimalIdentifier) "
             + "target=\(target.minimalIdentifier)")
         return TranslationResult(
             texts: translated,

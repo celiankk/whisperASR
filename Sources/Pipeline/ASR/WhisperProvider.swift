@@ -4,9 +4,15 @@ import CWhisper
 /// WhisperProvider：whisper.cpp（CWhisper 桥接）适配层。
 ///
 /// 包装 CWhisper 的全部会话状态与 1.4 TranscriptionService whisper 分支逻辑
-/// （主/实时双上下文、串行队列、进度回调、语言检测），对外暴露统一
+/// （主/实时双上下文、串行执行、进度回调、语言检测），对外暴露统一
 /// ASRProvider 接口。内部推理代码未改动，仅迁移位置。
-final class WhisperProvider: @unchecked Sendable, ASRProvider {
+///
+/// P0 actor 化：原 `DispatchQueue` 串行 + `@unchecked Sendable` 手工同步
+/// 全部由 actor 隔离取代——ctx/loadedPath 状态与 whisper_full 串行化是
+/// 同一个执行域，无需队列跳板与 continuation 包装。
+/// 注意：whisper_full 是长阻塞调用，会占住本 actor 的协作线程数秒——
+/// 与旧实现占用专用串行队列线程等价（实时循环本就串行等待）。
+actor WhisperProvider: ASRProvider {
     private var ctx: OpaquePointer?
     private var loadedModelPath: String?
     /// Dedicated context for the live-transcription model, loaded only when the
@@ -15,10 +21,9 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
     /// interleaving on the queue don't reload models on every alternation.
     private var liveCtx: OpaquePointer?
     private var loadedLiveModelPath: String?
-    /// Serial queue to ensure only one whisper_full() runs at a time (ctx is not thread-safe).
-    private let whisperQueue = DispatchQueue(label: "com.whisperasr.whisper", qos: .userInitiated)
 
-    var engine: ASRProviderEngine { .whisper }
+    /// 协议要求 `{ get }`：actor 不可变 let（Sendable 类型）天然 nonisolated。
+    nonisolated let engine: ASRProviderEngine = .whisper
 
     deinit {
         if let ctx { whisper_free(ctx) }
@@ -30,74 +35,49 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
     /// 预加载实时转录模型（录制开始时调用，避免首个分块等待模型加载）。
     /// 等待队列中的转录完成后加载。
     func prepare() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            whisperQueue.async {
-                do {
-                    _ = try self.ensureLiveModelLoaded()
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        _ = try ensureLiveModelLoaded()
     }
 
     /// 显式加载主转录模型。幂等。
     func loadModel() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            whisperQueue.async {
-                do {
-                    _ = try self.ensureModelLoaded()
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        _ = try ensureModelLoaded()
     }
 
-    /// 释放主上下文。Serialize with any in-flight whisper_full; if the process
-    /// exits before this runs the OS reclaims the context anyway. Frees only the
-    /// main context — a live session's dedicated context stays loaded.
+    /// 释放主上下文。Serialize with any in-flight whisper_full（actor 隔离
+    /// 保证）；if the process exits before this runs the OS reclaims the
+    /// context anyway. Frees only the main context — a live session's
+    /// dedicated context stays loaded.
     func unloadModel() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            whisperQueue.async {
-                if let ctx = self.ctx {
-                    whisper_free(ctx)
-                    self.ctx = nil
-                    self.loadedModelPath = nil
-                }
-                continuation.resume()
-            }
+        if let existing = ctx {
+            whisper_free(existing)
+            ctx = nil
+            loadedModelPath = nil
         }
     }
 
     /// 释放实时会话的专用上下文（录音结束时调用）。仅由 TranscriptionService
     /// 在结束实时会话时调用；不在 ASRProvider 协议内。
-    func unloadLiveModel() {
-        whisperQueue.async {
-            if let liveCtx = self.liveCtx {
-                whisper_free(liveCtx)
-                self.liveCtx = nil
-                self.loadedLiveModelPath = nil
-            }
+    /// 同步签名保持不变（调用方在非 async 上下文），经 Task 跳入 actor。
+    nonisolated func unloadLiveModel() {
+        Task { await self.unloadLiveContext() }
+    }
+
+    private func unloadLiveContext() {
+        if let existing = liveCtx {
+            whisper_free(existing)
+            liveCtx = nil
+            loadedLiveModelPath = nil
         }
     }
 
-    /// 状态快照在 whisper 串行队列上读取，保证与模型生命周期一致。
+    /// 状态快照在 actor 隔离内读取，保证与模型生命周期一致。
     func status() async -> ASRProviderStatus {
-        await withCheckedContinuation { (continuation: CheckedContinuation<ASRProviderStatus, Never>) in
-            whisperQueue.async {
-                let status: ASRProviderStatus
-                if let loadedModelPath = self.loadedModelPath {
-                    status = .loaded(path: loadedModelPath)
-                } else if let loadedLiveModelPath = self.loadedLiveModelPath {
-                    status = .loaded(path: loadedLiveModelPath)
-                } else {
-                    status = .idle
-                }
-                continuation.resume(returning: status)
-            }
+        if let loadedModelPath {
+            return .loaded(path: loadedModelPath)
+        } else if let loadedLiveModelPath {
+            return .loaded(path: loadedLiveModelPath)
+        } else {
+            return .idle
         }
     }
 
@@ -111,150 +91,78 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
                         onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
         let samples = try await AudioLoader.loadSamples(url: fileURL)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            self.whisperQueue.async {
-                let ctx: OpaquePointer
-                do {
-                    ctx = try self.ensureModelLoaded()
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
+        let ctx: OpaquePointer = try ensureModelLoaded()
 
-                var (params, langCStr, promptCStr) = self.makeBaseParams(language: language, translate: translate)
-                defer {
-                    free(langCStr)
-                    if let promptCStr { free(promptCStr) }
-                }
+        var (params, langCStr, promptCStr) = makeBaseParams(language: language, translate: translate)
+        defer {
+            free(langCStr)
+            if let promptCStr { free(promptCStr) }
+        }
 
-                // Progress callback
-                let progressPtr = Unmanaged.passRetained(ProgressBox(handler: onProgress)).toOpaque()
-                params.progress_callback_user_data = progressPtr
-                params.progress_callback = { (_: OpaquePointer?, _: OpaquePointer?, progress: Int32, userData: UnsafeMutableRawPointer?) in
-                    guard let userData else { return }
-                    let box = Unmanaged<ProgressBox>.fromOpaque(userData).takeUnretainedValue()
-                    let value = Double(progress) / 100.0
-                    DispatchQueue.main.async {
-                        box.handler(value)
-                    }
-                }
-
-                // Run transcription（输入桶化：0.5s 量子对齐稳定推理形状）。
-                let input = InputBucketing.padded(samples)
-                let result = input.withUnsafeBufferPointer { buf in
-                    whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
-                }
-
-                // Release progress box
-                Unmanaged<ProgressBox>.fromOpaque(progressPtr).release()
-
-                if result != 0 {
-                    continuation.resume(throwing: TranscriptionError.processFailed("whisper_full returned error \(result)"))
-                    return
-                }
-
-                // Extract segments
-                let nSegments = whisper_full_n_segments(ctx)
-                var segments: [TranscriptionSegment] = []
-                var fullText = ""
-
-                for i in 0..<nSegments {
-                    let t0 = whisper_full_get_segment_t0(ctx, i)  // centiseconds (10ms units)
-                    let t1 = whisper_full_get_segment_t1(ctx, i)
-                    let text: String
-                    if let cStr = whisper_full_get_segment_text(ctx, i) {
-                        text = String(cString: cStr)
-                    } else {
-                        text = ""
-                    }
-
-                    segments.append(TranscriptionSegment(
-                        start: Double(t0) / 100.0,  // convert centiseconds → seconds
-                        end: Double(t1) / 100.0,
-                        text: text
-                    ))
-                    fullText += text
-                }
-
-                // Whisper's auto-detected language for the audio.
-                var detected: String? = nil
-                let langId = whisper_full_lang_id(ctx)
-                if langId >= 0, let langPtr = whisper_lang_str(langId) {
-                    detected = String(cString: langPtr)
-                }
-
-                continuation.resume(returning: TranscriptionResult(
-                    text: fullText,
-                    segments: segments,
-                    detectedLanguage: detected
-                ))
+        // Progress callback
+        let progressPtr = Unmanaged.passRetained(ProgressBox(handler: onProgress)).toOpaque()
+        params.progress_callback_user_data = progressPtr
+        params.progress_callback = { (_: OpaquePointer?, _: OpaquePointer?, progress: Int32, userData: UnsafeMutableRawPointer?) in
+            guard let userData else { return }
+            let box = Unmanaged<ProgressBox>.fromOpaque(userData).takeUnretainedValue()
+            let value = Double(progress) / 100.0
+            DispatchQueue.main.async {
+                box.handler(value)
             }
         }
+
+        // Run transcription（输入桶化：0.5s 量子对齐稳定推理形状）。
+        let input = InputBucketing.padded(samples)
+        let result = input.withUnsafeBufferPointer { buf in
+            whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
+        }
+
+        // Release progress box
+        Unmanaged<ProgressBox>.fromOpaque(progressPtr).release()
+
+        if result != 0 {
+            throw TranscriptionError.processFailed("whisper_full returned error \(result)")
+        }
+
+        return Self.extractResult(ctx: ctx, detectedLanguage: true)
     }
 
     // MARK: - 分块转录（实时）
 
+    /// 协议单参重载：转发至带绝对区间版本（无状态引擎忽略区间）。
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
+        try await transcribeChunk(samples: samples, absoluteRange: nil)
+    }
+
     /// Transcribe raw 16kHz mono PCM Float32 samples directly (used for live
     /// transcription during recording). Uses the live model selection (falling
-    /// back to the main model) and runs on a background queue.
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
-        return try await withCheckedThrowingContinuation { continuation in
-            self.whisperQueue.async {
-                let ctx: OpaquePointer
-                do {
-                    ctx = try self.ensureLiveModelLoaded()
-                } catch {
-                    continuation.resume(throwing: error)
-                    return
-                }
+    /// back to the main model) and runs serialized on the actor.
+    /// 输入是零拷贝切片（P0 链路）；withUnsafeBufferPointer 对切片给出
+    /// 指向其存储区间的指针，直接喂 whisper_full，不经 Array 构造。
+    /// `absoluteRange` is accepted for protocol conformance but ignored by the
+    /// stateless whisper engine (each chunk is independently transcribed).
+    func transcribeChunk(samples: ArraySlice<Float>, absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
+        let ctx: OpaquePointer = try ensureLiveModelLoaded()
 
-                let liveThreads = min(4, max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 4)))
-                // 实时识别语言：设置页「识别语言」（nil = 自动检测）。
-                let (params, langCStr, promptCStr) = self.makeBaseParams(
-                    threadCount: liveThreads,
-                    language: ConfigurationManager.shared.asr.effectiveASRLanguage)
-                defer {
-                    free(langCStr)
-                    if let promptCStr { free(promptCStr) }
-                }
-
-                let result = samples.withUnsafeBufferPointer { buf in
-                    whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
-                }
-
-                if result != 0 {
-                    continuation.resume(throwing: TranscriptionError.processFailed("whisper_full returned error \(result)"))
-                    return
-                }
-
-                let nSegments = whisper_full_n_segments(ctx)
-                var segments: [TranscriptionSegment] = []
-                var fullText = ""
-
-                for i in 0..<nSegments {
-                    let t0 = whisper_full_get_segment_t0(ctx, i)
-                    let t1 = whisper_full_get_segment_t1(ctx, i)
-                    let text: String
-                    if let cStr = whisper_full_get_segment_text(ctx, i) {
-                        text = String(cString: cStr)
-                    } else {
-                        text = ""
-                    }
-
-                    segments.append(TranscriptionSegment(
-                        start: Double(t0) / 100.0,
-                        end: Double(t1) / 100.0,
-                        text: text
-                    ))
-                    fullText += text
-                }
-
-                continuation.resume(returning: TranscriptionResult(
-                    text: fullText,
-                    segments: segments
-                ))
-            }
+        let liveThreads = min(4, max(1, Int32(ProcessInfo.processInfo.activeProcessorCount / 4)))
+        // 实时识别语言：设置页「识别语言」（nil = 自动检测）。
+        let (params, langCStr, promptCStr) = makeBaseParams(
+            threadCount: liveThreads,
+            language: ConfigurationManager.shared.asr.effectiveASRLanguage)
+        defer {
+            free(langCStr)
+            if let promptCStr { free(promptCStr) }
         }
+
+        let result = samples.withUnsafeBufferPointer { buf in
+            whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
+        }
+
+        if result != 0 {
+            throw TranscriptionError.processFailed("whisper_full returned error \(result)")
+        }
+
+        return Self.extractResult(ctx: ctx, detectedLanguage: false)
     }
 
     // MARK: - Params Configuration
@@ -302,12 +210,53 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
 
     // MARK: - Model Management
 
+    /// 读取 whisper 结果段（文件/分块共用；detectedLanguage 仅文件路径开）。
+    /// 纯 ctx 读取，无隔离态访问 → static。
+    private static func extractResult(ctx: OpaquePointer, detectedLanguage: Bool) -> TranscriptionResult {
+        let nSegments = whisper_full_n_segments(ctx)
+        var segments: [TranscriptionSegment] = []
+        var fullText = ""
+
+        for i in 0..<nSegments {
+            let t0 = whisper_full_get_segment_t0(ctx, i)  // centiseconds (10ms units)
+            let t1 = whisper_full_get_segment_t1(ctx, i)
+            let text: String
+            if let cStr = whisper_full_get_segment_text(ctx, i) {
+                text = String(cString: cStr)
+            } else {
+                text = ""
+            }
+
+            segments.append(TranscriptionSegment(
+                start: Double(t0) / 100.0,  // convert centiseconds → seconds
+                end: Double(t1) / 100.0,
+                text: text
+            ))
+            fullText += text
+        }
+
+        // Whisper's auto-detected language for the audio.
+        var detected: String? = nil
+        if detectedLanguage {
+            let langId = whisper_full_lang_id(ctx)
+            if langId >= 0, let langPtr = whisper_lang_str(langId) {
+                detected = String(cString: langPtr)
+            }
+        }
+
+        return TranscriptionResult(
+            text: fullText,
+            segments: segments,
+            detectedLanguage: detected
+        )
+    }
+
     /// Load (or re-load, when the resolved path changed) the model and return the context.
-    /// MUST run on `whisperQueue`: reloading frees the previous context, which would
-    /// crash a whisper_full running concurrently on the queue if done anywhere else.
+    /// Actor-isolated: reloading frees the previous context, which would crash a
+    /// whisper_full running concurrently if done anywhere else (旧实现靠
+    /// whisperQueue 串行保证，现由 actor 隔离取代).
     @discardableResult
     private func ensureModelLoaded() throws -> OpaquePointer {
-        dispatchPrecondition(condition: .onQueue(whisperQueue))
         let path = ModelPathResolver.resolveModelPath()
         guard FileManager.default.fileExists(atPath: path) else {
             throw TranscriptionError.modelNotFound(
@@ -330,9 +279,8 @@ final class WhisperProvider: @unchecked Sendable, ASRProvider {
 
     /// Live-model counterpart of `ensureModelLoaded()`. When the live selection
     /// resolves to the same file as the main model, the main context is shared
-    /// instead of loading the same weights twice. MUST run on `whisperQueue`.
+    /// instead of loading the same weights twice. Actor-isolated.
     private func ensureLiveModelLoaded() throws -> OpaquePointer {
-        dispatchPrecondition(condition: .onQueue(whisperQueue))
         let livePath = ModelPathResolver.resolveLiveModelPath()
         if livePath == ModelPathResolver.resolveModelPath() {
             // Drop a stale dedicated context (live selection changed mid-session).

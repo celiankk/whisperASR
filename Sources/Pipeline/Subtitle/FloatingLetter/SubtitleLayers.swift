@@ -125,11 +125,9 @@ struct SpeechEndpointDetector {
             }
         }
 
-        if !sentenceText.isEmpty {
-            sentenceText = trimmed
-        } else {
-            sentenceText = trimmed
-        }
+        // 本轮累积文本即当前句内容（首轮/后续均整段替换，上游保证 trimmed
+        // 是"截至当前轮的完整累积文本"）。
+        sentenceText = trimmed
 
         // 标点结束：多语言规则（SentenceRules 按脚本路由：
         // 。？！/./؟/।/։/።/；… + 小数与缩写保护）。
@@ -198,6 +196,12 @@ struct SpeechEndpointDetector {
 /// - 俄语：44 字符/行，只在空格、逗号处换行，禁止切断单词；
 /// - 中文：26 字/行，优先在标点（逗号等）后换行，无标点时按字硬切；
 /// - 超过 2 行时截断前端内容，只保留末尾两行。
+///
+/// 状态：**当前无可达生产调用点**——浮层渲染走 `SubtitleSentenceSplitter`
+/// （中文 30 / 英文 80 字，见 FloatingLetterViewModel.renderText）。本类型
+/// 保留是因为 SubtitleSplitterTests 的 13 个用例覆盖其断行规则，且
+/// `wrapAllLines` 是滚动渲染的备选实现；接线前请先确认与
+/// SubtitleSentenceSplitter 的取舍，避免两套断行规则并存。
 enum SubtitleSplitter {
     static let maxLines = 2
 
@@ -316,6 +320,45 @@ struct SubtitleSentenceSplitter {
             lines.append(line)
         }
         return lines
+    }
+}
+
+// MARK: - 新句判定（SubtitleSentenceTrigger）
+//
+// 「final 队列末段是否代表新说的一句」的纯逻辑判据。抽成无状态结构体
+// 便于单测（与 StreamingFeedWaterline / SentenceRules 同一路数）：
+//
+// 判据 = 「起点推进 or 文本变化」：
+// - 起点推进（段起点在录制时间轴上单调前移）= 用户真的又说了一句，
+//   即使文本与上一句完全相同（同一会话里重复同一句话）；
+// - 文本变化（起点未变）= Apple 的 final 修正/封口；
+// - 都不满足 = 静音轮询重复推送同一快照，不重复触发。
+//
+// 为什么不用「末段文本不同」单判据：上一句文本记录只在换会话时清空，
+// 重复说同一句时第二次文本相同 → 永久静音（既不显示也不翻译）。
+// 为什么不用「段数增长」：显示快照按 maxLiveSegments 环形裁剪，长会话
+// 段数会饱和，判据随之失效。
+struct SubtitleSentenceTrigger {
+    /// 上一次已处理段的起点（录制时间轴秒）。
+    private var lastStart: Double?
+    /// 上一次已处理段的文本。
+    private var lastText = ""
+
+    /// 判定并记录。
+    /// - Returns: true = 这是新说的一句，应对其触发显示/翻译。
+    mutating func shouldTrigger(text: String, start: Double) -> Bool {
+        let startAdvanced = lastStart.map { start > $0 } ?? true
+        let textChanged = text != lastText
+        guard startAdvanced || textChanged else { return false }
+        lastStart = start
+        lastText = text
+        return true
+    }
+
+    /// 换会话重置（新会话第一句不受上一会话末句影响）。
+    mutating func reset() {
+        lastStart = nil
+        lastText = ""
     }
 }
 

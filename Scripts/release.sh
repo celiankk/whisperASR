@@ -6,7 +6,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-APP_NAME="WhisperASR"
+# 品牌参数与 build_release.sh 同源默认值（两处必须一致，否则本脚本会找不到
+# 构建产物——改名后曾出现 APP_NAME 漂移）。可经环境变量覆盖。
+export APP_NAME="${APP_NAME:-SonicScribe}"
+export DISPLAY_NAME="${DISPLAY_NAME:-声记 SonicScribe}"
+export BUNDLE_ID="${BUNDLE_ID:-com.sonicscribe.app}"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 ZIP_PATH="$PROJECT_DIR/$APP_NAME.zip"
 CODESIGN_IDENTITY="Developer ID Application: MAO YUAN KAO (3WD42GF27D)"

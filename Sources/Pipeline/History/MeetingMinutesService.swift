@@ -164,22 +164,33 @@ enum MeetingMinutesService {
         let inputBudget = max(1_024, contextTokens - outputReserveTokens)
         let transcript = transcriptLines.joined(separator: "\n")
 
-        if estimatedTokens(transcript) <= inputBudget {
+        // 预算必须计入系统提示与用户指令：此前只比较 transcript 自身长度，
+        // 指令很长（自定义模板）时会静默超预算，请求被服务端截断或报错。
+        let instructionsTokens = estimatedTokens(instructions)
+        let minutesSystemTokens = estimatedTokens(minutesSystemPrompt)
+        let singlePassFixed = minutesSystemTokens + instructionsTokens
+            + estimatedTokens(transcriptLabel) + budgetSlackTokens
+        if estimatedTokens(transcript) + singlePassFixed <= inputBudget {
             await onProgress("Writing minutes…")
             return try await chat(
                 system: minutesSystemPrompt,
-                user: instructions + "\n\nTranscript:\n" + transcript)
+                user: instructions + transcriptLabel + transcript)
         }
 
         // Map: extract notes from each chunk.
-        let chunks = chunk(lines: transcriptLines, budget: inputBudget)
+        // 每个请求的可用预算 = 输入预算 − 该系统提示与固定标签开销。
+        let mapBudget = max(512, inputBudget - estimatedTokens(notesSystemPrompt(part: 1, of: 1))
+            - budgetSlackTokens)
+        let condenseBudget = max(512, inputBudget - estimatedTokens(condenseSystemPrompt)
+            - budgetSlackTokens)
+        let chunks = chunk(lines: transcriptLines, budget: mapBudget)
         var notes: [String] = []
         for (i, part) in chunks.enumerated() {
             try Task.checkCancellation()
             await onProgress("Summarizing part \(i + 1) of \(chunks.count)…")
             notes.append(try await chat(
                 system: notesSystemPrompt(part: i + 1, of: chunks.count),
-                user: part))
+                user: clipToBudget(part, budget: mapBudget)))
         }
 
         // Reduce hierarchically until the merged notes fit the budget.
@@ -187,24 +198,116 @@ enum MeetingMinutesService {
         while notes.count > 1, estimatedTokens(notes.joined(separator: "\n\n")) > inputBudget, rounds < 3 {
             try Task.checkCancellation()
             await onProgress("Condensing notes…")
-            let groups = chunk(lines: notes, budget: inputBudget)
+            let groups = chunk(lines: notes, budget: condenseBudget)
             var condensed: [String] = []
             for group in groups {
                 try Task.checkCancellation()
-                condensed.append(try await chat(system: condenseSystemPrompt, user: group))
+                // 单条 note 自身超预算时 chunk 只能整条成组（安全阀），
+                // 这里再按预算裁剪，避免 condense 请求本身超限。
+                condensed.append(try await chat(
+                    system: condenseSystemPrompt,
+                    user: clipToBudget(group, budget: condenseBudget)))
             }
             notes = condensed
             rounds += 1
+        }
+
+        // 预算校验（提交前的最后一道闸）：
+        // `rounds < 3` 是防死循环的硬闸，**不是**预算保证——超长会议可能在
+        // 闸后仍然超限。此前无条件提交全部 notes，必然超出上下文窗口
+        // （请求被截断/报错，用户只看到一次失败）。这里在预算内装配 notes：
+        // 超限则按每段配额截断（保留每段首尾——结论/行动项常出现在段尾），
+        // 连最小配额都装不下时抛可读错误。
+        let finalFixed = minutesSystemTokens + instructionsTokens
+            + estimatedTokens(finalPromptPreamble) + budgetSlackTokens
+        let notesBudget = inputBudget - finalFixed
+        guard let fitted = fitNotesToBudget(notes, budget: notesBudget) else {
+            throw MinutesError.transcriptTooLong(
+                estimatedNotesTokens: estimatedTokens(notes.joined(separator: "\n\n")) + finalFixed,
+                inputBudget: inputBudget)
+        }
+        if fitted.truncated {
+            AppLogger.shared.log(
+                .translation,
+                "MeetingMinutes: notes truncated to fit the \(inputBudget)-token input budget "
+                + "(notes budget \(notesBudget))")
         }
 
         try Task.checkCancellation()
         await onProgress("Writing minutes…")
         return try await chat(
             system: minutesSystemPrompt,
-            user: instructions
-                + "\n\nThe meeting transcript was too long to process at once; below are "
-                + "sequential notes extracted from each part. Write the minutes from these notes.\n\nNotes:\n"
-                + notes.joined(separator: "\n\n"))
+            user: instructions + finalPromptPreamble + fitted.text)
+    }
+
+    // MARK: 预算装配
+
+    /// 会议过长、裁剪后仍无法在预算内完成时的可读错误（UI 直接展示）。
+    enum MinutesError: LocalizedError {
+        case transcriptTooLong(estimatedNotesTokens: Int, inputBudget: Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .transcriptTooLong(let estimated, let budget):
+                return "This meeting is too long for the configured context window "
+                    + "(~\(estimated) tokens of notes vs. a \(budget)-token input budget). "
+                    + "Raise the context window in Settings or split the recording."
+            }
+        }
+    }
+
+    /// 最终提交模板的固定文本（预算须扣除）。
+    private static let finalPromptPreamble = "\n\nThe meeting transcript was too long to process "
+        + "at once; below are sequential notes extracted from each part. Write the minutes from "
+        + "these notes.\n\nNotes:\n"
+
+    /// 单次直通模板的固定标签。
+    private static let transcriptLabel = "\n\nTranscript:\n"
+
+    /// 预算余量（角色分隔/JSON 包装等未计入的零头）。
+    private static let budgetSlackTokens = 16
+
+    /// 把单段文本压进 token 预算：超限则保留**开头与结尾**（60%/40%），
+    /// 中间以省略标记替代——会议的关键结论/行动项常出现在段尾，只留开头
+    /// 会丢掉最重要的信息。
+    ///
+    /// 按字符裁剪即可满足 token 预算：估计器里 CJK 1 字符 = 1 token、
+    /// 其余 3 字符 = 1 token，故「字符数 ≤ budget」必然「估计 token ≤ budget」。
+    static func clipToBudget(_ text: String, budget: Int) -> String {
+        guard budget > 0 else { return "" }
+        guard text.count > budget else { return text }
+        guard budget > truncationMarker.count + 8 else {
+            return String(text.prefix(budget))
+        }
+        let remaining = budget - truncationMarker.count
+        let headCount = remaining * 3 / 5
+        let tailCount = remaining - headCount
+        return String(text.prefix(headCount)) + truncationMarker + String(text.suffix(tailCount))
+    }
+
+    /// 截断标记（长度计入预算）。
+    private static let truncationMarker = "\n[… truncated …]\n"
+
+    /// 在预算内装配最终 notes。
+    /// - Returns: (文本, 是否发生截断)；nil = 预算过小，无法产出有意义的纪要
+    ///   （调用方抛 `MinutesError.transcriptTooLong`，给出可读错误而不是让
+    ///   请求超限失败）。
+    static func fitNotesToBudget(_ notes: [String], budget: Int)
+        -> (text: String, truncated: Bool)? {
+        guard !notes.isEmpty else { return nil }
+        let joined = notes.joined(separator: "\n\n")
+        if estimatedTokens(joined) <= budget { return (joined, false) }
+
+        // 每段均分配额（扣除 "\n\n" 分隔符 2 字符）：让每一段都保留首尾，
+        // 而不是「前面的段全留、后面的段全丢」。
+        let perNoteBudget = budget / notes.count - 2
+        // 每段至少要装下截断标记 + 一点上下文，否则无法产出有意义的纪要。
+        guard perNoteBudget >= truncationMarker.count + 64 else { return nil }
+        let fitted = notes.map { clipToBudget($0, budget: perNoteBudget) }
+        let text = fitted.joined(separator: "\n\n")
+        // 双保险：逐段配额之和必须落在预算内（估计器上界已保证，这里兜底）。
+        guard estimatedTokens(text) <= budget else { return nil }
+        return (text, true)
     }
 
     // MARK: Token estimation & chunking
@@ -268,11 +371,10 @@ enum MeetingMinutesService {
             throw TranslationError.unavailable
         }
 
-        var baseURL = endpoint.isEmpty ? "https://api.openai.com/v1" : endpoint
-        if !baseURL.hasSuffix("/chat/completions") {
-            if !baseURL.hasSuffix("/") { baseURL += "/" }
-            baseURL += "chat/completions"
-        }
+        // 端点可能带查询串（Azure 风格 `?api-version=...`）：用 URLComponents
+        // 改 path，字符串拼接会把路径拼进 query 导致请求失败。
+        let baseURL = TranslationService.chatCompletionsURL(
+            endpoint.isEmpty ? "https://api.openai.com/v1" : endpoint)
         guard let url = URL(string: baseURL) else {
             throw TranslationError.invalidEndpoint
         }

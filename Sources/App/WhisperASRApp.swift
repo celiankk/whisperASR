@@ -41,13 +41,17 @@ struct WhisperASRApp: App {
     }
 
     var body: some Scene {
-        Window("WhisperASR", id: "main") {
+        Window("SonicScribe", id: "main") {
             ContentView()
                 .environment(appState)
                 .environment(audioPlayer)
                 .environment(audioRecorder)
-                .frame(minWidth: 800, minHeight: 500)
+            .frame(minWidth: 800, minHeight: 500)
                 .onAppear {
+                    // 重新注入配置中心：init 里的 attach 可能在 App 结构体被
+                    // SwiftUI 重建时指向旧的（已丢弃的）AppState；onAppear 拿到的
+                    // 一定是当前生效实例（幂等，覆盖注入无害）。
+                    ConfigurationManager.shared.attach(appState: appState)
                     appDelegate.appState = appState
                     appDelegate.audioRecorder = audioRecorder
                     appDelegate.openWindow = openWindow
@@ -69,6 +73,7 @@ struct WhisperASRApp: App {
         }
         .defaultSize(width: 1000, height: 650)
         .commands {
+#if DEBUG
             CommandMenu("调试") {
                 // 仅用于预览字幕浮层样式，不控制浮层启停。
                 Button("字幕浮层样式预览…") {
@@ -82,12 +87,11 @@ struct WhisperASRApp: App {
                         settingsURL: URL(string:
                             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
                 }
-#if DEBUG
                 Button("浮层内存自检") {
                     FloatingLetterLeakTest.runAfterLaunch(appDelegate: appDelegate)
                 }
-#endif
             }
+#endif
         }
 
         Window("Meeting Minutes", id: "minutes") {
@@ -98,14 +102,22 @@ struct WhisperASRApp: App {
 
         // Debug-only subtitle preview: manual text input → subtitle rendering.
         // Remove with Sources/DebugSubtitleView.swift and the "调试" menu above.
+#if DEBUG
         Window("字幕浮层调试", id: "debug-subtitle") {
             DebugSubtitleView()
         }
         .defaultSize(width: 540, height: 400)
+#endif
 
         Settings {
             SettingsView()
                 .environment(appState)
+                // 「系统状态」页（含延迟仪表盘）读取 AudioRecorder 状态——
+                // 独立设置窗口缺这两个注入时 @Environment(Type.self) 直接
+                // fatalError 崩溃（主窗口内嵌路径由 ContentView 注入，故只在
+                // ⌘, 独立窗口复现）。
+                .environment(audioPlayer)
+                .environment(audioRecorder)
         }
     }
 }
@@ -114,8 +126,59 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
     var audioRecorder: AudioRecorder?
     var openWindow: OpenWindowAction?
-    var launchedViaURL = false
+    /// 退出前收尾（停录 + finalize 音频）是否已启动；防重复退出请求重入。
+    private var isFinishingBeforeTerminate = false
     private var pendingURL: URL?
+
+    /// URL 双入口去重（URL + 时间窗）。
+    ///
+    /// 同一次打开会被派发两次：AppDelegate `application(_:open:)` 与 SwiftUI
+    /// 的 `.onOpenURL`（:70）都调 handleURL。而 `autoStartRecording` 在置位
+    /// 录制态之前要先 await SCShareableContent 枚举应用列表——这段窗口里
+    /// 第二次调用看到的仍是「未录制」，于是重复启动录制。按 URL 内容 + 短
+    /// 时间窗去重，只吞掉同一次打开的重复派发（用户过一会儿再打开同一 URL
+    /// 仍会正常处理）。
+    private var lastHandledURL: URL?
+    private var lastHandledAt: Date?
+    private static let urlDedupeWindow: TimeInterval = 2.0
+
+    /// 本 App 接受的 URL scheme 集合。
+    ///
+    /// **事实来源 = Info.plist**（`CFBundleURLTypes` → `CFBundleURLSchemes`，
+    /// 由 `Scripts/build_release.sh` 按品牌参数写入）。此前这里硬编码
+    /// `url.scheme == "whisperasr"`：产品改名「声记 SonicScribe」后，打出的包
+    /// 注册的是 `sonicscribe`，代码却只认旧 scheme → `open sonicscribe://record`
+    /// 静默失效（改名断点）。
+    ///
+    /// 保留已知 scheme 作为兜底：`swift run` 直接跑可执行文件时没有 app
+    /// bundle / Info.plist，且升级安装的用户可能仍持有旧 scheme 的快捷方式。
+    static let acceptedURLSchemes: Set<String> =
+        urlSchemes(fromInfoDictionary: Bundle.main.infoDictionary)
+
+    /// 从 Info.plist 字典提取 URL scheme（纯逻辑，单测覆盖）。
+    ///
+    /// 抽成静态纯函数是为了让「改名后 scheme 是否被认」这条关键路径可单测——
+    /// 测试跑在 test bundle 里，`Bundle.main` 的 plist 与 App 包不同。
+    static func urlSchemes(fromInfoDictionary info: [String: Any]?) -> Set<String> {
+        var schemes = Set<String>()
+        if let types = info?["CFBundleURLTypes"] as? [[String: Any]] {
+            for type in types {
+                if let list = type["CFBundleURLSchemes"] as? [String] {
+                    schemes.formUnion(list.map { $0.lowercased() })
+                }
+            }
+        }
+        // 兜底：`swift run` 裸跑可执行文件时没有 app bundle / Info.plist；
+        // 且升级安装的用户可能仍持有旧 scheme 的快捷方式。
+        schemes.formUnion(["whisperasr", "sonicscribe"])
+        return schemes
+    }
+
+    /// 判定 URL 是否属于本 App（大小写不敏感）。
+    static func owns(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return acceptedURLSchemes.contains(scheme)
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let icon = AppIconGenerator.generate()
@@ -126,6 +189,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
 #if DEBUG
+        // 端到端评测工作台：--asr-bench <音频目录|文件> [选项]
+        // （引擎 × 翻译通道矩阵跑真实音频；见 ASRBench）
+        ASRBench.runIfRequested()
         // 引擎识别检查：--engine-check <model.gguf>
         if CommandLine.arguments.contains("--engine-check") {
             let args = CommandLine.arguments
@@ -162,8 +228,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first, url.scheme == "whisperasr" else { return }
-        launchedViaURL = true
+        guard let url = urls.first, Self.owns(url) else { return }
         // If the app state is ready, handle immediately; otherwise queue it
         // (audioRecorder is injected by the main window's onAppear).
         if audioRecorder != nil {
@@ -174,8 +239,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func handleURL(_ url: URL) {
-        guard url.scheme == "whisperasr", url.host == "record",
+        guard Self.owns(url), url.host == "record",
               let audioRecorder else { return }
+
+        // 双入口去重（见 lastHandledURL 注释）：同一次打开的第二次派发直接丢弃。
+        let now = Date()
+        if lastHandledURL == url, let last = lastHandledAt,
+           now.timeIntervalSince(last) < Self.urlDedupeWindow {
+            return
+        }
+        lastHandledURL = url
+        lastHandledAt = now
 
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let queryItems = components?.queryItems ?? []
@@ -296,6 +370,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             pendingURL = nil
             handleURL(url)
         }
+    }
+
+    /// 退出闸：录制中必须先停录并 finalize 音频，否则 ⌘Q 会留下一个
+    /// 未写 moov atom 的 .m4a（不可读）且实时转录文本随进程消失。
+    /// `.terminateLater` 让我们异步完成收尾后再放行退出。
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let recorder = audioRecorder, let appState else { return .terminateNow }
+        guard recorder.state == .recording || recorder.state == .saving else {
+            return .terminateNow
+        }
+        // 重复退出请求（连按 ⌘Q / 系统登出）不重复启动收尾流程。
+        guard !isFinishingBeforeTerminate else { return .terminateLater }
+        isFinishingBeforeTerminate = true
+
+        Task { @MainActor in
+            // finishRecording 内部：停实时识别 → 停录并写盘 → 落历史条目。
+            await appState.finishRecording(recorder: recorder)
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

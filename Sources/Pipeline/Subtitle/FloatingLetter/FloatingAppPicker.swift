@@ -61,9 +61,44 @@ struct FloatingAppPickerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .permissionDenied:
             permissionDeniedContent
+        case .failed:
+            failedContent
         case .ready:
             appListContent
         }
+    }
+
+    /// 非权限类失败：显示真实原因，只提供「重试 / 取消」，不给权限引导
+    ///（去系统设置也修不好这类错误）。
+    private var failedContent: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 34))
+                .foregroundStyle(.secondary)
+            Text("无法列出可录制的应用")
+                .font(.headline)
+            Text(viewModel.appListError ?? "未知错误")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 24)
+            HStack(spacing: 10) {
+                Button("重试") {
+                    viewModel.retryLoadApps()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            Spacer()
+            Button("取消") {
+                viewModel.cancelAppSelection()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var appListContent: some View {
@@ -362,13 +397,30 @@ final class FloatingAppPickerController: NSObject {
         viewModel = nil
     }
 
+    /// 定位本 App 的主内容窗口（结构化判定，**不匹配窗口标题**）。
+    ///
+    /// 此处曾写死 `$0.title == "SonicScribe"`——一旦再次改名（或窗口标题被
+    /// 本地化）就会静默失效。组件本身是零业务依赖的可复用层，不该知道品牌名，
+    /// 故改为结构判据：可见、非面板、可成为 main、宽度 > 400（排除浮层/紧凑
+    /// 弹窗），多个候选时取面积最大者（主窗口必然是最大者）。
+    /// 与 `MenuBarController.showMainWindow` 的判据保持一致，改一处需同步另一处。
+    static func mainWindowFrame() -> NSRect? {
+        let candidates = NSApplication.shared.windows.filter { window in
+            window.isVisible
+                && !(window is NSPanel)
+                && window.canBecomeMain
+                && window.frame.width > 400
+        }
+        return candidates.max { a, b in
+            (a.frame.width * a.frame.height) < (b.frame.width * b.frame.height)
+        }?.frame
+    }
+
     /// 弹窗居中显示在主窗口上（找不到主窗口时居中屏幕）。
     private func centerOnMainWindow() {
         let size = FloatingAppPickerMetrics.size
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first
-        let mainFrame = NSApplication.shared.windows
-            .first { $0.isVisible && $0.title == "WhisperASR" && $0 !== panel }?
-            .frame
+        let mainFrame = Self.mainWindowFrame()
             ?? screen?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: size.width, height: size.height)
 

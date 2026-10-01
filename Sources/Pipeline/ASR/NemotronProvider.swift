@@ -44,7 +44,7 @@ final class NemotronProvider: @unchecked Sendable, ASRProvider {
         stateLock.withLock { loadedDirectory = nil }
     }
 
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
         try await nemotron.ensureLoaded(directory: liveDirectoryURL())
         // 实时识别语言：设置页「识别语言」；变化时才重新设置（避免每块
         // 重复调用 setLanguage）。nil = 自动检测。

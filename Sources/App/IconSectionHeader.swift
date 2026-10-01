@@ -19,14 +19,16 @@ struct IconSectionHeader: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.secondary)
+            .font(Type.mono(Type.label, weight: .medium))
+            .tracking(Type.labelTracking)
+            .foregroundStyle(Ink.secondary)
     }
 }
 
 // MARK: - 设置页页首（SettingsPageHeader）
 //
-// 参考图顶部样式：彩色圆角图标块（白 icon）+ 大号粗体标题。
+// soft 变体：同色符号 + 同色 12% 底 + 发丝环（站点全站没有「白底块 + 彩色符号」
+// 这种加底板的画法，也不给符号描白边）。
 
 struct SettingsPageHeader: View {
     let title: String
@@ -34,16 +36,57 @@ struct SettingsPageHeader: View {
     let color: Color
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: Metrics.lg) {
             Image(systemName: icon)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: 10).fill(color))
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(color)
+                .frame(width: 36, height: 36)
+                .background(Corner.rect(Corner.small).fill(Ink.soft(color, 0.12)))
+                .overlay(Corner.rect(Corner.small).strokeBorder(Ink.hairline, lineWidth: 0.5))
             Text(title)
-                .font(.system(size: 26, weight: .bold))
+                .font(Type.text(Type.display, weight: .semibold))
+                .titleTracking(Type.display)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - 设置分类导航行（SettingsNavRow）
+
+/// 左栏导航行：露边圆角 + 激活点（站点的 sidebar-active-dot），
+/// 不用系统 List 的满宽实心选中块。悬停淡出由父级驱动。
+struct SettingsNavRow: View {
+    let category: SettingsCategory
+    let isSelected: Bool
+    let dimmed: Bool
+    let onSelect: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: Metrics.md) {
+            ActiveDot(active: isSelected)
+            Image(systemName: category.icon)
+                .font(.system(size: 12))
+                .foregroundStyle(isSelected ? category.iconColor : Ink.secondary)
+                .frame(width: 18)
+            Text(category.title)
+                .font(Type.text(Type.body, weight: isSelected ? .medium : .regular))
+                .foregroundStyle(Color.primary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Metrics.md)
+        .frame(height: 28)
+        .background(
+            Corner.rect(Corner.small)
+                .fill(isSelected ? Ink.active : (hovering ? Ink.hover : .clear))
+        )
+        .contentShape(Corner.rect(Corner.small))
+        .opacity(dimmed ? Ink.dimmedSibling : 1)
+        .motionAnimation(Motion.standard(0.18), value: dimmed)
+        .motionAnimation(Motion.standard(0.18), value: isSelected)
+        .onTapGesture(perform: onSelect)
+        .onHover { hovering = $0 }
     }
 }
 

@@ -142,4 +142,21 @@ final class ASRResultNormalizerTests: XCTestCase {
         let back = ASRResultNormalizer.toTranscriptionSegments(normalized)
         XCTAssertEqual(back, [TranscriptionSegment(start: 0, end: 2, text: "你好世界")])
     }
+
+    // MARK: 聚合占位（保护屏幕上的当前句）
+
+    func testAggregationPendingIsDistinctFromEmpty() {
+        // 「聚合中」与「听清了但结果为空」语义不同：前者调度层必须跳过发布，
+        // 否则每个未达标的 pass 都会用空 tail 清掉正在显示的字幕。
+        let pending = NormalizedASRResult.aggregationPending(
+            engine: .whisper, metadata: stateless)
+        let empty = NormalizedASRResult.empty(engine: .whisper, metadata: stateless)
+
+        XCTAssertTrue(pending.isAggregationPending)
+        XCTAssertFalse(empty.isAggregationPending, "空结果不是聚合占位（真静音要照常提交）")
+        XCTAssertFalse(pending.hasContent)
+        XCTAssertFalse(empty.hasContent)
+        XCTAssertEqual(pending.metadata, empty.metadata)
+        XCTAssertEqual(pending.engine, empty.engine)
+    }
 }

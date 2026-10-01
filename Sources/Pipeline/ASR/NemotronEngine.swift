@@ -74,12 +74,14 @@ actor NemotronEngine {
 
     /// Transcribe a short chunk (live transcription). Times are relative to the
     /// start of the chunk, matching the whisper transcribeChunk contract.
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+    /// 输入零拷贝切片（P0 链路）；FluidAudio manager 的 API 需要 Array——
+    /// 在引擎边界做一次必要复制（非链路新增构造）。
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
         guard let manager else {
             throw TranscriptionError.processFailed("Nemotron model not loaded")
         }
         await manager.reset()
-        _ = try await manager.process(samples: samples)
+        _ = try await manager.process(samples: Array(samples))
         let (text, timings) = try await manager.finishWithTokenTimings()
         await manager.reset()
 

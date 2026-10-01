@@ -85,7 +85,9 @@ protocol ASRProvider: Sendable {
     ///   上层 tail 重转录的重叠区间由 TranscriptionService 水位线统一
     ///   裁剪（坑 14/17 的协议化：新流式引擎只需声明此标记，
     ///   零水位线代码）。
-    var isStreamingEngine: Bool { get }
+    /// actor Provider（如 FunASR）的取值依赖隔离态 → 需求声明为
+    /// `{ get async }`；class Provider 的同步实现可作同步 witness。
+    var isStreamingEngine: Bool { get async }
 
     /// 预加载实时转录模型（录制开始时调用，避免首个分块等待模型加载）。
     /// 幂等：已加载同一模型时直接返回。
@@ -97,16 +99,17 @@ protocol ASRProvider: Sendable {
     /// 释放模型资源。幂等。
     func unloadModel() async
 
-    /// 实时分块转录：16kHz 单声道 Float32 PCM（[Float] 采样）。
+    /// 实时分块转录：16kHz 单声道 Float32 PCM（零拷贝切片，P0：
+    /// 转录链路禁止 Array(...) 构造——引擎内部确需持有内存时才得复制）。
     /// 返回的 TranscriptionResult 时间戳相对当前分块起点（与 1.4 一致）。
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult
 
     /// 带绝对采样区间的分块转录：`absoluteRange` 是 samples 在录制时间轴上的
     /// 绝对位置（AudioRecorder.accumulatedSampleCount 坐标系）。
     /// 无状态引擎（whisper 等）忽略区间；流式引擎（Apple Speech）用它做
     /// 水位线去重——上层 tail 重转录会重发已喂过的音频，直接 append 会
     /// 造成同一段音频被识别多次。nil 表示调用方无法提供位置（按旧行为全量喂入）。
-    func transcribeChunk(samples: [Float], absoluteRange: Range<Int>?) async throws -> TranscriptionResult
+    func transcribeChunk(samples: ArraySlice<Float>, absoluteRange: Range<Int>?) async throws -> TranscriptionResult
 
     /// 文件转录：解码 fileURL 指向的音频并转录。
     /// `language` 为可选 ISO-639-1 代码；nil/空 = 自动检测。
@@ -123,11 +126,11 @@ protocol ASRProvider: Sendable {
 
 extension ASRProvider {
     /// 默认实现：无状态引擎不关心绝对位置，直接转发。
-    func transcribeChunk(samples: [Float], absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
+    func transcribeChunk(samples: ArraySlice<Float>, absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
         try await transcribeChunk(samples: samples)
     }
 
-    /// 默认实现：无状态引擎。
+    /// 默认实现：无状态引擎（class 同步实现亦可作 async 需求的 witness）。
     var isStreamingEngine: Bool { false }
 }
 
@@ -158,6 +161,19 @@ enum InputBucketing {
         guard remainder != 0 else { return samples }
         return samples + [Float](repeating: 0, count: quantum - remainder)
     }
+
+    /// 切片版（实时分块链路）：无需补零时直接转发原切片（零拷贝）；
+    /// 仅在确需补零时构造一次对齐数组——这是链路中唯一合法的 Array 构造
+    ///（桶化的语义就是改变形状，无法零拷贝）。
+    static func padded(_ samples: ArraySlice<Float>) -> ArraySlice<Float> {
+        let quantum = quantumSamples
+        guard quantum > 0 else { return samples }   // 0 = 禁用
+        let remainder = samples.count % quantum
+        guard remainder != 0 else { return samples }
+        var aligned = Array(samples)
+        aligned.append(contentsOf: repeatElement(0, count: quantum - remainder))
+        return aligned[...]
+    }
 }
 
 // MARK: - 流式引擎喂音水位线（StreamingFeedWaterline）
@@ -172,14 +188,32 @@ struct StreamingFeedWaterline {
 
     mutating func reset() { fedUntil = nil }
 
-    /// 计算应喂入的起始下标（相对区间内 samples）。
+    /// 计算应喂入的起始下标（相对区间内 samples），**并立即提交**水位线。
     /// 返回 nil = 区间已全部喂过（本次无需喂入）。
     /// 无区间信息时调用方应走 markUntrackedFeed（保守全量喂）。
+    ///
+    /// 适用：喂入动作在提交点之前已确定成功（例如 provider 内部先同步
+    /// append 到缓冲、之后才发网络请求——请求失败也不该重喂，否则重复）。
+    /// 若喂入本身可能失败且失败即等于「没喂过」（如流式引擎的
+    /// dispatchChunk 抛错），改用 peek + commitFed，避免把没送到的音频
+    /// 记成已喂而永久丢失。
     mutating func unfedStart(in range: Range<Int>) -> Int? {
+        let start = peekUnfedStart(in: range)
+        commitFed(range)
+        return start
+    }
+
+    /// 只计算不提交（配合 commitFed 使用：成功后才推进水位线）。
+    func peekUnfedStart(in range: Range<Int>) -> Int? {
         let fed = fedUntil ?? range.lowerBound
         let from = max(range.lowerBound, fed)
-        fedUntil = max(fed, range.upperBound)
         return from < range.upperBound ? (from - range.lowerBound) : nil
+    }
+
+    /// 提交已喂区间（喂入成功后调用）。
+    mutating func commitFed(_ range: Range<Int>) {
+        let fed = fedUntil ?? range.lowerBound
+        fedUntil = max(fed, range.upperBound)
     }
 
     /// 调用方无法提供区间（理论路径）：保守全量喂并清空水位线

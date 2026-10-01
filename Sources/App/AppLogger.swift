@@ -102,7 +102,13 @@ final class ErrorManager {
 
     /// 由 AppState 在启动时注入：向用户展示非致命错误（toast）。
     /// 声明为 @MainActor @Sendable，保证任意线程上报时安全跳到主 actor。
-    var toastHandler: (@MainActor @Sendable (String) -> Void)?
+    /// 用锁保护：写入在启动（主线程），读取在任意上报线程。
+    private let handlerLock = NSLock()
+    private var _toastHandler: (@MainActor @Sendable (String) -> Void)?
+    var toastHandler: (@MainActor @Sendable (String) -> Void)? {
+        get { handlerLock.lock(); defer { handlerLock.unlock() }; return _toastHandler }
+        set { handlerLock.lock(); defer { handlerLock.unlock() }; _toastHandler = newValue }
+    }
 
     private init() {}
 

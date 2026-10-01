@@ -22,22 +22,28 @@ final class MenuBarController: NSObject {
     private override init() { super.init() }
 
     /// 接线并显示（App 启动完成时调用一次）。
+    /// 幂等：SwiftUI 重建 App 结构体时 onAppear 会再跑一次，无守卫时
+    /// 每次多插一个状态栏图标。
     func setup(appState: AppState, audioRecorder: AudioRecorder) {
         self.appState = appState
         self.audioRecorder = audioRecorder
+        guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "WhisperASR")
-            // SF Symbol 按菜单栏标准尺寸重排（默认模板渲染随系统深浅色
-            // 自动反色）；不配置时个别系统版本符号过宽被 squareLength
-            // 裁切，视觉上「图标不见了」。
-            image?.size = NSSize(width: 18, height: 18)
-            image?.isTemplate = true
-            button.image = image
-            button.imageScaling = .scaleProportionallyDown
+            // 自绘声波标志（见 MenuBarIcon）：与 app 图标同一母题，
+            // 18pt 网格按 0.5pt 对齐；空闲走模板由系统着色。
+            button.image = MenuBarIcon.image(recording: false)
+            button.imageScaling = .scaleNone
         }
         item.menu = buildMenu()
         statusItem = item
+
+        // 录制状态 → 图标圆点转红。挂在 AudioRecorder 的状态回调上而不是
+        // 视图的 onChange：主窗口关闭时视图会被销毁，菜单栏必须独立可用。
+        audioRecorder.onStateChange = { [weak self] state in
+            self?.updateIcon(recording: state == .recording || state == .saving)
+        }
+        updateIcon(recording: audioRecorder.state == .recording || audioRecorder.state == .saving)
     }
 
     /// 固定条目引用：menuWillOpen 只原地改标题/勾选/enabled，
@@ -116,6 +122,15 @@ final class MenuBarController: NSObject {
 
     /// 打开前原地刷新动态状态（不替换菜单实例）：
     /// 录制标题、穿透可用性、引擎/识别语言/翻译语言的 ✓ 标记。
+    /// 切换菜单栏图标的录制态。幂等：状态未变时不重建图像，
+    /// 避免每次状态刷新都触发一次 NSStatusItem 重绘。
+    private var iconShowsRecording: Bool?
+    func updateIcon(recording: Bool) {
+        guard iconShowsRecording != recording else { return }
+        iconShowsRecording = recording
+        statusItem?.button?.image = MenuBarIcon.image(recording: recording)
+    }
+
     private func refreshDynamicState() {
         let recording = audioRecorder?.state == .recording || audioRecorder?.state == .saving
         recordItem?.title = recording ? L10n.t("menubar.record.stop") : L10n.t("menubar.record.start")
@@ -236,15 +251,22 @@ final class MenuBarController: NSObject {
         return configurationManager
     }
 
-    /// 显示主窗口：精确找 WhisperASR 主内容窗口（canBecomeMain 的普通
-    /// 窗口，排除状态栏/面板），激活应用并前置。原实现取第一个可成为
-    /// main 的窗口——浮层/弹窗存在时可能选错目标导致"点击无效"。
+    /// 显示主窗口：精确找本 App 的主内容窗口（canBecomeMain 的普通窗口，
+    /// 排除状态栏/面板/紧凑浮层），激活应用并前置。
+    ///
+    /// 判据为**结构特征**而非窗口标题（标题会随品牌改名/本地化失效）：
+    /// 可见 + 非 NSPanel + 可成为 main + 宽度 > 400；多候选取面积最大者。
+    /// 与 `FloatingAppPickerController.mainWindowFrame()` 同一判据，需同步修改。
     @objc private func showMainWindow() {
-        let mainWindow = NSApp.windows.first { window in
-            window.canBecomeMain && window.isVisible
-                && !(window is NSPanel)
-                && window.frame.width > 400   // 排除紧凑浮层/小弹窗
-        }
+        let mainWindow = NSApp.windows
+            .filter { window in
+                window.canBecomeMain && window.isVisible
+                    && !(window is NSPanel)
+                    && window.frame.width > 400   // 排除紧凑浮层/小弹窗
+            }
+            .max { a, b in
+                (a.frame.width * a.frame.height) < (b.frame.width * b.frame.height)
+            }
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
     }
@@ -322,7 +344,8 @@ final class MenuBarController: NSObject {
         for locale in installed.sorted() {
             let name = Locale.current.localizedString(forIdentifier: locale) ?? locale
             let title = "\(name)（\(locale)）"
-            let item = NSMenuItem(title: locale == current ? title + " ✓" : title,
+            let isCurrent = AppleLanguageManager.isSameLocale(locale, current)
+            let item = NSMenuItem(title: isCurrent ? title + " ✓" : title,
                                   action: #selector(selectAppleLocale(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = locale
@@ -399,7 +422,8 @@ final class MenuBarController: NSObject {
             return submenu
         }
 
-        // 按后端能力过滤：Apple=系统翻译支持集；本地 LLM=常用三语；在线=全列表。
+        // 按后端能力过滤：Apple=系统翻译支持集；本地 LLM=常用三语；
+        // 在线 API / 公共免 key 通道=全列表。
         let languages: [TargetLanguage]
         switch mode {
         case .apple:
@@ -410,7 +434,7 @@ final class MenuBarController: NSObject {
             languages = TargetLanguage.available.filter {
                 ["en", "zh-Hans", "ja"].contains($0.id)
             }
-        case .onlineAPI:
+        case .onlineAPI, .googleV1, .googleV2, .microsoft:
             languages = TargetLanguage.available
         case .off:
             languages = []

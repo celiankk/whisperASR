@@ -14,6 +14,11 @@ import Observation
 
 @Observable
 final class SystemMonitor {
+
+    /// 共享实例：CPU/内存/网络是全局量，多个视图各 new 一份会重复采样，
+    /// 更要命的是「谁忘了 start() 就永远读到 0」（仪表盘踩过这个坑）。
+    /// 生命周期由系统状态页统一 start/stop，读取方只读不启。
+    static let shared = SystemMonitor()
     private(set) var cpuUsage: Double = 0      // 0...1，全机
     private(set) var memoryBytes: Int64 = 0    // 本进程常驻内存
     private(set) var networkOnline = true

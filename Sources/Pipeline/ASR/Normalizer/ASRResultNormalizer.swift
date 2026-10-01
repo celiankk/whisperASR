@@ -55,6 +55,16 @@ enum ASRResultNormalizer {
     static func normalize(_ result: TranscriptionResult,
                           engine: ASREngineType,
                           metadata: ASRMetadata) -> NormalizedASRResult {
+        // 段级 final 语义按**合并策略**决定（本文件是唯一允许折算引擎差异的
+        // 位置，不做 if engine 分支）：
+        // - `.replaceTail`（整段替换引擎：whisper / Qwen / Nemotron / 在线 /
+        //   远程）：每轮都是完整重转录，结果即最终结果 → 一律 final；
+        // - `.appendIncrement`（流式增量引擎：Apple / paraformer-streaming）：
+        //   每轮只是当前句的增量（partial），只有 Provider 明确报告
+        //   `isRevision`（本轮文本改写了此前已发送的内容，如 Apple 把已显示的
+        //   "ta pop" 修正为 "pop"）时才是 final —— 调度层据此走
+        //   `SubtitleManager.rollbackTail` 回滚重建；否则走跨轮增量累积。
+        let segmentIsFinal = metadata.mergePolicy == .appendIncrement ? result.isRevision : true
         let segments = result.segments.compactMap { segment -> NormalizedSegment? in
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
@@ -63,15 +73,17 @@ enum ASRResultNormalizer {
                 startTime: segment.start,
                 endTime: segment.end,
                 confidence: nil,
-                // 多段完整结果（无 partial 流）：视为 final。
-                isFinal: true)
+                isFinal: segmentIsFinal)
         }
         return NormalizedASRResult(
             segments: segments,
             language: result.detectedLanguage,
             engine: engine,
             metadata: metadata,
-            fullText: result.text)
+            fullText: result.text,
+            // Provider 内部聚合（未达发送条件）标记透传给调度层：
+            // 空结果 ≠ 引擎听清了空，调度层不得据此清掉屏幕上当前句。
+            isAggregationPending: result.isAggregationPending)
     }
 
     /// 归一单段增量结果（Apple Speech / paraformer-streaming 的实时路径：

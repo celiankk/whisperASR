@@ -25,12 +25,13 @@ struct ChatCompletionProvider: TranslationProvider {
     /// 流式（单句）：SSE 逐 token 喂 onDelta，译文逐字上屏。
     func translateStreaming(_ request: TranslationRequest,
                             onDelta: @escaping @Sendable (String) -> Void) async throws -> TranslationResult {
-        let local = UserDefaults.standard.string(forKey: "translationMode") == TranslationMode.localModel.rawValue
+        // 本 Provider 只被 `.onlineAPI`（以及 `.off` 的批量兜底）选中，
+        // 本地模式走 LocalTranslationProvider，故恒为在线端点。
         let text = try await TranslationService.translateStreaming(
             segmentText: request.texts.joined(separator: "\n"),
             targetLanguage: request.targetLanguage,
             previousTranslations: request.previousTranslations,
-            local: local,
+            local: false,
             onDelta: onDelta)
         return TranslationResult(texts: [text], targetLanguage: request.targetLanguage)
     }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - 翻译管理器（TranslationManager）
 //
@@ -25,6 +26,9 @@ final class TranslationManager {
     private static let local = LocalTranslationProvider()
     private static let online = ChatCompletionProvider()
     private static let apple = AppleTranslationManager()
+    private static let googleV1 = FreeWebTranslationProvider(channel: .googleV1)
+    private static let googleV2 = FreeWebTranslationProvider(channel: .googleV2)
+    private static let microsoft = FreeWebTranslationProvider(channel: .microsoft)
 
     /// 按翻译方式返回对应 Provider。
     /// 注意：`.off` 时返回在线 Provider，与原 TranslationEngineFactory
@@ -38,6 +42,12 @@ final class TranslationManager {
             return local
         case .apple:
             return apple
+        case .googleV1:
+            return googleV1
+        case .googleV2:
+            return googleV2
+        case .microsoft:
+            return microsoft
         }
     }
 
@@ -65,18 +75,40 @@ final class TranslationManager {
 
     // MARK: - 实时句尾翻译状态
 
+    /// 有界并发的在途计数 + 失败/认证暂停状态。
+    ///
+    /// 这些字段的**写入点跨越隔离边界**：翻译入口是 @MainActor，而退出/停录
+    /// 路径的 `resetForStop()/resetPending()/clearFailureCount()/cancelAll()`
+    /// 是非隔离方法（AppRuntimeManager.shutdown / ASRManager.startLive）。
+    /// 此前无任何同步原语，属真实跨线程数据竞争（Swift 6 严格并发会报错）；
+    /// 现全部经 OSAllocatedUnfairLock 保护的快照读写。
+    private struct LiveTranslationState {
+        var pending = 0
+        var failureCount = 0
+        var authPaused = false
+        /// 仍在流式输出中的句子 id（= 去空白后的原文）集合。
+        /// 超时/结束后移除：迟到的增量不得再上屏（并发在途的多句共用同一
+        /// 增量出口，靠这个集合按句隔离）。
+        var streamingSentenceIDs: Set<String> = []
+    }
+    private let stateLock = OSAllocatedUnfairLock(initialState: LiveTranslationState())
+
+    private func mutateState(_ body: (inout LiveTranslationState) -> Void) {
+        stateLock.withLock { body(&$0) }
+    }
+
     /// 在途句数，超上限丢弃最新（显示原文兜底）。
     /// 有界并发：每句独立请求（本地/在线服务自带队列与重试），不做串行链——
     /// 串行会让后到的译文错过字幕状态机窗口被丢弃，且体感翻译明显变慢。
-    private(set) var sentenceTranslationPending = 0
+    var sentenceTranslationPending: Int { stateLock.withLock { $0.pending } }
     private static let maxPendingSentenceTranslations = 8
     /// 队列上限（AppState 流式入口检查用）。
     static let maxPendingSentenceTranslationsPublic = 8
 
     /// 连续失败计数（≥3 自动降级为“仅识别模式”）。
-    private(set) var translationFailureCount = 0
+    var translationFailureCount: Int { stateLock.withLock { $0.failureCount } }
     /// 认证/不可用错误驱动的自动暂停（区别于用户手动暂停）。
-    private(set) var translationAuthPaused = false
+    var translationAuthPaused: Bool { stateLock.withLock { $0.authPaused } }
     /// 降级状态由本管理器回写 AppState.translationUnavailable（UI 绑定）。
 
     /// 批量翻译任务句柄（取消/退出时统一取消）。
@@ -87,10 +119,10 @@ final class TranslationManager {
     /// 整句翻译（字幕层检测到一句结束后调用，一次一句、单飞）：
     /// 所有语言统一进入 TranslationProvider；失败返回 nil（显示原文），
     /// 连续失败 3 次自动降级为“仅识别模式”。
-    /// 流式整句翻译：逐 token 回调（字幕译文逐字上屏）。
+    /// 流式整句翻译：逐 token 回调（字幕译文逐字上屏）+ 10s 超时兜底。
     @MainActor
     func translateSentenceStreaming(_ text: String,
-                                    onDelta: @escaping (String) -> Void) async -> String? {
+                                    onDelta: ((String) -> Void)? = nil) async -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         guard let appState,
@@ -101,25 +133,58 @@ final class TranslationManager {
         }
         let targetLang = UserDefaults.standard.string(forKey: "targetLanguage") ?? ""
         guard !targetLang.isEmpty else { return nil }
+        mutateState {
+            $0.pending += 1
+            $0.streamingSentenceIDs.insert(trimmed)
+        }
+        // 正常结束 / 超时 / 取消三条路径都必须释放 pending 槽位并摘掉该句的
+        // 流式标记：槽位不释放会在达到并发上限 8 后让所有后续句被永久丢弃；
+        // 标记不摘掉则迟到的增量会串到下一句的浮层上。
+        defer {
+            mutateState {
+                $0.pending -= 1
+                $0.streamingSentenceIDs.remove(trimmed)
+            }
+        }
+
         let provider = Self.provider(for: appState.translationMode)
+        // 值捕获锁与回调出口：增量闭包运行在 provider 的 @Sendable 闭包里，
+        // 不捕获 self（既避开弱引用/强引用捕获不一致的告警，也让并发在途的
+        // 每句各自持有自己那份出口）。
+        let streamStateLock = stateLock
+        let deltaOutlet = sentenceTranslationDeltaHandler
         do {
-            let result = try await provider.translateStreaming(
-                TranslationRequest(text: trimmed, targetLanguage: targetLang)) { [weak self] delta in
-                Task { @MainActor in
-                    self?.sentenceTranslationDeltaHandler?(delta)
+            // 超时兜底（与 requestSentenceTranslation 同语义）：provider 挂起时
+            // 不能让本句永久占用并发槽位。超时 = 服务慢 ≠ 服务不可用，
+            // 故不计入三连失败降级（保持既有计数语义）。
+            let result = try await Self.withTimeout(seconds: 10) {
+                try await provider.translateStreaming(
+                    TranslationRequest(text: trimmed, targetLanguage: targetLang)) { delta in
+                    Task { @MainActor in
+                        // 该句已超时/结束 → 丢弃迟到增量，避免顶掉别的句子。
+                        guard streamStateLock.withLock({
+                            $0.streamingSentenceIDs.contains(trimmed)
+                        }) else { return }
+                        onDelta?(delta)
+                        deltaOutlet?(trimmed, delta)
+                    }
                 }
             }
-            translationFailureCount = 0
+            mutateState { $0.failureCount = 0 }
             appState.setTranslationUnavailable(false)
             return result.texts.first
         } catch is CancellationError {
             return nil
+        } catch is TimeoutError {
+            ErrorManager.shared.report(.network, TimeoutError(),
+                                       context: "sentence translation streaming timeout")
+            return nil
         } catch {
             ErrorManager.shared.report(.api, error, context: "translateSentenceStreaming")
-            translationFailureCount += 1
+            mutateState { $0.failureCount += 1 }
             if translationFailureCount >= 3 {
                 appState.setTranslationUnavailable(true)
-                translationAuthPaused = true
+                mutateState { $0.authPaused = true }
                 appState.showToast("本地翻译服务不可用，已切换到仅识别模式")
             }
             return nil
@@ -127,7 +192,10 @@ final class TranslationManager {
     }
 
     /// 流式增量回调出口（桥接层注入：字幕译文逐字渲染）。
-    var sentenceTranslationDeltaHandler: ((String) -> Void)?
+    ///
+    /// 回调必须携带句子 id：并发上限为 8，相邻两句常在同一 RTT 内结束，
+    /// 此前单字段出口会被后一句的 delta 顶掉（译文串台），故按句区分。
+    var sentenceTranslationDeltaHandler: ((_ sentenceID: String, _ delta: String) -> Void)?
 
     @MainActor
     func translateSentence(_ text: String) async -> String? {
@@ -147,7 +215,7 @@ final class TranslationManager {
             let result = try await provider.translate(
                 TranslationRequest(text: trimmed,
                                    targetLanguage: targetLang))
-            translationFailureCount = 0
+            mutateState { $0.failureCount = 0 }
             appState.setTranslationUnavailable(false)
             return result.texts.first
         } catch is CancellationError {
@@ -155,10 +223,10 @@ final class TranslationManager {
             return nil
         } catch {
             ErrorManager.shared.report(.api, error, context: "translateSentence")
-            translationFailureCount += 1
+            mutateState { $0.failureCount += 1 }
             if translationFailureCount >= 3 {
                 appState.setTranslationUnavailable(true)
-                translationAuthPaused = true
+                mutateState { $0.authPaused = true }
                 appState.showToast("本地翻译服务不可用，已切换到仅识别模式")
             }
             return nil
@@ -176,8 +244,8 @@ final class TranslationManager {
             )
             return nil
         }
-        sentenceTranslationPending += 1
-        defer { sentenceTranslationPending -= 1 }
+        mutateState { $0.pending += 1 }
+        defer { mutateState { $0.pending -= 1 } }
         let result: String?
         do {
             result = try await Self.withTimeout(seconds: 10) {
@@ -199,7 +267,7 @@ final class TranslationManager {
 
     /// 用户手动暂停时重置在途计数（AppState.setLiveTranslationPaused 委托）。
     func resetPending() {
-        sentenceTranslationPending = 0
+        mutateState { $0.pending = 0 }
     }
 
     // MARK: - 批量翻译（历史记录整段）
@@ -209,6 +277,14 @@ final class TranslationManager {
     /// 瞬时错误跳过该批继续，最后提示不完整结果。
     @MainActor
     func translate(item: TranscriptionItem, targetLanguage: String) {
+        // 「不翻译」模式必须短路：provider(for: .off) 返回在线 provider
+        // （映射本身有其他调用方依赖，不能改），不短路会直接打 api.openai.com，
+        // 未配置 Key 时必然 401。此处不改动 item，UI 依据 translatedSegments
+        // 是否为空决定译文区/清除按钮，填入原文会显示成"译文=原文"。
+        guard TranslationMode.current != .off else {
+            appState?.showToast("翻译已关闭 — 请先在设置中选择翻译方式")
+            return
+        }
         guard !item.segments.isEmpty, !item.isTranslating else { return }
         item.isTranslating = true
         item.translatedSegments = Array(repeating: "", count: item.segments.count)
@@ -240,8 +316,17 @@ final class TranslationManager {
                                            targetLanguage: targetLanguage,
                                            previousTranslations: contextPairs))
                     for (offset, translation) in translations.texts.enumerated() {
-                        item.translatedSegments[batchStart + offset] = translation
+                        // 下标防御：provider 返回比批大小更长的数组时不得越界。
+                        let index = batchStart + offset
+                        guard index < item.translatedSegments.count else { break }
+                        item.translatedSegments[index] = translation
                     }
+                } catch is CancellationError {
+                    // 取消不是失败：切换条目/停止时旧任务被 cancel，会让每个
+                    // 后续批次在 checkCancellation 处立刻抛出。此前落进下面的
+                    // 通用 catch 被计为 transient failure → 弹「翻译不完整」，
+                    // 而实际是用户自己的操作（译文照常渲染）。
+                    break batchLoop
                 } catch let err as TranslationError {
                     print("[Translation] batch error: \(err)")
                     switch err {
@@ -253,6 +338,10 @@ final class TranslationManager {
                         transientFailures += 1
                     }
                 } catch {
+                    // 取消也可能以其它形态抛出（URLError.cancelled 等）。
+                    if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                        break batchLoop
+                    }
                     print("[Translation] batch error: \(error)")
                     transientFailures += 1
                 }
@@ -265,6 +354,9 @@ final class TranslationManager {
             }
 
             item.isTranslating = false
+            // 取消导致的中断不落盘也不报"不完整"：译文未生成是用户主动
+            // 中断的结果，不是失败。
+            guard !Task.isCancelled else { return }
             self.appState?.history.save(item)
         }
     }
@@ -273,21 +365,30 @@ final class TranslationManager {
 
     /// 停止实时会话时重置翻译状态（在途计数、失败计数、认证暂停）。
     func resetForStop() {
-        sentenceTranslationPending = 0
-        translationFailureCount = 0
-        translationAuthPaused = false
+        mutateState {
+            $0.pending = 0
+            $0.failureCount = 0
+            $0.authPaused = false
+        }
     }
 
-    /// 仅清零失败计数（自动恢复用；保留认证暂停状态，避免循环恢复）。
+    /// 清零失败计数并解除认证暂停（自动恢复用：ASRManager 健康检查走这里）。
+    ///
+    /// 必须同时清 `authPaused`：入口 guard 检查 `!translationAuthPaused`，
+    /// 只清 failureCount 会让 3 连败后的降级状态无法自动恢复（此前只有
+    /// resetForStop 能解除），自动恢复路径形同虚设。
     func clearFailureCount() {
-        translationFailureCount = 0
+        mutateState {
+            $0.failureCount = 0
+            $0.authPaused = false
+        }
     }
 
     /// 取消全部在途翻译任务（应用退出 / 会话停止）。
     func cancelAll() {
         translateTask?.cancel()
         translateTask = nil
-        sentenceTranslationPending = 0
+        mutateState { $0.pending = 0 }
     }
 
     // MARK: - Timeout helper
@@ -305,9 +406,14 @@ final class TranslationManager {
                 try await Task.sleep(for: .seconds(seconds))
                 throw TimeoutError()
             }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            do {
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                throw error
+            }
         }
     }
 }

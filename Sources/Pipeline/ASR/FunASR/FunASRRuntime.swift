@@ -48,7 +48,8 @@ protocol FunASRRuntime: Sendable {
 
     /// 16kHz mono Float32 PCM → 识别结果（时间戳相对音频起点）。
     /// 实时链路固定 16kHz（AudioRecorder 输出），sampleRate 供后端校验。
-    func transcribe(pcm: [Float], sampleRate: Int) async throws -> ASRResult
+    /// 零拷贝切片输入（P0 链路禁 Array(...)）。
+    func transcribe(pcm: ArraySlice<Float>, sampleRate: Int) async throws -> ASRResult
 
     func unload() async
 }
@@ -62,8 +63,17 @@ enum FunASRRuntimeRegistry {
     private static var backend: FunASRRuntime = PlaceholderFunASRRuntime()
 
     /// 注册真实后端（应用启动或后端模块加载时调用一次）。
+    ///
+    /// 幂等：已在库中的实例原样保留。`FunASRProvider.runtime` 是**每次调用
+    /// 都查注册中心**的计算属性，若此处用新实例覆盖，已加载模型的旧实例
+    /// 会被丢弃 —— 表现为加载成功但紧接着 transcribe 报
+    /// "FunASR runtime unavailable"（实测：窗口 onAppear 与评测入口各自
+    /// 注册一次，两次注册之间恰好加载完模型时必现，约 1/6 概率）。
     static func register(_ runtime: FunASRRuntime) {
-        lock.withLock { backend = runtime }
+        lock.withLock {
+            guard backend is PlaceholderFunASRRuntime else { return }
+            backend = runtime
+        }
     }
 
     static func current() -> FunASRRuntime {
@@ -80,7 +90,7 @@ struct PlaceholderFunASRRuntime: FunASRRuntime {
         throw TranscriptionError.processFailed("FunASR runtime unavailable")
     }
 
-    func transcribe(pcm: [Float], sampleRate: Int) async throws -> ASRResult {
+    func transcribe(pcm: ArraySlice<Float>, sampleRate: Int) async throws -> ASRResult {
         throw TranscriptionError.processFailed("FunASR runtime unavailable")
     }
 

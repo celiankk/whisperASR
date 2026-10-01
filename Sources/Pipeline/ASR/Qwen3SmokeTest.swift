@@ -22,7 +22,7 @@ enum Qwen3SmokeTest {
                 let samples = try await AudioLoader.loadSamples(url: URL(fileURLWithPath: wavPath))
                 let backend = Qwen3ASRBackend()
                 try await backend.ensureLoaded(modelURL: URL(fileURLWithPath: modelPath))
-                let result = try await backend.transcribe(samples: samples)
+                let result = try await backend.transcribe(samples: samples[...])
                 print("[Qwen3Smoke] segments=\(result.segments.count)")
                 print("[Qwen3Smoke] text=\(result.text)")
                 await backend.unload()

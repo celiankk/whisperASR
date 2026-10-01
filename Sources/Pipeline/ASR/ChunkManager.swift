@@ -25,7 +25,8 @@ final class ChunkManager: @unchecked Sendable {
     private let capacitySeconds: Double = 15
 
     /// 追加音频样本（最新的 chunk 优先：超限丢最旧）。
-    func append(_ newSamples: [Float]) {
+    /// 接收零拷贝切片（P0 链路：聚合入口不经 Array 构造）。
+    func append(_ newSamples: ArraySlice<Float>) {
         lock.lock()
         defer { lock.unlock() }
         if samples.isEmpty {
@@ -60,13 +61,21 @@ final class ChunkManager: @unchecked Sendable {
     }
 
     /// 取出全部样本并清空（发送前调用）。
-    func takeAll() -> [Float] {
+    ///
+    /// 返回 `ArraySlice` 借用原缓冲（零拷贝）：用 swap 把内部数组的存储
+    /// **整体移交**给调用方，再装上一个空数组——不复制样本、不清零缓冲。
+    /// 为什么不是返回 `[Float]`：`let taken = samples; samples.removeAll()`
+    /// 让 taken 与内部存储共享缓冲，removeAll 触发写时复制 → 每个 chunk
+    /// 白拷一份（实时链路的 chunk 可达数百 KB）。调用方按切片消费
+    ///（`dispatchChunk` 本就只接受 ArraySlice）。
+    func takeAll() -> ArraySlice<Float> {
         lock.lock()
         defer { lock.unlock() }
-        let taken = samples
-        samples.removeAll()
+        guard !samples.isEmpty else { return [][...] }
+        var taken: [Float] = []
+        swap(&taken, &samples)
         firstSampleDate = nil
-        return taken
+        return taken[...]
     }
 
     /// 清空（停止录制 / 切换引擎时调用，丢弃残留聚合）。

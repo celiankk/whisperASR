@@ -56,6 +56,23 @@ struct TranscriptionResult: Codable {
     /// Whisper's auto-detected language code (e.g. "en", "zh"). Populated for
     /// file transcription; used by the OpenAI-compatible API's verbose_json.
     var detectedLanguage: String? = nil
+    /// 真 = 本轮无产出是**因为音频仍在 Provider 内部聚合中**（未达发送
+    /// 条件），而不是「引擎听清了、结果是空」。
+    ///
+    /// 在线 / 远程引擎的句子缓冲需累计约 2s 才发送（`OnlineASRBuffer`），
+    /// 期间每轮 pass 都返回空结果。调度层（ASRManager）必须据此跳过字幕
+    /// 发布：按 `.replaceTail` 提交空 tail 会把 `pendingTailSegments` 清空，
+    /// 屏幕上正在显示的当前句在每次未达标的 pass 上被抹掉。
+    /// 该语义与 `NormalizedASRResult.isAggregationPending` 一致，由
+    /// `ASRResultNormalizer` 透传。
+    var isAggregationPending: Bool = false
+    /// 真 = 本轮文本**改写了此前已发送的内容**（final 修正），而不是在其
+    /// 之后追加。典型场景：Apple 增量引擎把已显示的 partial「ta pop」
+    /// 修正为 final「pop」——按增量累积会产生「ta pop pop」脏文本。
+    ///
+    /// 归一层据此把段标记为 final，调度层（ASRManager）走
+    /// `SubtitleManager.rollbackTail` 回滚并重建当前句，而不是追加。
+    var isRevision: Bool = false
 }
 
 // MARK: - Status
@@ -102,14 +119,24 @@ class TranscriptionItem: Identifiable {
     var transcriptHydrated = true
 
     /// 按需载入完整转录内容（幂等）。
+    ///
+    /// 关键：**读盘成功后才置位** `transcriptHydrated`。此前实现先置位再读盘，
+    /// 读失败（文件损坏/暂时不可读）时 segments 仍为空却已标记 hydrated，
+    /// 之后任何 save（重命名/翻译完成/重转录）都会用空数组覆盖磁盘上的
+    /// 转录内容（数据丢失级 bug）。读失败时保持未 hydrate → 后续 save 走
+    /// `saveMetadata`（仅回写元数据），磁盘内容不受影响。
     func hydrateTranscriptIfNeeded() {
         guard !transcriptHydrated else { return }
-        transcriptHydrated = true
-        if let stored = TranscriptionStore.loadTranscript(for: id) {
-            segments = stored.segments
-            translatedSegments = stored.translatedSegments
-            translationLanguage = stored.translationLanguage
+        guard let stored = TranscriptionStore.loadTranscript(for: id) else {
+            AppLogger.shared.log(
+                .ui,
+                "hydrate skipped: transcript unreadable (\(id.uuidString)) — metadata-only saves from now on")
+            return
         }
+        segments = stored.segments
+        translatedSegments = stored.translatedSegments
+        translationLanguage = stored.translationLanguage
+        transcriptHydrated = true
     }
 
     init(fileURL: URL) {

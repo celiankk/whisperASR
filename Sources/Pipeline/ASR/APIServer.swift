@@ -22,17 +22,17 @@ final class APIServer {
     static let shared = APIServer()
 
     // UserDefaults keys (kept in sync with @AppStorage in SettingsView).
-    static let enabledKey = "apiServerEnabled"
-    static let portKey = "apiServerPort"
-    static let tokenKey = "apiServerToken"
-    static let allowLANKey = "apiServerAllowLAN"
+    nonisolated static let enabledKey = "apiServerEnabled"
+    nonisolated static let portKey = "apiServerPort"
+    nonisolated static let tokenKey = "apiServerToken"
+    nonisolated static let allowLANKey = "apiServerAllowLAN"
     /// When true, each request and its outcome are logged to stderr (run log).
     /// Off by default; flip on to diagnose client issues.
-    static let verboseLogKey = "apiServerVerboseLogging"
-    static let defaultPort: UInt16 = 8080
+    nonisolated static let verboseLogKey = "apiServerVerboseLogging"
+    nonisolated static let defaultPort: UInt16 = 8080
     /// Per-connection timeout for the HTTP server. Generous so long transcriptions
     /// aren't severed mid-flight (FlyingFox defaults to a 15s timeout).
-    static let connectionTimeout: TimeInterval = 3600
+    nonisolated static let connectionTimeout: TimeInterval = 3600
 
     private(set) var isRunning = false
     private(set) var lastError: String?
@@ -319,13 +319,18 @@ private struct OpenAITranscriptionAPI: Sendable {
         f.dateFormat = "HH:mm:ss.SSS"
         return f
     }()
+    /// DateFormatter 非线程安全，而 FlyingFox 会并发处理请求——格式化必须在
+    /// 锁内（与 AppLogger 同处理；此前锁外调用是真实数据竞争）。
+    private static let logTimeLock = NSLock()
 
     /// Write a timestamped diagnostic line to stderr (captured in the run log) when
     /// verbose logging is enabled. Unbuffered, so lines appear immediately even when
     /// stdout is redirected to a file. The flag is read per call, so it toggles live.
-    static func log(_ message: String) {
+    nonisolated static func log(_ message: String) {
         guard UserDefaults.standard.bool(forKey: APIServer.verboseLogKey) else { return }
+        logTimeLock.lock()
         let ts = logTimeFormatter.string(from: Date())
+        logTimeLock.unlock()
         FileHandle.standardError.write(Data("[APIServer \(ts)] \(message)\n".utf8))
     }
 
@@ -333,27 +338,70 @@ private struct OpenAITranscriptionAPI: Sendable {
 
     func handleModels(_ request: HTTPRequest) -> HTTPResponse {
         if let denied = Self.checkAuth(request) { return denied }
-        var ids = ["whisper-1"]
-        if let selected = UserDefaults.standard.string(forKey: "selectedModelFile"),
-           !selected.isEmpty {
-            ids.append(selected)
-        }
+        // 按当前引擎/模型给出真实 id 列表：此前恒为 "whisper-1" + selectedModelFile，
+        // 与实际执行的引擎无关（切到 Qwen / FunASR / Apple / 在线后，客户端仍
+        // 以为在调 whisper，探测能力与选型都会误导）。
+        // 结构保持 OpenAI 兼容（object=list，data[].id/object/created/owned_by）。
+        var ids = [Self.currentEngineModelID()]
+        let selected = UserDefaults.standard.string(forKey: "selectedModelFile") ?? ""
+        if !selected.isEmpty, !ids.contains(selected) { ids.append(selected) }
+        let live = UserDefaults.standard.string(forKey: "liveModelFile") ?? ""
+        if !live.isEmpty, !ids.contains(live) { ids.append(live) }
         return Self.jsonResponse(.ok, ModelsList(data: ids.map { ModelsList.Model(id: $0) }))
+    }
+
+    /// 当前生效引擎对外暴露的模型 id（OpenAI 兼容语义下客户端的 model 参数
+    /// 实际被忽略——本机只有一个在跑的引擎，这里只求「id 反映真实引擎」）。
+    private static func currentEngineModelID() -> String {
+        switch ASREngineSelection.current {
+        case .apple:
+            return "apple-speech"
+        case .online:
+            switch OnlineASRApiType.current {
+            case .mimo: return "xiaomi-mimo-asr"
+            case .custom: return "custom-online-asr"
+            case .openai: return "whisper-1"
+            }
+        case .remote:
+            return "remote-asr"
+        case .funasr:
+            return ASREngineType.funasr.rawValue
+        case .qwen:
+            return ASREngineType.qwen3asr.rawValue
+        case .nemotron:
+            return ASREngineType.nemotron.rawValue
+        case .whisper:
+            return "whisper-1"
+        case .auto:
+            // auto 档按磁盘模型解析（与转录调度同一事实源）。
+            return TranscriptionService.engineType(
+                forModelPath: ModelPathResolver.resolveModelPath()).rawValue
+        }
     }
 
     // MARK: Auth
 
     /// Returns a 401 response when an API key is configured and the request's
     /// `Authorization: Bearer <key>` doesn't match; nil when access is allowed.
-    static func checkAuth(_ request: HTTPRequest) -> HTTPResponse? {
+    nonisolated static func checkAuth(_ request: HTTPRequest) -> HTTPResponse? {
         let token = UserDefaults.standard.string(forKey: APIServer.tokenKey)?
             .trimmingCharacters(in: .whitespaces) ?? ""
         guard !token.isEmpty else { return nil }
         let provided = request.headers[.authorization] ?? ""
-        guard provided == "Bearer \(token)" else {
+        guard constantTimeEquals(provided, "Bearer \(token)") else {
             return errorResponse(.unauthorized, "Invalid or missing API key.")
         }
         return nil
+    }
+
+    /// 恒定时间字符串比较：避免按字符短路比较泄漏 token 前缀信息。
+    private static func constantTimeEquals(_ a: String, _ b: String) -> Bool {
+        let x = Array(a.utf8)
+        let y = Array(b.utf8)
+        guard x.count == y.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<x.count { diff |= x[i] ^ y[i] }
+        return diff == 0
     }
 
     // MARK: Response formatting
@@ -500,7 +548,22 @@ enum MultipartParser {
         let crlf = Data([0x0D, 0x0A])
         let headerSep = Data([0x0D, 0x0A, 0x0D, 0x0A])
 
-        let delimiters = body.allRanges(of: dashBoundary)
+        // 分隔符必须是「行首的 --boundary」（RFC 2046/7578：前面是 CRLF）。
+        // 此前用全 body 子串匹配：音频二进制里偶然出现 "--boundary" 就会被
+        // 当成分隔符 → 一个 part 被误切成两半，后半段头部缺失、整个 part 丢弃
+        //（表现为 400 missing file）。
+        var delimiters: [Range<Int>] = []
+        if body.starts(with: dashBoundary) {
+            delimiters.append(0..<dashBoundary.count)   // body 直接以分隔符开头
+        }
+        let pattern = crlf + dashBoundary
+        var searchStart = body.startIndex
+        while searchStart < body.endIndex,
+              let r = body.range(of: pattern, options: [], in: searchStart..<body.endIndex) {
+            // 分隔符范围不含前导 CRLF（它属于上一段内容，由下面的去尾处理）。
+            delimiters.append((r.lowerBound + crlf.count)..<r.upperBound)
+            searchStart = r.upperBound
+        }
         guard delimiters.count >= 2 else { return [] }
 
         var parts: [MultipartPart] = []
@@ -531,7 +594,12 @@ enum MultipartParser {
     }
 
     private static func parseHeaders(_ data: Data) -> [String: String] {
-        guard let str = String(data: data, encoding: .utf8) else { return [:] }
+        // 头字段是 ASCII/latin1 语义（RFC 7578）。强制 UTF-8 解码在客户端用
+        // latin1 写中文 filename 时整段失败 → headers 为空 → 该 part 被丢弃
+        //（最终报 400 missing file，真实原因完全看不出来）。
+        let str = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+            ?? ""
         var result: [String: String] = [:]
         for line in str.components(separatedBy: "\r\n") {
             guard let colon = line.firstIndex(of: ":") else { continue }
@@ -542,48 +610,77 @@ enum MultipartParser {
         return result
     }
 
-    /// Read a `key="value"` (or `key=value`) parameter from a header line. Matches only
-    /// when `key` isn't part of a longer token (so "name" won't match "filename").
+    /// Read a `key="value"` (or `key=value`) parameter from a header line.
+    /// 支持 `key*=UTF-8''<pct-encoded>`（RFC 5987，客户端传非 ASCII 文件名时
+    /// 用这个形式）与引号内的 `\"` 转义；`key` 不匹配更长 token
+    ///（"name" 不会命中 "filename"）。
     private static func paramValue(in header: String, key: String) -> String? {
+        if let extended = extendedParamValue(in: header, key: key), !extended.isEmpty {
+            return extended
+        }
+        guard let r = occurrence(of: key, in: header),
+              let value = value(after: r, in: header) else { return nil }
+        return value
+    }
+
+    /// 定位 `key=` 出现位置（要求 key 不是更长 token 的一部分）。
+    private static func occurrence(of key: String, in header: String) -> Range<String.Index>? {
         let needle = key + "="
         var searchStart = header.startIndex
         while let r = header.range(of: needle, options: .caseInsensitive,
                                    range: searchStart..<header.endIndex) {
-            let boundaryOK: Bool
             if r.lowerBound == header.startIndex {
-                boundaryOK = true
-            } else {
-                let before = header[header.index(before: r.lowerBound)]
-                boundaryOK = !before.isLetter && before != "-"
+                return r
             }
-            if boundaryOK {
-                var rest = header[r.upperBound...]
-                if rest.first == "\"" {
-                    rest = rest.dropFirst()
-                    if let end = rest.firstIndex(of: "\"") { return String(rest[..<end]) }
-                    return String(rest)
-                }
-                if let semi = rest.firstIndex(of: ";") {
-                    return String(rest[..<semi]).trimmingCharacters(in: .whitespaces)
-                }
-                return String(rest).trimmingCharacters(in: .whitespaces)
+            let before = header[header.index(before: r.lowerBound)]
+            if !before.isLetter && before != "-" && before != "*" {
+                return r
             }
             searchStart = r.upperBound
         }
         return nil
     }
+
+    /// 从 `=` 之后提取参数值：双引号（含 `\"` 转义）或裸值（到 `;` 为止）。
+    private static func value(after r: Range<String.Index>, in header: String) -> String? {
+        var rest = header[r.upperBound...]
+        while let first = rest.first, first == " " || first == "\t" { rest = rest.dropFirst() }
+        guard let first = rest.first else { return nil }
+        guard first == "\"" else {
+            if let semi = rest.firstIndex(of: ";") {
+                return String(rest[..<semi]).trimmingCharacters(in: .whitespaces)
+            }
+            return String(rest).trimmingCharacters(in: .whitespaces)
+        }
+        var value = ""
+        var escaped = false
+        for ch in rest.dropFirst() {
+            if escaped { value.append(ch); escaped = false; continue }
+            if ch == "\\" { escaped = true; continue }
+            if ch == "\"" { return value }
+            value.append(ch)
+        }
+        return value   // 引号未闭合：容错返回已读内容（不整 part 丢弃）
+    }
+
+    /// RFC 5987 扩展参数：`key*=charset'language'percent-encoded`。
+    private static func extendedParamValue(in header: String, key: String) -> String? {
+        guard let r = occurrence(of: key + "*", in: header),
+              let raw = value(after: r, in: header) else { return nil }
+        let parts = raw.split(separator: "'", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3 else {
+            // 无 charset''lang' 前缀：按百分号编码裸值容错解码。
+            return raw.removingPercentEncoding ?? raw
+        }
+        let charset = parts[0].lowercased()
+        guard charset.isEmpty || charset == "utf-8" || charset == "iso-8859-1"
+                || charset == "us-ascii" else { return nil }
+        return String(parts[2]).removingPercentEncoding ?? String(parts[2])
+    }
 }
 
 private extension Data {
-    /// All non-overlapping ranges where `pattern` occurs.
-    func allRanges(of pattern: Data) -> [Range<Int>] {
-        guard !pattern.isEmpty else { return [] }
-        var ranges: [Range<Int>] = []
-        var start = startIndex
-        while start < endIndex, let r = range(of: pattern, options: [], in: start..<endIndex) {
-            ranges.append(r)
-            start = r.upperBound
-        }
-        return ranges
-    }
+    /// 说明：原先的 `allRanges(of:)`（全 body 子串匹配分隔符）已删除——
+    /// 它正是「音频二进制内含 --boundary 时误切 part」的来源；分隔符匹配
+    /// 现在只认「CRLF + --boundary」行首形式（见 MultipartParser.parse）。
 }

@@ -28,10 +28,16 @@ final class TranscriptionService: @unchecked Sendable {
     /// FunASR（SenseVoice / Paraformer 系）。
     private let funasrProvider = FunASRProvider()
 
-    /// True while a live session runs on the Nemotron engine — blocks the
-    /// "unload nemotron when file-transcribing with whisper" eviction below.
+    /// 实时会话正在使用的引擎（实时循环每轮登记；unloadLiveModel 收尾清零）。
+    ///
+    /// 为什么是集合而不是单个布尔：此前只有「preload 那一刻是 Nemotron」这一个
+    /// 标志位，会话中途切引擎（用户改设置 / 自动降级 / 切实时模型）就不置位 ——
+    /// 于是文件转录（APIServer 与实时循环共用本 service）会把它卸掉，实时循环
+    /// 下一轮只能重建（数秒静默）；反向也一样：实时会话收尾时无条件卸载
+    /// qwen / funasr，会把在途的文件转录打断。
     private let liveStateLock = NSLock()
-    private var liveNemotronActive = false
+    private var liveSessionActive = false
+    private var liveSessionEngines: Set<ASRProviderEngine> = []
     /// 统一音频分片聚合器（按「音频分片模式」+ 引擎类型决定是否启用）。
     private let chunkManager = ChunkManager()
     /// 流式引擎喂音水位线（tail 重转录重叠去重；见 ASRProvider 声明）。
@@ -39,6 +45,9 @@ final class TranscriptionService: @unchecked Sendable {
     private var streamingWaterline = StreamingFeedWaterline()
     /// 最近一次经水位线裁剪的流式引擎标识（切换即重置水位线）。
     private var streamingWaterlineEngine: ASRProviderEngine? = nil
+    /// 最近一次喂音时的 FunASR recognizer 代数（见 FunASRProvider
+    /// .recognizerGeneration）：代数变化 = recognizer 已重建，水位线回退。
+    private var streamingWaterlineFunASRGeneration: Int? = nil
     private let waterlineLock = NSLock()
 
     /// Which engine the currently selected model runs on.
@@ -144,12 +153,19 @@ final class TranscriptionService: @unchecked Sendable {
     private static func engine(forPath path: String) -> ResolvedEngine {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
-            // 目录模型：先按 catalog 元数据判引擎（FunASR 目录 → .funasr，
-            // 否则回落 Nemotron——曾把 SenseVoice 目录误判为 Nemotron，
-            // 报 metadata.json not found）。
+            // 目录模型：catalog 元数据优先，其次目录内容特征（FunASR 文件清单），
+            // 两者都不命中才回落 Nemotron。
+            // 为什么必须加目录内容判定：目录被改名 / 自定义路径指向 HF 原始
+            // 目录名时 catalog 必然未命中，而 ModelCatalog.isComplete 与
+            // SherpaONNXRuntime.load 都走 FunASRModelConfig.resolve() —— 三处
+            // 对「这是不是 FunASR」必须同一答案，否则 SenseVoice 目录被判成
+            // Nemotron，报 metadata.json not found。
             let dirName = (path as NSString).lastPathComponent
             if let catalogModel = ModelCatalog.model(fileName: dirName),
                catalogModel.engine == .funasr {
+                return .funasr
+            }
+            if looksLikeFunASRDirectory(URL(fileURLWithPath: path, isDirectory: true)) {
                 return .funasr
             }
             return .nemotron(directory: path)
@@ -161,11 +177,33 @@ final class TranscriptionService: @unchecked Sendable {
             if catalogModel.engine == .funasr { return .funasr }
         }
         // 自定义路径/非标准文件名：读取 GGUF 头部 general.architecture 判定。
-        if let arch = GGUFInspector.architecture(atPath: path)?.lowercased(),
-           arch.contains("qwen3_asr") || arch.contains("qwen3-asr") {
+        if let arch = GGUFInspector.architecture(atPath: path), isQwen3ASRArchitecture(arch) {
             return .qwen3asr(path: path)
         }
         return .whisper(path: path)
+    }
+
+    /// 目录内容是否是 FunASR 模型（sherpa-onnx 转换包结构）。
+    /// 事实源与 ModelCatalog.isComplete / SherpaONNXRuntime.load 统一走
+    /// FunASRModelConfig 的文件角色清单（encoder / adaptor / llm / tokens /
+    /// tokenizer 目录），而不是硬编码单个文件名。
+    private static func looksLikeFunASRDirectory(_ directory: URL) -> Bool {
+        let candidates = [
+            FunASRModelConfig.paraformerStreaming,
+            FunASRModelConfig.funASRNano,
+            FunASRModelConfig.paraformerZH,
+            FunASRModelConfig.senseVoiceSmall,
+        ]
+        return candidates.contains { $0.isComplete(in: directory) }
+    }
+
+    /// GGUF 架构值是否是 Qwen3-ASR。
+    /// 写法不统一（qwen3_asr / qwen3-asr / Qwen3ASR / qwen3_asr_...），
+    /// 去掉大小写与分隔符后按「含 qwen3 且含 asr」判定——此前只匹配两个
+    /// 固定字面量，写法不同就回落 whisper，whisper.cpp 加载 GGUF 直接失败。
+    private static func isQwen3ASRArchitecture(_ arch: String) -> Bool {
+        let normalized = arch.lowercased().filter { $0.isLetter || $0.isNumber }
+        return normalized.contains("qwen3") && normalized.contains("asr")
     }
 
     func shutdown() {
@@ -176,33 +214,73 @@ final class TranscriptionService: @unchecked Sendable {
         Task { await onlineProvider.unloadModel() }
         Task { await remoteProvider.unloadModel() }
         Task { await appleProvider.unloadModel() }
+        // FunASR 此前漏在此列表外：900MB 级目录模型（paraformer-zh /
+        // fun-asr-nano）在「释放模型」与看门狗自动回收后仍驻留内存，
+        // 于是看门狗反复触发却毫无效果。
+        Task { await funasrProvider.unloadModel() }
     }
 
     /// Free the live session's resources when recording ends: the dedicated
-    /// live whisper context (if any), and the Nemotron engine when only the
-    /// live selection was using it. Online mode: cancel in-flight requests
-    /// and drop the pending audio queue.
+    /// live whisper context (if any), and every engine the live session
+    /// actually used (recorded per pass — mid-session engine switches
+    /// included). Online mode: cancel in-flight requests and drop the pending
+    /// audio queue. 公开语义不变：仍然是「结束实时会话、释放它占用的资源」。
     func unloadLiveModel() {
-        let wasNemotron = liveStateLock.withLock {
-            let was = liveNemotronActive
-            liveNemotronActive = false
-            return was
-        }
+        // 实时会话用过哪些引擎：本次收尾只释放这些（此前无条件卸载
+        // qwen / funasr，会把文件转录在途的模型一起卸掉）。
+        let used = endLiveSession()
 
         whisperProvider.unloadLiveModel()
-        if wasNemotron, case .whisper = resolveEngine() {
-            Task { await nemotronProvider.unloadModel() }
+        // whisper 的实时专用 ctx 已由上一行释放；主 ctx 留给文件转录
+        //（原有语义：录音结束后紧接着的文件转录不必重载大模型）。
+        for engine in used where engine != .whisper {
+            unloadProvider(engine)
         }
-        Task { await qwenProvider.unloadModel() }
         onlineProvider.cancelPending()
         // 远程引擎：取消在途请求 + 复位配置活动源（回到在线键）。
-        Task { await remoteProvider.unloadModel() }
         RemoteASRConfig.activateAsActiveSource(false)
-        Task { await appleProvider.unloadModel() }
         chunkManager.clear()  // 丢弃未发送的聚合残留
         waterlineLock.withLock {
             streamingWaterline.reset()
             streamingWaterlineEngine = nil
+            streamingWaterlineFunASRGeneration = nil
+        }
+    }
+
+    /// 释放某个引擎的常驻资源（实时会话收尾 / 文件转录互斥用）。
+    /// 无状态与在线系引擎的 unload 均为幂等空操作，列表统一便于维护。
+    private func unloadProvider(_ engine: ASRProviderEngine) {
+        switch engine {
+        case .whisper: Task { await whisperProvider.unloadModel() }
+        case .nemotron: Task { await nemotronProvider.unloadModel() }
+        case .qwen3asr: Task { await qwenProvider.unloadModel() }
+        case .funasr: Task { await funasrProvider.unloadModel() }
+        case .apple: Task { await appleProvider.unloadModel() }
+        case .online: onlineProvider.cancelPending()
+        case .remote: Task { await remoteProvider.unloadModel() }
+        }
+    }
+
+    /// 登记「本轮实时会话正在使用该引擎」（实时循环每轮调用，覆盖中途切引擎）。
+    private func markLiveSessionEngine(_ engine: ASRProviderEngine) {
+        liveStateLock.withLock {
+            liveSessionActive = true
+            liveSessionEngines.insert(engine)
+        }
+    }
+
+    /// 实时会话当前是否正在使用该引擎（文件转录路径的卸载互斥判定）。
+    private func liveSessionUses(_ engine: ASRProviderEngine) -> Bool {
+        liveStateLock.withLock { liveSessionActive && liveSessionEngines.contains(engine) }
+    }
+
+    /// 结束实时会话并取回它用过的引擎集合（同时清零标志）。
+    private func endLiveSession() -> Set<ASRProviderEngine> {
+        liveStateLock.withLock { () -> Set<ASRProviderEngine> in
+            let used = liveSessionActive ? liveSessionEngines : Set<ASRProviderEngine>()
+            liveSessionActive = false
+            liveSessionEngines.removeAll()
+            return used
         }
     }
 
@@ -220,23 +298,28 @@ final class TranscriptionService: @unchecked Sendable {
                     onProgress: @escaping @Sendable (Double) -> Void) async throws -> NormalizedASRResult {
         let configuredLanguage = ConfigurationManager.shared.asr.effectiveASRLanguage
         let effectiveLanguage = (language?.isEmpty == false) ? language : configuredLanguage
+        // 引擎只解析一次并向下传递：两次 resolveEngine() 之间若 UserDefaults
+        // 变更（用户切引擎/切模型），归一结果标注的 engine 会与实际执行的
+        // 引擎不一致；且每次解析都做 fileExists + GGUF 头读取（纯磁盘 IO）。
+        let engine = resolveEngine()
         let result = try await transcribeFileDispatch(
-            fileURL: fileURL, language: language,
+            engine: engine, fileURL: fileURL, language: language,
             effectiveLanguage: effectiveLanguage ?? "",
             translate: translate, onProgress: onProgress)
-        let chunkProvider = provider(for: resolveEngine())
+        let chunkProvider = provider(for: engine)
         return ASRResultNormalizer.normalize(
             result, engine: chunkProvider.engine,
             metadata: ASRMetadata.default(isStreamingEngine: false))
     }
 
     /// 文件转录引擎分派（原 transcribe 主体，返回 Provider 原始结果）。
-    private func transcribeFileDispatch(fileURL: URL,
+    private func transcribeFileDispatch(engine: ResolvedEngine,
+                                        fileURL: URL,
                                         language: String?,
                                         effectiveLanguage: String,
                                         translate: Bool,
                                         onProgress: @escaping @Sendable (Double) -> Void) async throws -> TranscriptionResult {
-        switch resolveEngine() {
+        switch engine {
         case .nemotron:
             guard !translate else {
                 throw TranscriptionError.processFailed(
@@ -244,7 +327,11 @@ final class TranscriptionService: @unchecked Sendable {
                 )
             }
             // Free the main whisper ctx (a live session's context stays).
-            Task { await whisperProvider.unloadModel() }
+            // 实时会话正在用 whisper 时不释放：实时档与主档同模型时共用主 ctx，
+            // 卸掉会让实时循环下一轮重建（数秒静默）。
+            if !liveSessionUses(.whisper) {
+                Task { await whisperProvider.unloadModel() }
+            }
             return try await nemotronProvider.transcribeFile(
                 fileURL: fileURL, language: effectiveLanguage, translate: translate, onProgress: onProgress
             )
@@ -253,8 +340,10 @@ final class TranscriptionService: @unchecked Sendable {
                 fileURL: fileURL, language: effectiveLanguage, translate: translate, onProgress: onProgress
             )
         case .whisper:
-            let keepNemotron = liveStateLock.withLock { liveNemotronActive }  // live session is using it
-            if !keepNemotron {
+            // 实时会话正在用 Nemotron 时保留它（原行为）；判定来源改为
+            // 「实时循环登记的引擎集合」，覆盖会话中途切到 Nemotron 的情形
+            //（此前只在 preload 时置位 → 中途切换后文件转录会把它卸掉）。
+            if !liveSessionUses(.nemotron) {
                 Task { await nemotronProvider.unloadModel() }
             }
             return try await whisperProvider.transcribeFile(
@@ -311,17 +400,22 @@ final class TranscriptionService: @unchecked Sendable {
     /// - 聚合未达标（时长 / 等待）时返回空结果，上层循环继续累积；
     /// - `absoluteRange` 是 chunk 在录制时间轴上的绝对采样区间，供流式引擎
     ///   （Apple Speech）做去重水位线；聚合路径会打乱位置 → 透传 nil。
-    func transcribeChunk(samples: [Float],
+    func transcribeChunk(samples: ArraySlice<Float>,
                          absoluteRange: Range<Int>? = nil) async throws -> NormalizedASRResult {
         guard !samples.isEmpty else {
             return emptyNormalizedResult()
         }
 
         let engine = resolveLiveEngine()
+        // 实时会话登记（覆盖本方法的所有分支：聚合路径 / 直发路径）：
+        // 每轮都登记，会话中途切引擎或自动降级都能反映到「实时会话在用谁」。
+        markLiveSessionEngine(provider(for: engine).engine)
         if shouldChunk(engine: engine) {
             chunkManager.append(samples)
             guard chunkManager.isReadyToSend() else {
-                return emptyNormalizedResult()
+                // 聚合中：标记占位，调度层不得据此发布字幕（否则每个未达标
+                // 的 pass 都会用空 tail 清掉屏幕上正在显示的当前句）。
+                return aggregationPendingResult()
             }
             let chunk = chunkManager.takeAll()
             return try await dispatchChunk(chunk, engine: engine, absoluteRange: nil)
@@ -330,29 +424,57 @@ final class TranscriptionService: @unchecked Sendable {
         // 流式引擎：tail 重转录的重叠区间按绝对水位线裁剪（provider 只收
         // 纯新增采样，见 ASRProvider.isStreamingEngine）。无状态引擎直通。
         let liveProvider = provider(for: engine)
-        let samplesToFeed: [Float]
-        if liveProvider.isStreamingEngine {
-            samplesToFeed = waterlineLock.withLock { () -> [Float] in
+        let samplesToFeed: ArraySlice<Float>
+        if await liveProvider.isStreamingEngine {
+            // FunASR 流式：recognizer 被卸载重建（语言热切换 / 实时模型切换）时，
+            // 已喂入但未出结果的音频随旧 recognizer 一起消失——喂音水位线必须
+            // 回退，让该区间重新喂入新 recognizer，否则这段音频永久漏识别。
+            let funasrGeneration: Int?
+            if liveProvider.engine == .funasr {
+                funasrGeneration = await funasrProvider.recognizerGeneration
+            } else {
+                funasrGeneration = nil
+            }
+            samplesToFeed = waterlineLock.withLock { () -> ArraySlice<Float> in
                 if streamingWaterlineEngine != liveProvider.engine {
                     streamingWaterline.reset()
                     streamingWaterlineEngine = liveProvider.engine
+                    streamingWaterlineFunASRGeneration = funasrGeneration
+                } else if let funasrGeneration,
+                          streamingWaterlineFunASRGeneration != funasrGeneration {
+                    streamingWaterline.reset()
+                    streamingWaterlineFunASRGeneration = funasrGeneration
                 }
                 guard let range = absoluteRange else {
                     streamingWaterline.markUntrackedFeed()
                     return samples
                 }
-                guard let start = streamingWaterline.unfedStart(in: range) else {
+                // 只 peek 不提交：喂入可能失败（Apple 未授权/会话错误/
+                // 超时），把没送到的音频记成「已喂」会让后续每轮都从它之后
+                // 开始 —— 那段音频永久不再转录，字幕静默跳过一截。
+                // 成功后在下面 commitFed 推进水位线。
+                guard let start = streamingWaterline.peekUnfedStart(in: range) else {
                     return []
                 }
-                return Array(samples[start...])
+                // 零拷贝裁剪：dropFirst 返回借用原存储的切片（P0 链路禁 Array）。
+                return samples.dropFirst(start)
             }
             if samplesToFeed.isEmpty {
-                return emptyNormalizedResult()
+                // 区间已全部喂过（tail 重转录的重复部分）：同样没有新产出。
+                return aggregationPendingResult()
             }
         } else {
             samplesToFeed = samples
         }
-        return try await dispatchChunk(samplesToFeed, engine: engine, absoluteRange: absoluteRange)
+        let result = try await dispatchChunk(samplesToFeed, engine: engine,
+                                             absoluteRange: absoluteRange)
+        // 喂入成功：推进水位线（失败时上面已抛出，水位线保持不动，
+        // 下一轮重发同一区间，不丢音频——流式引擎的重复发送由水位线
+        // 本身保证只在「上轮没成功」时发生）。
+        if await liveProvider.isStreamingEngine, let range = absoluteRange {
+            waterlineLock.withLock { streamingWaterline.commitFed(range) }
+        }
+        return result
     }
 
     /// 空归一结果（调度层在无音频 / 未达标时收到，仍携带引擎与元数据）。
@@ -360,16 +482,28 @@ final class TranscriptionService: @unchecked Sendable {
         let engine = provider(for: resolveLiveEngine()).engine
         return .empty(engine: engine, metadata: ASRMetadata.default(isStreamingEngine: false))
     }
+
+    /// 「本轮无产出、音频仍在聚合/已喂过」占位结果：调度层应跳过字幕发布。
+    /// mergePolicy 在此路径不参与显示（结果永远没有 segments），
+    /// 关键字段是 isAggregationPending。
+    private func aggregationPendingResult() -> NormalizedASRResult {
+        let engine = provider(for: resolveLiveEngine()).engine
+        return .aggregationPending(
+            engine: engine,
+            metadata: ASRMetadata.default(isStreamingEngine: false))
+    }
     /// 把切片（或原样样本）发送到对应引擎的 Provider，出口统一归一化：
     /// Provider 返回结果经 ASRResultNormalizer 折算（引擎喂音语义
     /// isStreamingEngine → 合并策略元数据），字幕层不再感知引擎差异。
-    private func dispatchChunk(_ samples: [Float],
+    private func dispatchChunk(_ samples: ArraySlice<Float>,
                                engine: ResolvedEngine,
                                absoluteRange: Range<Int>?) async throws -> NormalizedASRResult {
         let chunkProvider = provider(for: engine)
-        let metadata = ASRMetadata.default(isStreamingEngine: chunkProvider.isStreamingEngine)
+        let metadata = ASRMetadata.default(isStreamingEngine: await chunkProvider.isStreamingEngine)
         let result = try await chunkProvider.transcribeChunk(
             samples: samples, absoluteRange: absoluteRange)
+        // 段级 final 语义（含 isRevision → final 修正）由归一层按
+        // mergePolicy 折算，调度层直接消费归一结果，无需在此二次改写。
         return ASRResultNormalizer.normalize(
             result, engine: chunkProvider.engine, metadata: metadata)
     }
@@ -384,28 +518,6 @@ final class TranscriptionService: @unchecked Sendable {
         case .remote: return remoteProvider
         case .apple: return appleProvider
         case .funasr: return funasrProvider
-        }
-    }
-
-    /// 把切片（或原样样本）发送到对应引擎的 Provider。
-    private func dispatchChunk(_ samples: [Float],
-                               engine: ResolvedEngine,
-                               absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
-        switch engine {
-        case .nemotron:
-            return try await nemotronProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
-        case .qwen3asr:
-            return try await qwenProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
-        case .whisper:
-            return try await whisperProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
-        case .online:
-            return try await onlineProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
-        case .remote:
-            return try await remoteProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
-        case .apple:
-            return try await appleProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
-        case .funasr:
-            return try await funasrProvider.transcribeChunk(samples: samples, absoluteRange: absoluteRange)
         }
     }
 
@@ -424,7 +536,8 @@ final class TranscriptionService: @unchecked Sendable {
             }
         case .onlineOnly:
             switch engine {
-            case .online, .remote, .apple, .funasr: return false
+            case .online, .remote: return true
+            case .apple, .funasr: return false
             case .whisper, .nemotron, .qwen3asr: return false
             }
         }
@@ -436,25 +549,29 @@ final class TranscriptionService: @unchecked Sendable {
     /// 整段替换处理，当前句每轮被最新碎片覆盖）。这类引擎没有 tail
     /// 重转录的音频 overlap，强制封口后不需要对首字符做 overlap 裁剪。
     var liveMergePolicy: ASRMergePolicy {
-        provider(for: resolveLiveEngine()).isStreamingEngine
-            ? .appendIncrement : .replaceTail
+        get async {
+            await provider(for: resolveLiveEngine()).isStreamingEngine
+                ? .appendIncrement : .replaceTail
+        }
     }
 
     /// 实时引擎是否输出「纯增量」分块结果（mergePolicy 的布尔形式，
     /// 供喂音节奏等调度判断使用）。
     var liveEngineStreamsIncrementally: Bool {
-        liveMergePolicy == .appendIncrement
+        get async { await liveMergePolicy == .appendIncrement }
     }
 
     /// Ensure the live-transcription model is loaded (pre-loading at recording
     /// start, to avoid model loading latency on the first chunk).
     func preloadLiveModel() async throws {
-        switch resolveLiveEngine() {
+        // 先登记「本次实时会话在用哪个引擎」再加载：加载失败也要登记，
+        // 否则失败残留（部分加载的引擎）在会话收尾时不会被释放。
+        let engine = resolveLiveEngine()
+        markLiveSessionEngine(provider(for: engine).engine)
+        switch engine {
         case .whisper:
-            liveStateLock.withLock { liveNemotronActive = false }
             try await whisperProvider.prepare()
         case .nemotron:
-            liveStateLock.withLock { liveNemotronActive = true }
             try await nemotronProvider.prepare()
         case .qwen3asr:
             try await qwenProvider.prepare()

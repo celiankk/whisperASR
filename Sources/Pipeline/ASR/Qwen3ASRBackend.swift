@@ -19,7 +19,7 @@ import CTranscribe
 //   endTime   → TranscriptionSegment.end
 //   isFinal   → 由上游管道“密封”语义表达（sealed segment 即为最终句）
 
-final class Qwen3ASRBackend {
+final class Qwen3ASRBackend: @unchecked Sendable {
     /// 所有 transcribe_* 调用都在同一条串行队列上执行（会话非线程安全）。
     private let queue = DispatchQueue(label: "com.whisperasr.qwen3asr", qos: .userInitiated)
     private let stateLock = NSLock()
@@ -56,7 +56,8 @@ final class Qwen3ASRBackend {
     }
 
     /// 流式分块转录（16kHz 单声道 Float32 PCM，由实时管道按块调用）。
-    func transcribe(samples: [Float]) async throws -> TranscriptionResult {
+    /// 输入零拷贝切片（P0 链路），withUnsafeBufferPointer 直接喂 C API。
+    func transcribe(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
         guard !samples.isEmpty else {
             return TranscriptionResult(text: "", segments: [])
         }
@@ -64,7 +65,8 @@ final class Qwen3ASRBackend {
             queue.async {
                 do {
                     // 输入桶化：0.5s 量子对齐稳定推理形状。
-                    let text = try self.runOnSession(samples: InputBucketing.padded(samples))
+                    let padded = InputBucketing.padded(samples)
+                    let text = try self.runOnSession(samples: padded)
                     continuation.resume(returning: TranscriptionResult(
                         text: text,
                         segments: Self.estimateSegments(
@@ -87,7 +89,7 @@ final class Qwen3ASRBackend {
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> TranscriptionResult {
         let samples = try await AudioLoader.loadSamples(url: fileURL)
-        let result = try await transcribe(samples: samples)
+        let result = try await transcribe(samples: samples[...])
         onProgress(1)
         return result
     }
@@ -120,7 +122,7 @@ final class Qwen3ASRBackend {
         }
     }
 
-    private func runOnSession(samples: [Float]) throws -> String {
+    private func runOnSession(samples: ArraySlice<Float>) throws -> String {
         guard let session = stateLock.withLock({ self.session }) else {
             throw TranscriptionError.processFailed("Qwen3-ASR 模型尚未加载。")
         }

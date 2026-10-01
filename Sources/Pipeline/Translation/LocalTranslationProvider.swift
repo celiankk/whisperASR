@@ -21,6 +21,20 @@ struct LocalTranslationProvider: TranslationProvider {
                                  targetLanguage: request.targetLanguage)
     }
 
+    /// 流式（单句）：本地 OpenAI 兼容服务同样支持 SSE，逐 token 喂 onDelta。
+    /// 此前未覆写，走协议默认实现（一次性回调完整译文），本地模式失去
+    /// 逐字上屏效果（与在线模式行为不一致）。
+    func translateStreaming(_ request: TranslationRequest,
+                            onDelta: @escaping @Sendable (String) -> Void) async throws -> TranslationResult {
+        let text = try await TranslationService.translateStreaming(
+            segmentText: request.texts.joined(separator: "\n"),
+            targetLanguage: request.targetLanguage,
+            previousTranslations: request.previousTranslations,
+            local: true,
+            onDelta: onDelta)
+        return TranslationResult(texts: [text], targetLanguage: request.targetLanguage)
+    }
+
     /// 与设置页「检测 API 状态」的本地分支一致：解析端点并探测模型列表，
     /// 不发真实翻译请求。
     func testConnection() async -> TranslationConnectionStatus {

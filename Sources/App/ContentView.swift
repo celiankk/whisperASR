@@ -1,31 +1,43 @@
 import AppKit
 import SwiftUI
 
+/// 主窗口根视图。
+///
+/// 结构（方向 A 重构后）：
+/// ```
+/// ZStack
+///  ├─ 设置内嵌页  |  WorkbenchView（历史 rail + 转录工作台 + 悬浮播放胶囊）
+///  ├─ Toast（浮动）
+///  └─ Onboarding 覆盖层
+/// ```
+/// 工具栏只留两件事：设置、录制。模型选择与条目动作已下沉到工作台头部。
 struct ContentView: View {
     @Environment(AppState.self) var appState
     @Environment(AudioPlayerManager.self) var audioPlayer
     @Environment(AudioRecorder.self) var recorder
     @State private var showModelDownload = false
+    @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "onboardingCompleted")
 
     var body: some View {
         @Bindable var appState = appState
-        VStack(spacing: 0) {
+        ZStack {
             if appState.showingSettingsPage {
                 // 主窗口内嵌设置页：工具栏设置按钮在主窗口内部切换，
                 // 不新建窗口；录制状态在切换期间保持（recorder 由 App 级持有）。
                 SettingsView()
             } else {
-                NavigationSplitView {
-                    SidebarView()
-                        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
-                } detail: {
-                    DetailView()
-                }
+                WorkbenchView()
             }
 
-            if !appState.showingSettingsPage, appState.selectedItem?.status == .completed {
-                Divider()
-                PlayerView()
+            // ── 首次引导 overlay ──
+            if showOnboarding {
+                OnboardingView {
+                    Motion.run(Motion.exit(0.4)) {
+                        showOnboarding = false
+                    }
+                }
+                .transition(.opacity)
+                .zIndex(10)
             }
         }
         .toolbar {
@@ -96,7 +108,11 @@ struct ContentView: View {
                 showModelDownload = true
             }
         }
-        // 录制状态监听挂在外层（设置页切换会卸载 SidebarView，不能放在那里）。
+        // 引导页「去下载」：状态归本视图持有，引导页只发请求。
+        .onReceive(NotificationCenter.default.publisher(for: .showModelDownload)) { _ in
+            showModelDownload = true
+        }
+        // 录制状态监听挂在外层（设置页切换会卸载历史栏，不能放在那里）。
         .onChange(of: recorder.state) { old, new in
             if new == .recording {
                 let appState = appState
@@ -108,6 +124,8 @@ struct ContentView: View {
                 recorder.onMeetingEnded = nil
             }
         }
+        // 把系统 Reduce Motion 同步给 Motion 闸门（withAnimation 型调用点用）。
+        .reduceMotionGate()
     }
 
     private func handleMeetingEnded(appState: AppState, recorder: AudioRecorder) {

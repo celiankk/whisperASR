@@ -68,23 +68,40 @@ struct NormalizedASRResult: Equatable, Sendable {
     /// Provider 原始整段文本（文件转录的 fullText 兼容字段；
     /// 实时链路不使用——增量语义下整段文本无意义）。
     var fullText: String = ""
+    /// 真 = 本轮没有产出，因为音频**仍在聚合中**（未达发送条件），
+    /// 而不是「引擎听清了、结果是空」。
+    ///
+    /// 调度层据此跳过字幕发布：聚合未达标时 tail 段为空，若按
+    /// `.replaceTail` 提交会把 pendingTail 清空 —— 屏幕上的当前句在
+    /// 每个未达标的 pass 上被抹掉（启用「音频分片：仅本地/仅在线」后
+    /// 字幕随分片节奏闪烁消失）。空但非聚合（真静音）仍按空结果提交。
+    var isAggregationPending: Bool = false
 
     init(segments: [NormalizedSegment],
          language: String?,
          engine: ASREngineType,
          metadata: ASRMetadata,
-         fullText: String = "") {
+         fullText: String = "",
+         isAggregationPending: Bool = false) {
         self.segments = segments
         self.language = language
         self.engine = engine
         self.metadata = metadata
         self.fullText = fullText
+        self.isAggregationPending = isAggregationPending
     }
 
     /// 空结果（喂入为空 / 引擎暂无产出）：保留引擎与元数据，
     /// 字幕层按空段跳过显示但可依赖 metadata 做调度决策。
     static func empty(engine: ASREngineType, metadata: ASRMetadata) -> NormalizedASRResult {
         NormalizedASRResult(segments: [], language: nil, engine: engine, metadata: metadata)
+    }
+
+    /// 「聚合中、本轮无产出」占位结果（与 empty 的区别见 isAggregationPending）。
+    static func aggregationPending(engine: ASREngineType,
+                                   metadata: ASRMetadata) -> NormalizedASRResult {
+        NormalizedASRResult(segments: [], language: nil, engine: engine,
+                            metadata: metadata, isAggregationPending: true)
     }
 
     /// 是否含非空文本段（空文本段在 Normalizer 已丢弃，此处即「有无内容」）。

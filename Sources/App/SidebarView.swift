@@ -2,7 +2,14 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct SidebarView: View {
+/// 历史栏（原 SidebarView）。自绘双栏的左栏：固定 268pt，
+/// 行模板移植 recent.design 的命名网格列（图标列 / 主文本 / 次文本 / 元数据列）。
+///
+/// 与旧实现的行为差异（有意为之）：
+/// • 不再用 `List(selection:)`，选中改由点行直接写 `appState.selectedItemID`，
+///   以换到「悬停淡出 + 露边圆角 + 激活游标」这些 List 里做不到的表达；
+/// • 「添加文件」从窗口工具栏移到栏头（贴近列表本体）。
+struct HistoryRail: View {
     @Environment(AppState.self) var appState
     @State private var isDropTargeted = false
     @State private var renamingItem: TranscriptionItem?
@@ -13,16 +20,17 @@ struct SidebarView: View {
     @State private var isEditMode = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var showBatchDeleteConfirm = false
-    // Search results are computed once per debounced query (not per keystroke,
-    // not per row per render) — scanning every transcript's full text on each
-    // keystroke made typing janky with a large library.
+    // 悬停聚焦：hover 某行时其余行压到 Ink.dimmedSibling（站点 li:not(:hover) 手法）。
+    @State private var hoveredID: UUID?
+    // 搜索结果按防抖后的查询算一次（不是每次按键、也不是每行每次渲染）：
+    // 大库下逐键全表扫描会让输入明显掉帧。
     @State private var committedQuery = ""
     @State private var matchingIDs: Set<UUID> = []
     @State private var matchCounts: [UUID: Int] = [:]
     @State private var searchDebounceTask: Task<Void, Never>?
 
-    // Kept in step with what the file picker (.audio/.movie) and AudioLoader
-    // (AVFoundation, with an ffmpeg fallback for WebM/Opus/MKV) can handle.
+    // 与文件选择器 (.audio/.movie) 和 AudioLoader（AVFoundation +
+    // ffmpeg 兜底 WebM/Opus/MKV）能处理的格式保持一致。
     private let supportedExtensions: Set<String> = [
         "mp3", "wav", "m4a", "mp4", "m4v", "mov", "aac", "flac",
         "ogg", "oga", "opus", "webm", "mkv", "wma", "aiff", "aif", "caf"
@@ -63,35 +71,33 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        @Bindable var appState = appState
+        VStack(spacing: 0) {
+            railHeader
+            searchField
 
-        Group {
             if appState.items.isEmpty && searchText.isEmpty {
                 emptyDropZone
             } else {
                 itemList
             }
+
+            if isEditMode { editActionBar }
         }
+        .background(Ink.faint)
         .overlay {
             if isDropTargeted {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 2.5, dash: [8, 4]))
-                    .foregroundStyle(.blue)
-                    .background(.blue.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .padding(4)
+                Corner.rect(Corner.small)
+                    .strokeBorder(
+                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
+                    )
+                    .foregroundStyle(Color.accentColor)
+                    .background(Ink.soft(Color.accentColor, 0.06))
+                    .clipShape(Corner.rect(Corner.small))
+                    .padding(6)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDrop(providers)
-        }
-        .toolbar {
-            ToolbarItem {
-                Button(action: openFilePicker) {
-                    Label("添加文件", systemImage: "plus")
-                }
-            }
-            // 「选择」按钮已移至转录文件列表上方的搜索行（紧贴列表本体）。
         }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
@@ -107,7 +113,7 @@ struct SidebarView: View {
             }
         }
         .onChange(of: appState.items.count) { _, _ in
-            // Keep active search results in sync when items are added/removed.
+            // 增删条目后，让已生效的搜索结果同步跟上。
             if !committedQuery.isEmpty { recomputeSearch(for: committedQuery) }
         }
         .alert("重命名", isPresented: Binding(
@@ -158,241 +164,218 @@ struct SidebarView: View {
         }
     }
 
+    // MARK: - 栏头
+
+    private var railHeader: some View {
+        HStack(spacing: Metrics.sm) {
+            Text("转录历史")
+                .font(Type.mono(Type.label, weight: .medium))
+                .tracking(Type.labelTracking)
+                .foregroundStyle(Ink.secondary)
+            if !appState.items.isEmpty {
+                Text("\(appState.items.count)")
+                    .font(Type.mono(Type.micro, weight: .medium))
+                    .foregroundStyle(Ink.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Corner.rect(Corner.tiny).fill(Ink.subtle))
+            }
+            if appState.isLiveTranscribing {
+                HStack(spacing: 4) {
+                    ActiveDot(active: true, color: Palette.live)
+                    Text("实时")
+                        .font(Type.mono(Type.micro, weight: .medium))
+                        .foregroundStyle(Palette.live)
+                }
+            }
+            Spacer(minLength: 0)
+
+            Button(action: openFilePicker) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(GhostButtonStyle(size: 24))
+            .help("添加音频/视频文件")
+
+            Button {
+                isEditMode.toggle()
+                if !isEditMode { selectedIDs = [] }
+            } label: {
+                Text(isEditMode ? "完成" : "选择")
+                    .font(Type.text(Type.caption))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(isEditMode ? Color.accentColor : Ink.secondary)
+            .disabled(appState.items.isEmpty)
+            .motionAnimation(Motion.standard(0.18), value: isEditMode)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, Metrics.xs)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: Metrics.sm) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundStyle(Ink.secondary)
+            TextField("搜索转录…", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(Type.text(Type.caption))
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Ink.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(Corner.rect(Corner.small).fill(Ink.subtle))
+        .overlay(Corner.rect(Corner.small).strokeBorder(Ink.hairline, lineWidth: 0.5))
+        .padding(.horizontal, 12)
+        .padding(.bottom, Metrics.xs)
+    }
+
     // MARK: - Empty State
 
     private var emptyDropZone: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: Metrics.lg) {
             Image(systemName: "waveform.badge.plus")
-                .font(.system(size: 44))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(Ink.secondary)
             Text("拖放音频文件到此处")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("MP3, WAV, M4A, MP4, AAC, FLAC")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(Type.text(Type.emphasis))
+                .titleTracking(Type.emphasis)
+                .foregroundStyle(Ink.secondary)
+            Text("MP3 · WAV · M4A · MP4 · AAC · FLAC")
+                .font(Type.mono(Type.micro))
+                .tracking(Type.labelTracking)
+                .foregroundStyle(Ink.secondary.opacity(0.7))
+            Button("选择文件…", action: openFilePicker)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Item List
 
     private var itemList: some View {
-        @Bindable var state = appState
-        return VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                TextField("搜索转录…", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.callout)
-                if !searchText.isEmpty {
-                    Button {
-                        searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                }
-                // 多选编辑入口（紧贴转录文件列表上方；编辑态操作在列表
-                // 底部操作栏：全选/删除/完成）。
-                if !isEditMode {
-                    Button {
-                        isEditMode = true
-                    } label: {
-                        Text("选择")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .disabled(appState.items.isEmpty)
-                    .help("多选转录文件（批量删除）")
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
-
-            if isEditMode {
-                // 编辑模式：显式勾选圈（macOS List 的 Set 多选要 ⌘/⇧ 点按，
-                // 无可见勾选 UI），点行任意位置即切换勾选。
-                List {
-                    editModeRows
-                }
-
-                // 底部操作栏：全选 / 批量删除（带确认）/ 完成。
-                HStack(spacing: 12) {
-                    Button(selectedIDs.count == filteredItems.count && !filteredItems.isEmpty
-                           ? "全不选" : "全选") {
-                        if selectedIDs.count == filteredItems.count {
-                            selectedIDs = []
-                        } else {
-                            selectedIDs = Set(filteredItems.map(\.id))
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-
-                    Spacer()
-
-                    Button(role: .destructive) {
-                        showBatchDeleteConfirm = true
-                    } label: {
-                        Label("删除(\(selectedIDs.count))", systemImage: "trash")
-                    }
-                    .disabled(selectedIDs.isEmpty)
-
-                    Button("完成") {
-                        isEditMode = false
-                        selectedIDs = []
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                }
-                .font(.callout)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
-            } else {
-                List(selection: $state.selectedItemID) {
-                    itemRows
-                }
-            }
-        }
-    }
-
-    /// 编辑模式行：前置勾选圈 + 点行切换（不改动 selectedItemID，不跳详情）。
-    @ViewBuilder
-    private var editModeRows: some View {
-        ForEach(filteredItems) { item in
-            HStack(spacing: 8) {
-                Image(systemName: selectedIDs.contains(item.id)
-                      ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selectedIDs.contains(item.id)
-                                     ? Color.accentColor : Color.secondary)
-                    .font(.title3)
-                statusIcon(item)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.fileURL.deletingPathExtension().lastPathComponent)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(statusLabel(item))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if selectedIDs.contains(item.id) {
-                    selectedIDs.remove(item.id)
-                } else {
-                    selectedIDs.insert(item.id)
-                }
-            }
-            .tag(item.id)
-        }
-    }
-
-    /// 历史列表行（普通/编辑两种 List 共用，避免两份实现漂移）。
-    @ViewBuilder
-    private var itemRows: some View {
-        ForEach(filteredItems) { item in
-            HStack(spacing: 8) {
-                statusIcon(item)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.fileURL.deletingPathExtension().lastPathComponent)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    HStack(spacing: 4) {
-                        Text(statusLabel(item))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if !committedQuery.isEmpty {
-                            let count = matchCounts[item.id] ?? 0
-                            if count > 0 {
-                                Text("\(count) 个匹配")
-                                    .font(.caption2)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(Color.accentColor.opacity(0.8))
-                                    .clipShape(Capsule())
+        ScrollView {
+            LazyVStack(spacing: 2) {
+                ForEach(filteredItems) { item in
+                    RailRow(
+                        item: item,
+                        isSelected: appState.selectedItemID == item.id,
+                        isEditing: isEditMode,
+                        isChecked: selectedIDs.contains(item.id),
+                        matchCount: matchCounts[item.id] ?? 0,
+                        dimmed: hoveredID != nil && hoveredID != item.id,
+                        onTap: {
+                            if isEditMode {
+                                if selectedIDs.contains(item.id) {
+                                    selectedIDs.remove(item.id)
+                                } else {
+                                    selectedIDs.insert(item.id)
+                                }
+                            } else {
+                                appState.selectedItemID = item.id
                             }
                         }
+                    )
+                    .onHover { inside in
+                        // 触屏/无指针环境不会触发，无需 hover 媒体查询。
+                        hoveredID = inside ? item.id : (hoveredID == item.id ? nil : hoveredID)
                     }
+                    .contextMenu { rowContextMenu(item) }
                 }
             }
-            .tag(item.id)
-            .contextMenu {
-                Button("重命名") {
-                    renameText = item.fileURL.deletingPathExtension().lastPathComponent
-                    renamingItem = item
-                }
-                Button("复制文件") {
-                    let pasteboard = NSPasteboard.general
-                    pasteboard.clearContents()
-                    pasteboard.writeObjects([item.fileURL as NSURL])
-                }
-                Button("在访达中显示") {
-                    NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
-                }
-                Divider()
-                if item.status != .transcribing {
-                    Button("重新转录") {
-                        appState.retranscribe(item)
-                    }
-                }
-                // Buffer rows to push Remove well away from Re-transcribe,
-                // so it can't be triggered by an accidental click.
-                Divider()
-                Button(" ") {}.disabled(true)
-                Button(" ") {}.disabled(true)
-                Divider()
-                Button("移除", role: .destructive) {
-                    itemPendingRemoval = item
-                }
+            .padding(.horizontal, 8)
+            .padding(.vertical, Metrics.xs)
+        }
+        .scrollIndicators(.automatic)
+        .edgeFadeVertical(24)
+    }
+
+    @ViewBuilder
+    private func rowContextMenu(_ item: TranscriptionItem) -> some View {
+        Button("重命名") {
+            renameText = item.fileURL.deletingPathExtension().lastPathComponent
+            renamingItem = item
+        }
+        Button("复制文件") {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([item.fileURL as NSURL])
+        }
+        Button("在访达中显示") {
+            NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
+        }
+        Divider()
+        if item.status != .transcribing {
+            Button("重新转录") {
+                appState.retranscribe(item)
             }
         }
+        // 缓冲项：把「移除」推离「重新转录」，避免误点。
+        Divider()
+        Button(" ") {}.disabled(true)
+        Button(" ") {}.disabled(true)
+        Divider()
+        // 转录进行中不提供「移除」：完成回调会回写记录，删除即复活。
+        // 管理器层同样拒绝（双保险），此处直接隐藏入口避免误操作。
+        if item.status != .transcribing {
+            Button("移除", role: .destructive) {
+                itemPendingRemoval = item
+            }
+        }
+    }
+
+    // MARK: - 编辑模式底部动作条
+
+    private var editActionBar: some View {
+        HStack(spacing: Metrics.lg) {
+            Button(selectedIDs.count == filteredItems.count && !filteredItems.isEmpty
+                   ? "全不选" : "全选") {
+                if selectedIDs.count == filteredItems.count {
+                    selectedIDs = []
+                } else {
+                    selectedIDs = Set(filteredItems.map(\.id))
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+
+            Spacer()
+
+            Button(role: .destructive) {
+                showBatchDeleteConfirm = true
+            } label: {
+                Label("删除(\(selectedIDs.count))", systemImage: "trash")
+            }
+            .disabled(selectedIDs.isEmpty)
+
+            Button("完成") {
+                isEditMode = false
+                selectedIDs = []
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+        }
+        .font(Type.text(Type.caption))
+        .padding(.horizontal, 12)
+        .padding(.vertical, Metrics.md)
+        .overlay(alignment: .top) { HairlineDivider() }
+        .background(Ink.faint)
     }
 
     // MARK: - Helpers
-
-    @ViewBuilder
-    private func statusIcon(_ item: TranscriptionItem) -> some View {
-        switch item.status {
-        case .pending:
-            Image(systemName: "clock")
-                .foregroundStyle(.secondary)
-        case .transcribing:
-            CircularProgressView(progress: item.progress)
-                .frame(width: 18, height: 18)
-        case .completed:
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        case .failed:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-        }
-    }
-
-    private func statusLabel(_ item: TranscriptionItem) -> String {
-        switch item.status {
-        case .pending: return "等待中"
-        case .transcribing: return "\(Int(item.progress * 100))%"
-        case .completed: return "已完成"
-        case .failed: return "失败"
-        }
-    }
-
-    // MARK: - Drop Handling
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         let state = appState
@@ -417,8 +400,6 @@ struct SidebarView: View {
         return handled
     }
 
-    // MARK: - File Picker
-
     private func openFilePicker() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -433,111 +414,146 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - Model Picker
+// MARK: - 历史行
 
-/// Toolbar menu for choosing which model transcribes new audio.
-/// 融合两类来源：ModelManager 下载目录（catalog）+ LocalModelManager 扫描到的
-/// 本地自定义模型（如 LM Studio 模型目录），与 resolveModelPath 同一优先级：
-/// 选中本地模型写入 modelPath（最高优先级）；选回 catalog/自动时清除 modelPath。
-struct ModelPickerMenu: View {
-    @State private var manager = ModelManager.shared
-    @State private var localModels = LocalModelManager.shared
+/// 单行：状态图标 · 文件名/摘要 · 等宽元数据。悬停淡出由父级驱动。
+private struct RailRow: View {
+    let item: TranscriptionItem
+    let isSelected: Bool
+    let isEditing: Bool
+    let isChecked: Bool
+    let matchCount: Int
+    let dimmed: Bool
+    /// 点行回调：编辑态 = 切换勾选，普通态 = 选中该条目（由父级决定，
+    /// 子视图不反向持有父状态）。
+    let onTap: () -> Void
 
-    /// 本地模型在 Picker 中的 tag 前缀（与 catalog fileName 区分）。
-    private static let localTagPrefix = "local:"
+    @State private var hovering = false
 
-    /// 当前生效的自定义模型路径（文件必须存在，否则视为未设置）。
-    private var activeCustomPath: String {
-        let path = UserDefaults.standard.string(forKey: "modelPath") ?? ""
-        return (!path.isEmpty && FileManager.default.fileExists(atPath: path)) ? path : ""
-    }
+    var body: some View {
+        HStack(alignment: .center, spacing: Metrics.md) {
+            if isEditing {
+                Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(isChecked ? Color.accentColor : Ink.secondary)
+            } else {
+                StatusMark(item: item)
+            }
 
-    /// 转录模型选择绑定：本地模型 tag = "local:<完整路径>"。
-    private var mainModelSelection: Binding<String> {
-        Binding(
-            get: {
-                let custom = activeCustomPath
-                return custom.isEmpty ? manager.selectedFileName : Self.localTagPrefix + custom
-            },
-            set: { value in
-                if value.hasPrefix(Self.localTagPrefix) {
-                    let path = String(value.dropFirst(Self.localTagPrefix.count))
-                    UserDefaults.standard.set(path, forKey: "modelPath")
-                    AppLogger.shared.log(.model, "Quick switch to local model: \(path)")
-                } else {
-                    // 选回下载模型/自动：清除自定义路径（否则它优先级最高，选择不生效）。
-                    UserDefaults.standard.set("", forKey: "modelPath")
-                    manager.selectedFileName = value
-                    AppLogger.shared.log(.model, "Quick switch to catalog model: \(value.isEmpty ? "自动" : value)")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.fileURL.deletingPathExtension().lastPathComponent)
+                    .font(Type.text(Type.caption, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                if let snippet = snippetText {
+                    Text(snippet)
+                        .font(Type.text(Type.micro))
+                        .foregroundStyle(Ink.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: Metrics.xs)
+
+            trailingMeta
+        }
+        .padding(.horizontal, 8)
+        .frame(height: Metrics.rowHeight - 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            ZStack(alignment: .leading) {
+                Corner.rect(Corner.small)
+                    .fill(isSelected ? Ink.active : (hovering ? Ink.hover : .clear))
+                if isSelected && !isEditing {
+                    // 激活条：2pt 短条而不是整行实色块。
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 2, height: 16)
+                        .padding(.leading, 3)
                 }
             }
         )
+        .contentShape(Corner.rect(Corner.small))
+        .opacity(dimmed ? Ink.dimmedSibling : 1)
+        .motionAnimation(Motion.standard(0.18), value: dimmed)
+        .motionAnimation(Motion.standard(0.18), value: hovering)
+        .motionAnimation(Motion.standard(0.18), value: isSelected)
+        .onTapGesture(perform: onTap)
+        .onHover { inside in hovering = inside }
     }
 
-    /// 菜单按钮标题：当前模型显示名。
-    private var currentModelLabel: String {
-        let custom = activeCustomPath
-        if !custom.isEmpty {
-            return (custom as NSString).deletingPathExtension
-                .components(separatedBy: "/").last ?? "本地模型"
-        }
-        return manager.selectedModel?.displayName ?? "模型"
+    private var snippetText: String? {
+        guard !isEditing else { return nil }
+        let text = item.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        return String(text.prefix(48))
     }
 
-    var body: some View {
-        Menu {
-            Picker("转录模型", selection: mainModelSelection) {
-                Text("自动").tag("")
-                ForEach(manager.downloadedModels) { model in
-                    Text(model.displayName).tag(model.fileName)
-                }
-                if !localModels.models.isEmpty {
-                    Divider()
-                    ForEach(localModels.models) { model in
-                        Text("\(model.name)（本地 \(model.sizeText)）")
-                            .tag(Self.localTagPrefix + model.path)
-                    }
-                }
+    @ViewBuilder
+    private var trailingMeta: some View {
+        switch item.status {
+        case .transcribing:
+            Text("\(Int(item.progress * 100))%")
+                .font(Type.mono(Type.micro, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .contentTransition(.numericText())
+        case .failed:
+            Text("失败")
+                .font(Type.mono(Type.micro, weight: .medium))
+                .foregroundStyle(Palette.danger)
+        case .pending:
+            Text("排队")
+                .font(Type.mono(Type.micro))
+                .foregroundStyle(Ink.secondary)
+        case .completed:
+            if matchCount > 0 {
+                Text("\(matchCount) 处")
+                    .font(Type.mono(Type.micro, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+            } else {
+                Text(RailRow.dayString(item.dateAdded))
+                    .font(Type.mono(Type.micro))
+                    .foregroundStyle(Ink.secondary)
             }
-            .pickerStyle(.inline)
-            Picker("实时转录模型", selection: Binding(
-                get: { manager.liveFileName },
-                set: { manager.liveFileName = $0 }
-            )) {
-                Text("与转录模型相同").tag("")
-                ForEach(manager.downloadedModels) { model in
-                    Text(model.displayName).tag(model.fileName)
-                }
-            }
-            .pickerStyle(.inline)
-            Divider()
-            SettingsLink {
-                Text("管理模型…")
-            }
-        } label: {
-            Label(currentModelLabel, systemImage: "cpu")
         }
-        .help("用于转录的模型：\(currentModelLabel)")
-        .onAppear {
-            manager.refresh()
-            localModels.scan()
-        }
+    }
+
+    static func dayString(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "今天" }
+        if cal.isDateInYesterday(date) { return "昨天" }
+        return date.formatted(.dateTime.month(.twoDigits).day(.twoDigits))
     }
 }
 
-// MARK: - Circular Progress
+// MARK: - 状态标记
 
-struct CircularProgressView: View {
-    let progress: Double
+/// 状态图标：进行中用呼吸环（方案 8），其余用低饱和符号。
+struct StatusMark: View {
+    let item: TranscriptionItem
 
     var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Color.secondary.opacity(0.2), lineWidth: 2.5)
-            Circle()
-                .trim(from: 0, to: CGFloat(progress))
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                .rotationEffect(.degrees(-90))
+        switch item.status {
+        case .pending:
+            Image(systemName: "clock")
+                .font(.system(size: 11))
+                .foregroundStyle(Ink.secondary)
+                .frame(width: 16, height: 16)
+        case .transcribing:
+            CircularProgressView(progress: item.progress)
+                .frame(width: 16, height: 16)
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(Palette.ok.opacity(0.85))
+                .frame(width: 16, height: 16)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.danger.opacity(0.9))
+                .frame(width: 16, height: 16)
         }
     }
 }

@@ -43,8 +43,8 @@ final class OnlineASRBuffer: @unchecked Sendable {
         self.silenceThreshold = silenceThreshold
     }
 
-    /// 追加音频（实时 chunk 持续累积）。
-    func append(_ newSamples: [Float]) {
+    /// 追加音频（实时 chunk 持续累积）。接收零拷贝切片（P0 链路禁 Array）。
+    func append(_ newSamples: ArraySlice<Float>) {
         lock.lock()
         defer { lock.unlock() }
         if samples.isEmpty {

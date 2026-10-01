@@ -30,7 +30,7 @@ enum L10n {
         "menubar.obsWindow": ("OBS 字幕窗", "OBS Subtitle Window"),
         "menubar.asrLanguage": ("识别语言", "Recognition Language"),
         "menubar.translation": ("翻译语言", "Translation Language"),
-        "menubar.quit": ("退出 WhisperASR", "Quit WhisperASR"),
+        "menubar.quit": ("退出 声记 SonicScribe", "Quit SonicScribe"),
         "menubar.engine.switched": ("识别引擎已切换", "ASR engine switched"),
         // 通用
         "common.back": ("返回转录", "Back to Transcripts"),

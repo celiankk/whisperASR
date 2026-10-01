@@ -158,7 +158,9 @@ final class AppleSpeechManager: @unchecked Sendable, ASRProvider {
     }
 
     /// 实时分块：喂入流式会话，返回本次新增文本（增量模式）。
-    /// 未产生新内容返回空（AppState 继续累积）。
+    /// 未产生新内容时返回带 `isAggregationPending: true` 的空结果
+    ///（"本轮无新文本"≠"结果为空"，调度层据此跳过字幕发布）。
+    /// final 修正（`isRevision: true`，文本为该段完整文本）原样透传。
     /// 授权只在 prepare() 时请求；此处仅检查状态（避免录制中弹窗挂起循环）。
     /// VAD 断句：chunk 尾部连续静音 ≥400ms 视为断句点——立即取当前句返回
     /// （不等 5s 超时），句子快速进入字幕封口 → 触发翻译。
@@ -166,13 +168,16 @@ final class AppleSpeechManager: @unchecked Sendable, ASRProvider {
     /// 本方法收到的 samples 即纯新增采样（absoluteRange 参数忽略）。
     var isStreamingEngine: Bool { true }
 
-    func transcribeChunk(samples: [Float]) async throws -> TranscriptionResult {
+    func transcribeChunk(samples: ArraySlice<Float>) async throws -> TranscriptionResult {
         try await transcribeChunk(samples: samples, absoluteRange: nil)
     }
 
-    func transcribeChunk(samples: [Float], absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
+    func transcribeChunk(samples: ArraySlice<Float>, absoluteRange: Range<Int>?) async throws -> TranscriptionResult {
         guard !samples.isEmpty else {
-            return TranscriptionResult(text: "", segments: [])
+            // 空输入 = 本轮无音频可喂（调度侧水位线裁剪后无新增），不是
+            // "引擎听清了空"。标记 isAggregationPending，避免调度层按空 tail
+            // 提交清掉屏幕上正在显示的当前句（与 Online/Remote 一致）。
+            return TranscriptionResult(text: "", segments: [], isAggregationPending: true)
         }
         guard #available(macOS 26, *) else {
             throw AppleSpeechError.unavailable("Apple Speech 需要 macOS 26+")
@@ -208,10 +213,15 @@ final class AppleSpeechManager: @unchecked Sendable, ASRProvider {
         // 返回空，让循环继续喂音；下一轮 pass 会先零延迟取走已到的文本。
         let timeout = Self.hasTrailingSilence(preprocessed) ? 1.0 : 0.25
         if let incremental = await engine.waitForTextGrowth(timeout: timeout) {
-            incremental.log(provider: "apple", isPartial: true)
+            // 原样透传引擎结果：isRevision（final 修正）与 isAggregationPending
+            // 是上层调度/字幕重建的关键语义，此处不得重建结构体或丢字段。
+            incremental.log(provider: "apple", isPartial: !incremental.isRevision)
             return incremental
         }
-        return TranscriptionResult(text: "", segments: [])
+        // 文本未到（本窗口内引擎无新产出）：Apple 是**流式**引擎，空返回意味着
+        // "本轮无新文本"，而不是"结果为空"——标记 isAggregationPending，调度层
+        // 跳过字幕发布继续喂音（空 tail 的 .replaceTail 提交会抹掉当前句）。
+        return TranscriptionResult(text: "", segments: [], isAggregationPending: true)
     }
 
     /// 文件转录：临时流式会话喂入全文件 → final 结果。
@@ -342,8 +352,9 @@ final class AppleSpeechManager: @unchecked Sendable, ASRProvider {
     }
 
     /// 音频预处理：高通去直流 + 噪声底估计 + 小信号增益。
-    private static func preprocess(_ samples: [Float]) -> [Float] {
-        guard !samples.isEmpty else { return samples }
+    /// 输入零拷贝切片（P0 链路）；滤波输出天然是新数组（DSP 结果，非冗余拷贝）。
+    private static func preprocess(_ samples: ArraySlice<Float>) -> [Float] {
+        guard !samples.isEmpty else { return [] }
         let alpha: Float = 0.995
         var previousInput: Float = 0
         var previousOutput: Float = 0

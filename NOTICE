@@ -1,0 +1,91 @@
+SonicScribe (声记)
+Copyright 2026 the SonicScribe contributors
+
+This product is a derivative work of whisperASR.
+It is distributed under the Apache License, Version 2.0 (see LICENSE).
+
+
+--------------------------------------------------------------------
+UPSTREAM ATTRIBUTION
+--------------------------------------------------------------------
+
+  whisperASR — https://github.com/plateaukao/whisperASR
+  Copyright 2026 Daniel Kao (plateaukao)
+  Licensed under the Apache License, Version 2.0
+
+  This repository sits at the end of the following lineage:
+
+    plateaukao/whisperASR                  original project (not a fork)
+      -> shimianmaifu11-collab/whisperASR  fork
+        -> celiankk/whisperASR             fork (this repository's `origin`)
+
+  The upstream LICENSE file is retained verbatim and unmodified. The
+  upstream project ships no NOTICE file, so no upstream NOTICE text is
+  carried forward.
+
+  Apache-2.0 is a permissive license but it does not permit a derivative
+  work to be relicensed under different terms. This project therefore
+  remains under Apache-2.0 and must not be described as MIT.
+
+
+--------------------------------------------------------------------
+MODIFICATIONS
+--------------------------------------------------------------------
+
+In accordance with Apache License 2.0, section 4(b) — "You must cause any
+modified files to carry prominent notices stating that You changed the
+files" — notice is given that the files in this repository have been
+substantially changed from the upstream work. Principal modifications:
+
+  * Product renamed from whisperASR to SonicScribe (声记); user-facing
+    branding, bundle identifier and URL scheme changed (the legacy
+    `whisperasr://` scheme is still accepted). Internal identifiers — the
+    Swift package name, the Application Support directory and the log
+    directory — were deliberately left as `WhisperASR` so that existing
+    user history and downloaded models need no migration.
+
+  * Multi-engine ASR layer: Apple SpeechAnalyzer, Qwen3-ASR (GGUF/Metal),
+    NVIDIA Nemotron (Core ML / ANE), FunASR (SenseVoice-Small and
+    Paraformer via sherpa-onnx), online cloud APIs and a remote-LAN
+    provider, behind a single dispatching service with watchdog and
+    automatic degradation.
+
+  * Audio front end: Silero neural VAD combined with zero-crossing-rate
+    and energy filtering, adaptive noise-floor estimation, and O(1)
+    amortised buffer compaction.
+
+  * Subtitle and translation: unified floating capsule overlay, bilingual
+    dual-layer rendering with typewriter streaming, OBS / Cleanfeed
+    chroma-key output window, translation pipeline with prompt templates,
+    streaming SSE client and key-free public translation channels.
+
+  * Local OpenAI-compatible HTTP API server (transcriptions, translations,
+    model listing).
+
+  * AI meeting-minutes service, interactive timestamped transcript
+    playback, and SRT / VTT / Markdown / TXT / JSON export.
+
+  * Settings reorganised into seven sub-modules.
+
+  * Added local benchmark and evaluation tooling: Scripts/sonic_asr_mcp.py
+    (an MCP server exposing the on-device engines) and a companion ASR
+    workbench, plus the whisper-cli based speech-translation path.
+
+  * Removed the upstream Traditional Chinese README (README.zh-TW.md) and
+    replaced the documentation set with README.md / README.zh-cn.md and
+    the files under docs/.
+
+
+--------------------------------------------------------------------
+THIRD-PARTY COMPONENTS
+--------------------------------------------------------------------
+
+  whisper.cpp        MIT          https://github.com/ggml-org/whisper.cpp
+  sherpa-onnx        Apache-2.0   https://github.com/k2-fsa/sherpa-onnx
+  onnxruntime        MIT          https://github.com/microsoft/onnxruntime
+  FluidAudio         Apache-2.0   https://github.com/FluidInference/FluidAudio
+
+  Speech recognition models are downloaded separately at runtime and are
+  not bundled with this repository. Each model is distributed under its
+  own terms — for example the Breeze-ASR-25 model by MediaTek Research,
+  whose model card should be consulted before commercial use.

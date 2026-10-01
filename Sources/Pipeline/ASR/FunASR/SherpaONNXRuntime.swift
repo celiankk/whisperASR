@@ -38,10 +38,13 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
     func load(modelURL: URL) async throws {
         let modelConfig = FunASRModelConfig.config(for: modelURL)
         guard modelConfig.isComplete(in: modelURL) else {
-            let needed = modelConfig.requiredFiles.joined(separator: ", ")
+            let missing = modelConfig.missingDescription(in: modelURL)
             throw TranscriptionError.processFailed(
-                "FunASR model load failed: 缺少模型文件（需要 \(needed)）")
+                "FunASR model load failed: 缺少模型文件（\(missing)）")
         }
+        // 解析实际文件名（同一模型的不同发布批次文件名/位置不同，
+        // 见 FunASRModelConfig 头注）——下游按角色取路径，不再自行拼名。
+        let resolvedFiles = modelConfig.resolve(in: modelURL)
 
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -52,7 +55,8 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
                 case .paraformerStreaming:
                     loadOnline(modelURL: modelURL)
                 case .senseVoiceSmall, .paraformerZH, .funASRNano:
-                    loadOffline(modelURL: modelURL, type: modelConfig.modelType)
+                    loadOffline(modelURL: modelURL, type: modelConfig.modelType,
+                                files: resolvedFiles)
                 }
                 loadedType = modelConfig.modelType
                 continuation.resume()
@@ -61,7 +65,7 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
         AppLogger.shared.log(.asr, "SherpaONNX runtime available — \(modelConfig.modelType.displayName) loaded")
     }
 
-    func transcribe(pcm: [Float], sampleRate: Int) async throws -> ASRResult {
+    func transcribe(pcm: ArraySlice<Float>, sampleRate: Int) async throws -> ASRResult {
         lock.lock()
         let type = loadedType
         lock.unlock()
@@ -98,7 +102,8 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
         strdup(text)
     }
 
-    private func loadOffline(modelURL: URL, type: FunASRModelType) {
+    private func loadOffline(modelURL: URL, type: FunASRModelType,
+                             files: [String: String]) {
         var config = SherpaOnnxOfflineRecognizerConfig()
         config.model_config = SherpaOnnxOfflineModelConfig()
         config.model_config.num_threads = 2
@@ -108,14 +113,20 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
         let provider = dup("cpu")
         owned.append(provider)
         config.model_config.provider = UnsafePointer(provider)
-        let tokens = dup(modelURL.appendingPathComponent("tokens.txt").path)
-        owned.append(tokens)
-        config.model_config.tokens = UnsafePointer(tokens)
+        // tokens.txt 仅 senseVoice/paraformer 需要；nano 从 tokenizer 目录取词表，
+        // 传不存在的 tokens 路径会被 sherpa-onnx 校验拒绝
+        //（offline-model-config.cc 对 nano 跳过 tokens 检查，但不设更干净）。
+        if let tokensRel = files["tokens"] {
+            let tokens = dup(modelURL.appendingPathComponent(tokensRel).path)
+            owned.append(tokens)
+            config.model_config.tokens = UnsafePointer(tokens)
+        }
 
         switch type {
         case .senseVoiceSmall:
             config.model_config.sense_voice = SherpaOnnxOfflineSenseVoiceModelConfig()
-            let model = dup(modelURL.appendingPathComponent("model.int8.onnx").path)
+            let model = dup(modelURL.appendingPathComponent(
+                files["model"] ?? "model.int8.onnx").path)
             owned.append(model)
             config.model_config.sense_voice.model = UnsafePointer(model)
             config.model_config.sense_voice.use_itn = 1
@@ -128,17 +139,22 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
             config.model_config.sense_voice.language = UnsafePointer(hint)
         case .paraformerZH:
             config.model_config.paraformer = SherpaOnnxOfflineParaformerModelConfig()
-            let model = dup(modelURL.appendingPathComponent("model.int8.onnx").path)
+            let model = dup(modelURL.appendingPathComponent(
+                files["model"] ?? "model.int8.onnx").path)
             owned.append(model)
             config.model_config.paraformer.model = UnsafePointer(model)
         case .funASRNano:
-            // Fun-ASR-Nano（LLM）：encoder adaptor + LLM + embedding + tokenizer。
+            // Fun-ASR-Nano（LLM）：encoder adaptor + LLM + embedding + tokenizer 目录。
+            // tokenizer 必须是**目录**（内含 vocab.json/merges.txt/tokenizer.json），
+            // 传文件路径会在 sherpa-onnx 侧校验失败。
             config.model_config.funasr_nano = SherpaOnnxOfflineFunASRNanoModelConfig()
-            let path = { (name: String) in self.dup(modelURL.appendingPathComponent(name).path) }
-            let encoder = path("encoder-adaptor.int8.onnx")
-            let llm = path("llm.int8.onnx")
-            let embedding = path("embedding.int8.onnx")
-            let tokenizer = path("tokenizer.json")
+            let path = { (role: String, fallback: String) in
+                self.dup(modelURL.appendingPathComponent(files[role] ?? fallback).path)
+            }
+            let encoder = path("encoder", "encoder_adaptor.int8.onnx")
+            let llm = path("llm", "llm.int8.onnx")
+            let embedding = path("embedding", "embedding.int8.onnx")
+            let tokenizer = path("tokenizer", "Qwen3-0.6B")
             owned += [encoder, llm, embedding, tokenizer]
             config.model_config.funasr_nano.encoder_adaptor = UnsafePointer(encoder)
             config.model_config.funasr_nano.llm = UnsafePointer(llm)
@@ -188,7 +204,7 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
 
     // MARK: - 推理（Offline）
 
-    private func transcribeOffline(pcm: [Float], sampleRate: Int) -> ASRResult {
+    private func transcribeOffline(pcm: ArraySlice<Float>, sampleRate: Int) -> ASRResult {
         guard let recognizer = offlineRecognizer else {
             return ASRResult(text: "", isFinal: true, language: nil,
                              confidence: nil, timestamp: (0, nil))
@@ -220,7 +236,7 @@ final class SherpaONNXRuntime: FunASRRuntime, @unchecked Sendable {
 
     // MARK: - 推理（Online：增量 + 端点断段）
 
-    private func transcribeOnline(pcm: [Float], sampleRate: Int) -> ASRResult {
+    private func transcribeOnline(pcm: ArraySlice<Float>, sampleRate: Int) -> ASRResult {
         guard let recognizer = onlineRecognizer, let stream = onlineStream else {
             return ASRResult(text: "", isFinal: false, language: nil,
                              confidence: nil, timestamp: (0, nil))

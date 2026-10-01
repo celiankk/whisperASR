@@ -89,15 +89,36 @@ final class AppleSpeechEngine: @unchecked Sendable {
     /// 增长与修正都覆盖。
     private var consumedText = ""
 
+    /// 待消费的 final 修正标志（锁保护，与 currentText/consumedText 同锁）。
+    /// handleResult 收到 result.isFinal（引擎权威的"该段最终结果"信号）时置位，
+    /// waitForTextGrowth 消费。为什么需要独立标志：final 相对已显示的 partial
+    /// 可能只是"改写"而非"追加"（"ta pop" → "pop"），仅靠共同前缀无法区分
+    /// "改写了旧文本"和"在旧文本后新增"，会把修正结果当增量返回，上层按
+    /// appendIncrement 累积出 "ta pop pop" 脏文本。
+    private var pendingFinalRevision = false
+    /// 置位时那一版 final 段的完整文本（快照）。
+    /// 为什么快照而不是消费时读 currentText：final 之后 80ms 轮询间隔内可能
+    /// 已经到达**下一段**的 volatile 结果并覆盖 currentText，消费时再读会把
+    /// 下一段的文本当作本段 final 修正上报（丢句 + 错标 revision）。
+    private var pendingFinalRevisionText: String?
+
     /// 会话内已喂入的音频总时长（秒，按实际送入 analyzer 的帧数累计）。
     /// 文件转录超时缩放用（流式分块喂入后调用方不再持有全量采样数）。
     func totalAudioDuration() -> Double {
         Double(lock.withLock { cumulativeSamples }) / 16000.0
     }
 
-    /// 等待文本增长（增量模式）：返回自上次消费点之后的增量文本；超时返回 nil。
-    /// 与当前累积文本做共同前缀对齐——文本变长（正常 partial）或变短
-    /// （final 修正）都会输出新文本（修正时输出修正后的剩余部分）。
+    /// 等待文本增长（增量模式）；超时返回 nil。两种出口语义：
+    ///
+    /// 1. **final 修正**（`pendingFinalRevision` 置位，见 handleResult）：
+    ///    返回该 final 段的**完整文本**并带 `isRevision: true`。修正后的段落
+    ///    要整体重建（上层 `SubtitleManager.rollbackTail` 先回滚当前未封口
+    ///    tail 再以本段替换），因此这里绝不能返回 `dropFirst(common)` 增量——
+    ///    增量语义是"追加在旧文本之后"，正是 "ta pop" → "pop" 被累积成
+    ///    "ta pop pop" 的根因。
+    /// 2. **正常增长**（无 final 标志）：与已消费基线做共同前缀对齐，返回
+    ///    其后的增量文本；文本回退（引擎撤回 partial）时按共同前缀仍能推进
+    ///    基线，不会卡死。
     ///
     /// 取消语义：任务被取消（停录 / 退出）时立即返回 nil。不能用
     /// `try? await Task.sleep`：取消后 sleep 立即抛 CancellationError 且
@@ -106,22 +127,55 @@ final class AppleSpeechEngine: @unchecked Sendable {
     func waitForTextGrowth(timeout: Double) async -> TranscriptionResult? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let text = lock.withLock { currentText }
-            let consumed = lock.withLock { consumedText }
-            if text != consumed {
-                let common = Self.commonPrefixCount(text, consumed)
-                let incremental = String(text.dropFirst(common))
+            // 一次取齐快照，避免多次加锁之间状态被 handleResult 改写。
+            let snapshot = lock.withLock {
+                (text: currentText,
+                 consumed: consumedText,
+                 revision: pendingFinalRevision,
+                 revisionText: pendingFinalRevisionText)
+            }
+
+            if snapshot.revision {
+                // 先消费标志再返回（含空文本分支），保证 final 修正只上报一次。
+                lock.withLock {
+                    pendingFinalRevision = false
+                    pendingFinalRevisionText = nil
+                }
+                let full = (snapshot.revisionText ?? snapshot.text)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if full.isEmpty {
+                    // final 段被引擎撤回为空：无可重建内容，不产出（返回空非聚合
+                    // 结果会让调度层按空 tail 处理）；推进基线继续等下一段。
+                    lock.withLock { consumedText = "" }
+                } else if full == snapshot.consumed {
+                    // final 与已上报内容逐字相同 → 没有发生改写，无需重建。
+                    // 这里刻意不产出：消费方若尚未接线 isRevision（当前
+                    // ASRManager 走的是 appendTail(.appendIncrement) 追加语义），
+                    // 上报"完整文本 + isRevision"会被再追加一次，反而制造
+                    // "…pop pop" 重复；无变化时保持"不产出"原行为。
+                } else {
+                    lock.withLock { consumedText = full }
+                    return TranscriptionResult(
+                        text: full,
+                        segments: [TranscriptionSegment(start: 0, end: nil, text: full)],
+                        isRevision: true
+                    )
+                }
+            } else if snapshot.text != snapshot.consumed {
+                let common = Self.commonPrefixCount(snapshot.text, snapshot.consumed)
+                let incremental = String(snapshot.text.dropFirst(common))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !incremental.isEmpty {
-                    lock.withLock { consumedText = text }
+                    lock.withLock { consumedText = snapshot.text }
                     return TranscriptionResult(
                         text: incremental,
                         segments: [TranscriptionSegment(start: 0, end: nil, text: incremental)]
                     )
                 }
                 // 纯空白变化：推进基线继续等。
-                lock.withLock { consumedText = text }
+                lock.withLock { consumedText = snapshot.text }
             }
+
             if Task.isCancelled { return nil }
             do {
                 try await Task.sleep(for: .milliseconds(80))
@@ -189,6 +243,10 @@ final class AppleSpeechEngine: @unchecked Sendable {
             finalResults = []
             self.collectFinalResults = collectFinalResults
             consumedText = ""
+            // 新会话清掉上一会话遗留的 final 修正标志，否则首轮
+            // waitForTextGrowth 会拿着旧文本误报 isRevision。
+            pendingFinalRevision = false
+            pendingFinalRevisionText = nil
             cumulativeSamples = 0
             lastAppendDate = nil
             pendingLatency = 0
@@ -361,6 +419,10 @@ final class AppleSpeechEngine: @unchecked Sendable {
             collectFinalResults = false
             currentLocaleIdentifier = nil
             consumedText = ""
+            // 会话重置：final 修正标志必须与 currentText/consumedText 一起清空
+            //（残留会让下一次会话的首次取文本被误标为 revision）。
+            pendingFinalRevision = false
+            pendingFinalRevisionText = nil
             cumulativeSamples = 0
             resultsStreamEnded = false
             analyzerStreamEnded = false
@@ -423,6 +485,13 @@ final class AppleSpeechEngine: @unchecked Sendable {
 
         lock.withLock {
             currentText = text
+            // final 是引擎权威的"该段最终结果"信号：置位待消费的修正标志，
+            // 让 waitForTextGrowth 以"完整文本 + isRevision"上报，而不是
+            // 与已显示 partial 做前缀差后当增量追加（见 pendingFinalRevision）。
+            if result.isFinal {
+                pendingFinalRevision = true
+                pendingFinalRevisionText = text
+            }
             if let last = lastAppendDate {
                 pendingLatency = Date().timeIntervalSince(last)
             }
@@ -478,7 +547,11 @@ final class AppleSpeechEngine: @unchecked Sendable {
 
     // MARK: - 音频工具
 
-    /// 两个字符串的共同前缀字符数（增量对齐用）。
+    /// 两个字符串的共同前缀字符数（**仅用于正常增量路径**的前缀对齐）。
+    ///
+    /// 注意语义边界：本函数只回答"两串前 N 个字符相同"，无法区分"在旧文本后
+    /// 追加"与"改写旧文本"——final 修正必须走 pendingFinalRevision 标志上报
+    /// 完整文本（见 waitForTextGrowth），不能靠前缀差推断。
     private static func commonPrefixCount(_ a: String, _ b: String) -> Int {
         var count = 0
         for (ca, cb) in zip(a, b) {

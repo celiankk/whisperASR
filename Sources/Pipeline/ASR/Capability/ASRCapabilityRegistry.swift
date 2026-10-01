@@ -59,8 +59,10 @@ final class ASRCapabilityRegistry: @unchecked Sendable {
     }
 
     /// 注册/覆盖能力描述（测试可注入；生产用 defaults()）。
+    /// 持锁写入：读路径（capability(for:)）都在 lock 内，字典并发读写是
+    /// 未定义行为——此前只有读加锁，锁形同虚设。
     func register(_ capability: ASRCapability) {
-        capabilities[capability.engine] = capability
+        lock.withLock { capabilities[capability.engine] = capability }
     }
 
     /// 引擎能力查询。所有内建引擎必须已注册——缺失是编程错误，
@@ -86,7 +88,7 @@ final class ASRCapabilityRegistry: @unchecked Sendable {
 
     /// 全部已注册能力（设置页遍历渲染用；固定引擎顺序）。
     var all: [ASRCapability] {
-        Self.allEngines.compactMap { capabilities[$0] }
+        lock.withLock { Self.allEngines.compactMap { capabilities[$0] } }
     }
 
     // MARK: 内建引擎默认能力

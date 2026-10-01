@@ -28,7 +28,18 @@ final class ASRManager: @unchecked Sendable {
     /// 每轮重转录成本有界、字幕延迟可控）。Kept well under `maxChunkSamples`.
     private static let forceChunkSamples = 16000 * 8
 
+    /// VAD 单向覆盖上限（帧能量密度）：≥ 该值时启发式的「有语音」证据足够强，
+    /// 不采信 Silero VAD 的 false。实测中「高密度 + VAD false」是真实语音被
+    /// 判成静音（→ 封口 + trimSamples 释放音频 → 丢语音）的主因；
+    /// 低于该值（低/中密度）仍由 VAD 裁决，保留「音乐底噪不被送去识别」的收益。
+    private static let vadVetoCeilingDensity: Float = 0.75
+
     private var liveTranscriptionTask: Task<Void, Never>?
+    /// 实时会话代数：每次 startLive 递增，循环退出时用它判断「句柄是不是
+    /// 自己那一次的」。为什么需要：循环的退出路径（停录取消 / 引擎异常
+    /// break）必须把 liveTranscriptionTask 置 nil——看门狗空闲回收与异常
+    /// 重启都要求它为 nil；但置 nil 不能误伤「停录后立刻重录」的新会话。
+    private var liveSessionGeneration = 0
     /// 实时识别连续失败计数（成功即清零）；达阈值自动降级到 Apple 引擎。
     private var consecutiveChunkFailures = 0
     /// 连续推理超时计数（≥2 触发上下文重建——进程内回收可能死锁的引擎）。
@@ -60,6 +71,26 @@ final class ASRManager: @unchecked Sendable {
         if tailSeconds > 6 { return 0.5 }
         return 1.0
     }
+
+    /// 静音段真实时长（秒）：从 `cut` 逐帧扫到第一个能量高于阈值的帧
+    ///（语音重新出现）或段尾（停顿仍在进行 → 返回当前下界）。
+    /// 逐帧走 `recorder.rmsEnergy`（零拷贝，不构造整段 Array），且只在干净
+    /// 封口时调用（每句一次，不是每轮），开销可忽略。
+    static func silenceDuration(after cut: Int,
+                                upTo totalSamples: Int,
+                                frameSamples: Int,
+                                threshold: Float,
+                                recorder: AudioRecorder) -> TimeInterval {
+        guard frameSamples > 0, cut < totalSamples else { return 0 }
+        var offset = cut
+        while offset + frameSamples <= totalSamples {
+            if recorder.rmsEnergy(from: offset, count: frameSamples) > threshold {
+                return Double(offset - cut) / 16000.0
+            }
+            offset += frameSamples
+        }
+        return Double(totalSamples - cut) / 16000.0
+    }
     /// 本次会话是否已自动降级过（只降一次，避免循环降级）。
     private var hasAutoDegraded = false
     /// 每 5 秒一次的健康检查任务（资源快照 + 自动恢复）。
@@ -83,6 +114,13 @@ final class ASRManager: @unchecked Sendable {
 
     /// Start periodic live transcription from the AudioRecorder's accumulated PCM buffer.
     func startLive(recorder: AudioRecorder) {
+        // 会话级计数器复位：此前跨会话残留（上一场录制的失败/超时/停顿时长
+        // 统计被带入新会话），且 hasAutoDegraded 永不复位 → "每会话只降级一次"
+        // 实际退化为"每次启动只降级一次"，后续会话再连败也不会自动降级。
+        consecutiveChunkFailures = 0
+        consecutiveChunkTimeouts = 0
+        hasAutoDegraded = false
+        silenceDurations.removeAll()
         appState?.liveSegments = []
         appState?.liveError = nil
         appState?.liveTranslationError = nil
@@ -98,6 +136,8 @@ final class ASRManager: @unchecked Sendable {
         ASRPromptManager.shared.refresh()
         AppLogger.shared.log(.asr, "Live transcription started")
 
+        liveSessionGeneration += 1
+        let generation = liveSessionGeneration
         liveTranscriptionTask = Task { [weak self] in
             guard let self else { return }
 
@@ -116,10 +156,19 @@ final class ASRManager: @unchecked Sendable {
                 await MainActor.run {
                     self.appState?.liveError = "Couldn't load transcription model: \(error.localizedDescription)"
                     self.appState?.isLiveTranscribing = false
+                    // 必须清掉任务句柄：看门狗的「空闲回收」与异常重启都要求
+                    // liveTranscriptionTask == nil（见 performHealthCheck /
+                    // recoverFromAnomaly）。不清的话一次模型加载失败会让本次
+                    // 进程生命周期内**永远不会**再触发内存回收。
+                    self.finishLiveLoop(generation: generation)
                 }
+                self.subtitleManager.stop()
                 return
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                await MainActor.run { self.finishLiveLoop(generation: generation) }
+                return
+            }
 
             // Partial/final streaming model:
             //  - Every pass re-transcribes the unsealed *tail* and shows it immediately, so the
@@ -128,21 +177,18 @@ final class ASRManager: @unchecked Sendable {
             //    and are never re-transcribed, which keeps boundaries clean and translation steady.
             var consecutiveSilenceCount = 0
             var lastTranscribedTotal = 0
-            // Silence-scan tuning (16kHz): 100ms frames; a run of >=3 (~300ms) counts as a pause.
+            // Silence-scan tuning (16kHz): 100ms frames.
             let frameSamples = 1600
-            let minSilenceFrames = 3
             // 固定下限阈值：干净麦克风输入（底噪 RMS < 0.001）行为与之前一致。
             let baseSilenceThreshold: Float = 0.001
             let contextSamples = 16000   // 1s left-context, used only after a forced seal
 
-            // The loop awaits each transcribeChunk before iterating, so passes never overlap.
-            // 流式引擎（Apple）用更小的启动阈值：音频尽早喂入引擎（引擎内部
-            // 流式出字，喂得越勤出字越快）；无状态引擎保持原阈值（每轮重转录
-            // 整个 tail，太小会白算）。
-            let streamingEngine = self.service.liveEngineStreamsIncrementally
-            let minTailSamples = streamingEngine ? 16000 / 5 : 8000      // 0.2s vs 0.5s
-            let minNewSamples = streamingEngine ? 16000 / 10 : 4800     // 0.1s vs 0.3s
             while !Task.isCancelled {
+                // 每轮 pass 顶部快照引擎流式特性（支持中途自动降级生效，且避免单轮内重复解析配置）
+                let streamingEngine = await self.service.liveEngineStreamsIncrementally
+                let minTailSamples = streamingEngine ? 16000 / 5 : 8000      // 0.2s vs 0.5s
+                let minNewSamples = streamingEngine ? 16000 / 10 : 4800     // 0.1s vs 0.3s
+
                 let totalSamples = recorder.accumulatedSampleCount
                 let tailCount = totalSamples - self.subtitleManager.sealedSampleCount
 
@@ -176,15 +222,33 @@ final class ASRManager: @unchecked Sendable {
                 var density = recorder.speechDensity(
                     from: self.subtitleManager.sealedSampleCount, to: totalSamples,
                     frameSamples: frameSamples, threshold: skipThreshold)
+                let rms = recorder.rmsEnergy(from: self.subtitleManager.sealedSampleCount, count: tailCount)
                 // Silero 增强（模型可用时）：能量门判为静音的段再经神经网络
                 // 人声确认——音乐底噪 RMS 高于 skipThreshold 时启发式会放行，
                 // 人声概率低则同样按静音封口；不可用（nil）时行为不变。
-                if density >= 0.25, tailSeconds > 1.0,
-                   let neuralSpeech = SherpaVAD.shared.detectSpeech(
-                    recorder.getSamples(from: self.subtitleManager.sealedSampleCount,
-                                        upTo: totalSamples),
-                    absoluteStart: self.subtitleManager.sealedSampleCount) {
-                    density = neuralSpeech ? max(density, 1.0) : 0.0
+                //
+                // 同一轮只喂一次并复用判定：密度门与能量门此前各调一次
+                // detectSpeech，第二次必然命中 SherpaVAD 的「区间已全部喂过」
+                // 分支并 Flush+Clear——白白重置检测器内部状态（实时语音态与
+                // 段队列语义漂移），且多一次锁与判定开销。
+                let neuralSpeech: Bool? =
+                    (tailSeconds > 1.0 && density >= 0.25) || rms <= skipThreshold
+                    ? SherpaVAD.shared.detectSpeech(
+                        recorder.getSamples(from: self.subtitleManager.sealedSampleCount,
+                                            upTo: totalSamples),
+                        absoluteStart: self.subtitleManager.sealedSampleCount)
+                    : nil
+                if density >= 0.25, tailSeconds > 1.0, let neuralSpeech {
+                    // 单向覆盖修正：VAD 的 false 只否决「中等密度」的启发式
+                    // 证据，高密度时不直接判静音——原实现无条件 density = 0，
+                    // 会把帧能量证据充分的真实语音判成静音 → 封口并
+                    // trimSamples 释放音频 → 丢语音（不可恢复）。
+                    // 低/中密度仍由 VAD 裁决，保留「音乐底噪不被送去识别」的收益。
+                    if neuralSpeech {
+                        density = max(density, 1.0)
+                    } else if density < Self.vadVetoCeilingDensity {
+                        density = 0.0
+                    }
                 }
                 if density < 0.25, tailSeconds > 1.0 {
                     self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
@@ -200,26 +264,18 @@ final class ASRManager: @unchecked Sendable {
                     continue
                 }
 
-                let rms = recorder.rmsEnergy(from: self.subtitleManager.sealedSampleCount, count: tailCount)
-                if rms <= skipThreshold {
-                    // Silero 增强：能量门判静音但神经网络检测到人声（低响度
-                    // 语音）时不跳过，送 ASR 兜底；nil = 模型不可用，行为不变。
-                    if SherpaVAD.shared.detectSpeech(
-                        recorder.getSamples(from: self.subtitleManager.sealedSampleCount,
-                                            upTo: totalSamples),
-                        absoluteStart: self.subtitleManager.sealedSampleCount) != true {
-                        self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
-                        lastTranscribedTotal = totalSamples
-                        recorder.trimSamples(upTo: max(0, self.subtitleManager.sealedSampleCount - contextSamples))
-                        consecutiveSilenceCount += 1
-                        let snapshot = self.subtitleManager.sealedSegments
-                        await MainActor.run {
-                            self.appState?.liveSegments = Array(snapshot.suffix(SubtitleManager.maxLiveSegments))
-                            self.throttledAutoSave()
-                        }
-                        try? await Task.sleep(for: .milliseconds(consecutiveSilenceCount >= 2 ? 1000 : 500))
-                        continue
+                if rms <= skipThreshold, neuralSpeech != true {
+                    self.subtitleManager.sealSilence(upToSampleCount: totalSamples)
+                    lastTranscribedTotal = totalSamples
+                    recorder.trimSamples(upTo: max(0, self.subtitleManager.sealedSampleCount - contextSamples))
+                    consecutiveSilenceCount += 1
+                    let snapshot = self.subtitleManager.sealedSegments
+                    await MainActor.run {
+                        self.appState?.liveSegments = Array(snapshot.suffix(SubtitleManager.maxLiveSegments))
+                        self.throttledAutoSave()
                     }
+                    try? await Task.sleep(for: .milliseconds(consecutiveSilenceCount >= 2 ? 1000 : 500))
+                    continue
                 }
                 consecutiveSilenceCount = 0
 
@@ -227,7 +283,7 @@ final class ASRManager: @unchecked Sendable {
                 // boundary needs no overlap; after a forced seal, re-transcribe 1s of context and
                 // dedup so the cut word isn't dropped. Streaming engines (Apple) only ever return
                 // brand-new text — their audio is never re-fed — so no overlap trimming applies.
-                let useOverlap = !self.subtitleManager.sealedClean && !self.service.liveEngineStreamsIncrementally
+                let useOverlap = !self.subtitleManager.sealedClean && !streamingEngine
                 var tailStart = useOverlap
                     ? max(0, self.subtitleManager.sealedSampleCount - contextSamples)
                     : self.subtitleManager.sealedSampleCount
@@ -258,12 +314,30 @@ final class ASRManager: @unchecked Sendable {
                 let timeoutSeconds = max(60.0, chunkSeconds * 4.0)
                 do {
                     print("[ASR] request start chunk=\(chunk.count)")
+                    // 延迟仪表盘：量本 chunk 的引擎推理耗时。
+                    // （端到端/翻译往返由 SubtitleLatencyManager 在字幕层插桩，
+                    //   此处不重复记 —— 同一指标两个定义会互相污染均值。）
+                    let inferenceStart = Date()
                     let result = try await Self.withTimeout(seconds: timeoutSeconds) {
                         try await self.service.transcribeChunk(samples: chunk,
                                                                absoluteRange: absoluteTailStart..<totalSamples)
                     }
+                    PipelineLatencyStore.shared.recordASR(
+                        ms: Date().timeIntervalSince(inferenceStart) * 1000)
                     consecutiveChunkFailures = 0
                     consecutiveChunkTimeouts = 0
+                    // 聚合中无产出：不发布字幕（空 tail 的 .replaceTail 提交
+                    // 会清掉屏幕上的当前句）。音频已在缓冲，下轮继续。
+                    guard !result.isAggregationPending else {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        continue
+                    }
+                    // 取消检查：stopLive() 只 cancel() 不 await——本循环可能在
+                    // await 期间被取消，若继续走 handleASRResult，会在
+                    // finishRecording 已清空 liveSegments / 删除恢复快照之后
+                    // 把迟到结果重新推上去（字幕"诈尸"）并重建
+                    // live_recovery.json（下次启动提示恢复一段已结束的录音）。
+                    guard !Task.isCancelled else { break }
                     // 结果处理收口（partial 合并 / 封口推进 / 快照推送），
                     // 音频循环只负责采集与 chunk 调度。
                     await self.handleASRResult(
@@ -282,12 +356,19 @@ final class ASRManager: @unchecked Sendable {
                     )
                     // 看门狗-超时重建：连续 2 次超时 = 上下文可能死锁/损坏，
                     // 卸载实时模型（下轮 pass 懒加载重建——进程内回收）。
+                    //
+                    // 限制（不要声称"已重建"）：unloadLiveModel 只是把卸载排到
+                    // provider actor 的队列尾部，而卡住的推理正占着该 actor
+                    //（whisper_full / sherpa 推理不检查取消）——卸载要等它返回
+                    // 后才真正执行，之后的下一次 pass 才重建模型。故本轮及
+                    // 后续若干轮仍可能继续超时。不做强制中断推理：那会破坏
+                    // 引擎内部状态（比多等几轮更糟）。
                     self.consecutiveChunkTimeouts += 1
                     if self.consecutiveChunkTimeouts >= 2 {
                         self.consecutiveChunkTimeouts = 0
                         self.service.unloadLiveModel()
                         AppLogger.shared.log(.asr,
-                            "Watchdog: 2 consecutive timeouts — live model context rebuilt")
+                            "Watchdog: 2 consecutive timeouts — live model unload queued (takes effect after the in-flight inference returns)")
                     }
                     await MainActor.run {
                         self.appState?.liveError = "Transcription is slow — the model or GPU may be stuck. Continuing with next chunk."
@@ -304,7 +385,20 @@ final class ASRManager: @unchecked Sendable {
 
                 try? await Task.sleep(for: .milliseconds(250))
             }
+
+            // 循环退出（取消 / 停录 / 引擎异常 break）：统一清任务句柄。
+            // 此前 break 路径不清句柄 → liveTranscriptionTask 永远非 nil，
+            // 看门狗「空闲回收」与「异常重启」两条恢复路径同时永久失效。
+            await MainActor.run { self.finishLiveLoop(generation: generation) }
         }
+    }
+
+    /// 循环退出收口：只清「自己那一次」的任务句柄（代数守卫，避免清掉
+    /// 停录后立刻重录的新会话刚装上的句柄）。
+    @MainActor
+    private func finishLiveLoop(generation: Int) {
+        guard generation == liveSessionGeneration else { return }
+        liveTranscriptionTask = nil
     }
 
     // MARK: - 实时结果处理（handleASRResult）
@@ -347,18 +441,46 @@ final class ASRManager: @unchecked Sendable {
         // Combine sealed (final) + freshly transcribed tail (interim) for display.
         // 合并策略来自归一结果 metadata（appendIncrement：本轮增量并入
         // pendingTail 累积为完整当前句；replaceTail：整段替换）。
-        let combined = subtitleManager.appendTail(
-            tailSegments: tailSegments,
-            tailStartTime: Double(context.tailStart) / 16000.0,
-            useOverlap: context.useOverlap,
-            mergePolicy: normalized.metadata.mergePolicy
-        )
+        //
+        // final 修正（增量引擎）：归一结果里出现 isFinal 段 = 本轮文本改写了
+        // 此前已显示的内容（Apple 把已显示的 "ta pop" 修正为 "pop"）。
+        // appendIncrement 只加不减，直接追加会得到 "ta pop pop"；必须回滚
+        // 当前未封口 tail 并以 final 段重建，后续封口逻辑用重建后的快照。
+        // 同一结果里既有 final 又有非 final 段时，只对最后一个 final 段回滚
+        //（它覆盖到的时间区间最大）。
+        let revisionSegment = normalized.metadata.mergePolicy == .appendIncrement
+            ? normalized.segments.last(where: { $0.isFinal })
+            : nil
+        let combined: [TranscriptionSegment]
+        if let revision = revisionSegment {
+            // 段的时间戳同样要加 chunk 偏移（与 tailSegments 一致）。
+            combined = subtitleManager.rollbackTail(to: NormalizedSegment(
+                id: revision.id,
+                text: revision.text,
+                startTime: revision.startTime + context.timeOffset,
+                endTime: revision.endTime.map { $0 + context.timeOffset },
+                confidence: revision.confidence,
+                isFinal: true))
+        } else {
+            combined = subtitleManager.appendTail(
+                tailSegments: tailSegments,
+                tailStartTime: Double(context.tailStart) / 16000.0,
+                useOverlap: context.useOverlap,
+                mergePolicy: normalized.metadata.mergePolicy
+            )
+        }
 
         // Advance the seal: to a trailing pause (clean), or forced once the tail has
         // grown past the cap without one. Everything before it becomes final.
-        // 动态停顿判定：自适应值（P75 统计）× 渐进系数（段长）。
+        // 动态停顿判定：自适应值（P75 统计）× 渐进系数（**当前句**长度）。
+        // 渐进系数此前传的是整个未封口 tail 长度（含封口边界之后的全部音频），
+        // 长尾时系数提前收紧 → 过早封口；当前句长度从 pendingTail 起点算起
+        //（无 tail 文本时回落封口边界）。
+        let sentenceStartSeconds = subtitleManager.pendingTailSegments.first?.start
+            ?? Double(subtitleManager.sealedSampleCount) / 16000.0
+        let sentenceSeconds = max(0, Double(context.totalSamples) / 16000.0 - sentenceStartSeconds)
         let effectiveSilenceSeconds = context.adaptiveSilenceSeconds
-            * Self.progressiveSilenceFactor(tailSeconds: context.tailSeconds)
+            * Self.progressiveSilenceFactor(tailSeconds: sentenceSeconds)
         let dynamicMinSilenceFrames = max(
             1, Int(effectiveSilenceSeconds / (Double(context.frameSamples) / 16000.0)))
         let silenceCut = recorder.lastSilenceCut(
@@ -369,8 +491,14 @@ final class ASRManager: @unchecked Sendable {
         var newSealClean = subtitleManager.sealedClean
         if let cut = silenceCut, cut - subtitleManager.sealedSampleCount >= 1600 {
             newSeal = cut; newSealClean = true
-            // 记录本次停顿时长（自适应统计样本：静音段起 cut → 段尾）。
-            silenceDurations.append(Double(context.totalSamples - cut) / 16000.0)
+            // 自适应统计样本 = **真实静音时长**（cut → 下一个语音起点/段尾）。
+            // 为什么不是 totalSamples - cut：后者把 cut 之后仍在说话的内容也
+            // 算成「停顿」，其值随轮询节奏变化 → P75 系统性抬高 → 封口越来越迟。
+            silenceDurations.append(Self.silenceDuration(
+                after: cut, upTo: context.totalSamples,
+                frameSamples: context.frameSamples,
+                threshold: context.sealSilenceThreshold,
+                recorder: recorder))
             if silenceDurations.count > 50 { silenceDurations.removeFirst() }
         } else if context.tailCount >= Self.forceChunkSamples {
             // 谷值回溯：8s 上限不硬切——后 70% 找平滑能量谷
@@ -534,9 +662,44 @@ final class ASRManager: @unchecked Sendable {
         // ASR 循环意外死亡时重启一次（由 isLiveTranscribing + 任务存在性保护，避免递归）。
         if liveTranscriptionTask == nil, appState.isLiveTranscribing, let recorder = liveRecorder {
             subtitleManager.engine.logger.log("Auto-recovery: restarting ASR session")
+            // 重启不得丢已显示字幕：startLive 会清空字幕缓存（sealedSampleCount
+            // 归零）与自适应停顿统计，导致屏幕上的字幕消失 + 整场录音从头
+            // 重转录。先快照「已封口段 + 当前未封口 tail + 封口边界 + 封口
+            // 洁净度 + 停顿统计」，重启后按 seal() 还原（seal 是唯一能同时
+            // 还原段与边界边界的公开入口），新循环从当前采样数继续。
+            let preserved = LiveSessionSnapshot(
+                segments: subtitleManager.sealedSegments + subtitleManager.pendingTailSegments,
+                sealedSampleCount: subtitleManager.sealedSampleCount,
+                sealedClean: subtitleManager.sealedClean,
+                silenceDurations: silenceDurations)
             startLive(recorder: recorder)
+            restoreLiveSession(preserved)
         }
         appState.showToast("检测到资源异常，已自动清理并继续运行")
+    }
+
+    /// 异常重启时保留的会话快照（字幕 + 封口边界 + 自适应统计）。
+    private struct LiveSessionSnapshot {
+        let segments: [TranscriptionSegment]
+        let sealedSampleCount: Int
+        let sealedClean: Bool
+        let silenceDurations: [TimeInterval]
+    }
+
+    /// 把异常重启前的会话状态还原回字幕层（startLive 已清空缓存）。
+    /// 用 `seal(upToSampleCount:clean:combined:)` 还原：它同时恢复段列表
+    /// 与封口边界（boundary 之前的段回到 sealed、之后的留作 pendingTail）。
+    private func restoreLiveSession(_ snapshot: LiveSessionSnapshot) {
+        guard snapshot.sealedSampleCount > 0 || !snapshot.segments.isEmpty else { return }
+        subtitleManager.seal(
+            upToSampleCount: snapshot.sealedSampleCount,
+            clean: snapshot.sealedClean,
+            combined: snapshot.segments)
+        silenceDurations = snapshot.silenceDurations
+        // 立即回填 UI 显示快照（否则要等下一轮识别完成，屏幕空白约一秒）。
+        appState?.liveSegments = subtitleManager.snapshot(snapshot.segments)
+        AppLogger.shared.log(.asr,
+            "Auto-recovery: restored \(snapshot.segments.count) subtitle segments, sealedSampleCount=\(snapshot.sealedSampleCount)")
     }
 
     // MARK: - Live Transcription Auto-Save (crash recovery)
@@ -605,9 +768,20 @@ final class ASRManager: @unchecked Sendable {
         // 「转录记录」关闭：不写崩溃恢复快照（该录制为纯实时字幕用途，
         // 下次启动不应被恢复成转录历史条目）。
         guard appState.enableLiveTranscription else { return }
-        let segments = appState.liveSegments
+        // 会话已结束（stopLive 清空了 liveSegments 并删掉快照）：不再重建。
+        // 这是迟到结果的第二道闸——第一道是循环内的 Task.isCancelled 检查；
+        // 该写入路径也可能由其它 @MainActor 调用方在停止后触发。
+        guard appState.isLiveTranscribing else { return }
+        // 快照用字幕层的完整缓存（sealed 200 段 + 当前未封口 tail），而不是
+        // 显示窗口 liveSegments（只有 100 段）——长录音崩溃恢复时前半段会
+        // 整段缺失（字幕层保留 200 段正是为这种情况）。
+        let cached = subtitleManager.sealedSegments + subtitleManager.pendingTailSegments
+        let segments = cached.isEmpty ? appState.liveSegments : cached
+        guard !segments.isEmpty else { return }
         let text = segments.map { $0.text }.joined()
-        let translations = appState.liveTranslatedSegments
+        // 同 finishRecording：实时译文从字幕历史按原文回填
+        //（liveTranslatedSegments 无写入点，读它恒为空 → 崩溃恢复丢译文）。
+        let translations = SubtitleHistoryManager.shared.alignedTranslations(for: segments)
         let lang: String? = !translations.isEmpty
             ? UserDefaults.standard.string(forKey: "targetLanguage")
             : nil
@@ -622,7 +796,13 @@ final class ASRManager: @unchecked Sendable {
             try? FileManager.default.createDirectory(
                 at: Self.liveRecoveryURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true)
-            try? encoded.write(to: Self.liveRecoveryURL)
+            // 原子写：该文件的唯一用途就是崩溃/断电恢复，非原子写中途崩溃会
+            // 留下截断 JSON → loadRecoveredSnapshot 解码失败静默丢数据。
+            do {
+                try encoded.write(to: Self.liveRecoveryURL, options: .atomic)
+            } catch {
+                AppLogger.shared.log(.asr, "live recovery snapshot write failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -632,22 +812,71 @@ final class ASRManager: @unchecked Sendable {
 
     // MARK: - Timeout helper
 
-    private struct TimeoutError: Error {}
+    struct TimeoutError: Error {}
 
     /// Run `operation` with a timeout. If it doesn't complete within `seconds`, throws TimeoutError.
-    private static func withTimeout<T: Sendable>(
+    ///
+    /// **不能用 throwing task group**：作用域退出时会等待全部子任务结束，
+    /// 而 whisper_full / Qwen / Nemotron 的推理都是 actor 内同步调用、不检查
+    /// 取消 → 拿到 TimeoutError 后仍要等推理跑完才返回，超时形同虚设
+    ///（GPU 死锁时 live loop 永久冻结，看门狗「连续 2 次超时卸载模型重建」
+    /// 的恢复路径不可达）。
+    ///
+    /// 改为「独立任务 + 单次 resume 竞速」：超时/取消立刻返回，后台推理
+    /// 继续跑完（其 actor 隔离挡住下一轮并发推理，但循环能感知并计数上报）。
+    /// internal（非 private）：供单测验证"对不可协作取消的工作也真的会超时"。
+    static func withTimeout<T: Sendable>(
         seconds: Double,
         operation: @Sendable @escaping () async throws -> T
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw TimeoutError()
+        // 一次性 resume 闸：三个竞速方（推理完成 / 超时 / 取消）都经此收口。
+        let gate = TimeoutRaceGate<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                gate.install(continuation)
+                Task {
+                    do { gate.finish(.success(try await operation())) }
+                    catch { gate.finish(.failure(error)) }
+                }
+                Task {
+                    do { try await Task.sleep(for: .seconds(seconds)) }
+                    catch { return }   // sleep 被取消：由 onCancel 收尾
+                    gate.finish(.failure(TimeoutError()))
+                }
             }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+        } onCancel: {
+            gate.finish(.failure(CancellationError()))
         }
+    }
+}
+
+/// `withTimeout` 的单次 resume 闸：多方竞速（推理完成 / 超时 / 取消），
+/// 只允许第一个结果生效。用锁而非 actor：`install` 必须在
+/// `withCheckedThrowingContinuation` 的**同步**体内调用（actor 是异步的）。
+private final class TimeoutRaceGate<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    private var finished = false
+
+    func install(_ continuation: CheckedContinuation<T, Error>) {
+        lock.lock()
+        // 极端情形：安装前已有结果（调用方在 install 之前就 finish）。
+        if finished {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<T, Error>) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(with: result)
     }
 }

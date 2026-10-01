@@ -59,9 +59,31 @@ enum ModelPathResolver {
         return resolveModelPath()
     }
 
+    /// 项目根目录（仅开发环境回退用）。
+    ///
+    /// 由 `#filePath`（构建期源码绝对路径）上溯到仓库根。
+    ///
+    /// 早前实现写死「上溯 2 层」（当时本文件在 `Sources/Pipeline/ASR/`），
+    /// 文件移入 `Model/` 子目录后没同步调整 → 回退路径指向
+    /// `Sources/Pipeline/ASR/Models/ggml-model.bin`（不存在），
+    /// 表现为「已下载了模型却报 Model not found」。
+    /// 现在改为**按标记目录查找**而不是数层数：向上找到同时含
+    /// `Package.swift` 的祖先目录即为仓库根，源码再挪位置也不会错。
     private static func resolveProjectRoot() -> String {
-        let thisFile = #filePath
-        let sourcesDir = (thisFile as NSString).deletingLastPathComponent
-        return (sourcesDir as NSString).deletingLastPathComponent
+        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let fm = FileManager.default
+        // 上限保护：避免异常路径下无限上溯（正常 5 层内命中）。
+        for _ in 0..<12 {
+            if fm.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+                return url.path
+            }
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { break }   // 已到文件系统根
+            url = parent
+        }
+        // 找不到标记：退回「上溯 5 层」的经验值（本文件当前深度）。
+        return URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().path
     }
 }

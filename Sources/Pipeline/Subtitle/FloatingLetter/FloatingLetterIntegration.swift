@@ -80,7 +80,10 @@ final class FloatingLetterOverlayBinder {
         viewModel.onSentenceCompleted = { [weak self] text in
             guard let self else { return }
             // 流式翻译：逐 token 上屏（译文逐字增长），完成后定稿。
-            self.appState.runtime.translation.sentenceTranslationDeltaHandler = { [weak self] delta in
+            self.appState.runtime.translation.sentenceTranslationDeltaHandler = { [weak self] sentenceID, delta in
+                // 出口按句 id 区分（并发上限 8，多句共用单字段出口会串台）：
+                // 只接受本句的增量。
+                guard sentenceID == text.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
                 self?.viewModel.appendTranslationDelta(delta)
             }
             Task { @MainActor in
@@ -149,9 +152,13 @@ final class FloatingLetterOverlayBinder {
             guard let self else { return }
             self.recorder.loadAvailableApps()
         }
-        viewModel.onOpenSystemSettings = { [weak self] in
-            guard let self else { return }
-            self.recorder.openSystemPreferences()
+        viewModel.onOpenSystemSettings = {
+            // 与主窗口各入口（ContentView / MenuBarController / DetailView /
+            // Onboarding）一致，走统一权限闸：预检 → CGRequest → 打开系统设置
+            // → 附着「拖拽 App 图标即授权」引导面板。此前这里直接调
+            // recorder.openSystemPreferences()，只裸开系统设置、没有拖拽引导，
+            // 用户在浮层里被指去手动添加应用，与主界面两条路径体验不一致。
+            _ = PermissionGuidePanelController.shared.authorizeForRecording()
         }
         viewModel.onToggleIncludeMicrophone = { [weak self] mic in
             guard let self else { return }
@@ -271,7 +278,9 @@ final class FloatingLetterOverlayBinder {
                 let t = translations[index].trimmingCharacters(in: .whitespacesAndNewlines)
                 return t.isEmpty ? nil : t
             }()
-            return FloatingLetterViewModel.SubtitleLine(id: "seg-\(index)", text: text, translation: translation)
+            return FloatingLetterViewModel.SubtitleLine(
+                id: "seg-\(index)", text: text, translation: translation,
+                start: segments[index].start)
         }
         viewModel.maxLines = appState.maxSubtitleLines
         viewModel.subtitleClearDelay = appState.subtitleClearDelay
@@ -360,6 +369,10 @@ final class FloatingLetterOverlayBinder {
             viewModel.selectedAppID = recorder.selectedApp?.bundleIdentifier
         case .permissionDenied:
             viewModel.appListPhase = .permissionDenied
+            viewModel.appListError = recorder.error
+        case .failed:
+            // 非权限失败：展示真实原因，不给权限引导。
+            viewModel.appListPhase = .failed
             viewModel.appListError = recorder.error
         default:
             break
@@ -511,6 +524,13 @@ final class FloatingLetterOverlayHost {
         recorder: AudioRecorder,
         onMinimize: (() -> Void)? = nil
     ) {
+        // 应用「默认包含麦克风」设置到本次会话初值。
+        // AudioRecorder.includeMicrophone 只在属性初始化时读该键，设置改动
+        // 要重启 App 才生效（且无任何提示）——把设置页的意图落在"新会话
+        // 开始时"而不是进程启动时。放在浮层展示前，用户在浮层内的临时
+        // 切换仍然覆盖本值（不会被随后的 confirm 再次覆盖）。
+        recorder.includeMicrophone =
+            UserDefaults.standard.bool(forKey: AudioConfiguration.includeMicrophoneKey)
         present(appState: appState, recorder: recorder, onMinimize: onMinimize)
         viewModel?.startAppSelection()
     }
@@ -520,6 +540,11 @@ final class FloatingLetterOverlayHost {
         binder?.stop()
         binder = nil
         viewModel = nil
+        // OBS 纯净字幕窗与浮层共享同一个 ViewModel：不在此关闭的话，
+        // 它会以 .statusBar 层级永久残留在屏幕上（无边框、全透明），
+        // 且菜单 toggle 因 activeViewModel 已为 nil 只弹 toast，关不掉；
+        // 重新录制时新建的 VM 也不会被旧窗采用（字幕永久冻结）。
+        ObsSubtitleWindowController.shared.dismiss()
         FloatingLetterOverlayController.shared.dismiss()
         FloatingAppPickerController.shared.dismiss()
     }

@@ -67,6 +67,17 @@ final class GeneralSettings {
     var apiServerEnabled = false {
         didSet { UserDefaults.standard.set(apiServerEnabled, forKey: APIKeys.enabled) }
     }
+
+    /// 从 UserDefaults 回读开关状态（保持内存值与磁盘一致）。
+    ///
+    /// APIServer.markStopped 在启动失败时会把 apiServerEnabled 写回 false——
+    /// 那是**外部写入**，@Observable 观察不到，内存值会停在 true，于是
+    /// 「开关显示开、实际已停」一直漂移到下次 reload。设置页在出现时、
+    /// 以及服务器运行状态变化时调用本方法纠正。
+    func refreshApiServerEnabled() {
+        let stored = UserDefaults.standard.bool(forKey: APIKeys.enabled)
+        if apiServerEnabled != stored { apiServerEnabled = stored }
+    }
     var apiServerPort = 8080 {
         didSet { UserDefaults.standard.set(apiServerPort, forKey: APIKeys.port) }
     }
@@ -80,13 +91,19 @@ final class GeneralSettings {
         didSet { UserDefaults.standard.set(apiServerVerboseLog, forKey: APIKeys.verboseLog) }
     }
 
+    /// 端口合法区间（设置页校验用）。1-65535 是系统合法范围，但 <1024 需
+    /// root 权限、普通用户绑定必然失败并让 APIServer 静默回落 8080 —— 于是
+    /// 「UI 显示端口」与「实际监听端口」不一致。故 UI 只接受 1024-65535。
+    static let apiServerPortRange = 1024...65535
+
     init() { reload() }
 
     func reload() {
         let defaults = UserDefaults.standard
         transcriptFontSizeRaw = defaults.string(forKey: "transcriptFontSize")
             ?? TranscriptFontSize.normal.rawValue
-        apiServerEnabled = defaults.bool(forKey: APIKeys.enabled)
+        // 开关：reload 时把外部写入（APIServer.markStopped 失败回落）拉回内存。
+        refreshApiServerEnabled()
         let port = defaults.integer(forKey: APIKeys.port)
         apiServerPort = port == 0 ? APIKeys.defaultPort : port
         apiServerToken = defaults.string(forKey: APIKeys.token) ?? ""
@@ -301,16 +318,31 @@ final class ASRConfiguration {
         didSet { UserDefaults.standard.set(audioChunkingMaxWaitSeconds, forKey: AudioChunkingConfig.Keys.maxWaitSeconds) }
     }
 
+    /// 输入补零时长（秒）：推理输入对齐固定时长桶，0 = 禁用桶化。
+    /// InputBucketing.configuredPadSeconds 读同一键（键名不可改，旧配置兼容）。
+    var padSeconds: Double = 0.5 {
+        didSet { UserDefaults.standard.set(padSeconds, forKey: Self.padSecondsKey) }
+    }
+
+    /// 模型下载源："hf"（官方直连）/ "mirror"（国内镜像）。
+    /// ModelDownloader.DownloadSource.current 读同一键，下载时按此重写域名。
+    var modelDownloadSource = "hf" {
+        didSet { UserDefaults.standard.set(modelDownloadSource, forKey: Self.modelDownloadSourceKey) }
+    }
+
+    static let padSecondsKey = "asrPadSeconds"
+    static let modelDownloadSourceKey = "modelDownloadSource"
+
     // Apple Speech（macOS 26 原生 Speech 框架）。
-    /// 识别语言（默认 zh-CN；AppleSpeechManager.localeIdentifier 读取同键）。
-    var appleSpeechLocale = "zh-CN" {
+    /// 识别语言（默认 zh_CN；AppleSpeechManager.localeIdentifier 读取同键）。
+    /// 默认值用 Apple Speech 的规范 id（下划线）；历史遗留的 "zh-CN"
+    /// 由 AppleLanguageManager.isSameLocale 归一比较兜底。
+    var appleSpeechLocale = "zh_CN" {
         didSet { UserDefaults.standard.set(appleSpeechLocale, forKey: "appleSpeechLocale") }
     }
-    /// 优先本地（on-device）识别（默认开启：语言包已安装即可离线识别，
-    /// 更可靠；设备不支持时自动回落系统服务器）。
-    var appleSpeechOnDevice = true {
-        didSet { UserDefaults.standard.set(appleSpeechOnDevice, forKey: "appleSpeechOnDevice") }
-    }
+    // 注：此前的 `appleSpeechOnDevice`（设置页开关）已移除——AppleSpeechEngine
+    // 走 SpeechAnalyzer，**本就是纯 on-device**（无云端回落路径），该开关
+    // 全仓没有任何读取点，是个纯装饰开关。留着会误导用户以为可以关闭本地识别。
 
     init() { reload() }
 
@@ -337,10 +369,12 @@ final class ASRConfiguration {
         audioChunkingMinSeconds = AudioChunkingConfig.minChunkRange.contains(minChunk) ? minChunk : 3
         let maxWait = defaults.double(forKey: AudioChunkingConfig.Keys.maxWaitSeconds)
         audioChunkingMaxWaitSeconds = AudioChunkingConfig.maxWaitRange.contains(maxWait) ? maxWait : 5
-        appleSpeechLocale = defaults.string(forKey: "appleSpeechLocale") ?? "zh-CN"
-        // 未设置过时默认开启（旧配置兼容：读不到键视为 true）。
-        appleSpeechOnDevice = defaults.object(forKey: "appleSpeechOnDevice") == nil
-            ? true : defaults.bool(forKey: "appleSpeechOnDevice")
+        // 键缺失 = 历史默认（0.5s 桶化 / 官方直连），不能把「未设置」读成 0
+        //（0 的含义是「禁用桶化」，语义相反）。
+        padSeconds = defaults.object(forKey: Self.padSecondsKey) == nil
+            ? 0.5 : defaults.double(forKey: Self.padSecondsKey)
+        modelDownloadSource = defaults.string(forKey: Self.modelDownloadSourceKey) ?? "hf"
+        appleSpeechLocale = defaults.string(forKey: "appleSpeechLocale") ?? "zh_CN"
     }
 }
 
@@ -394,6 +428,24 @@ final class TranslationConfiguration {
         set { UserDefaults.standard.set(newValue, forKey: "translationPromptPreset") }
     }
 
+    /// 思考模式控制（TranslationService.ThinkingControl.current 读同一键）。
+    /// 值域 = ThinkingControl.rawValue；旧值 "off" 由读取端并入 auto。
+    var thinkingControlRaw = "auto" {
+        didSet { UserDefaults.standard.set(thinkingControlRaw, forKey: Self.thinkingControlKey) }
+    }
+
+    /// 上下文句数（0-8，默认 2；0 = 关闭）。TranslationService 组请求时读同一键。
+    var contextRounds = 2 {
+        didSet { UserDefaults.standard.set(contextRounds, forKey: Self.contextRoundsKey) }
+    }
+
+    static let thinkingControlKey = "translationThinkingControl"
+    static let contextRoundsKey = "translationContextRounds"
+
+    /// 磁盘上的翻译方式（TranslationMode.current 直读 UserDefaults，不经过
+    /// appState 内存副本）：备份恢复后用它把运行时状态拉回来。
+    var modeFromDefaults: TranslationMode { TranslationMode.current }
+
     init() { reload() }
 
     func reload() {
@@ -410,6 +462,10 @@ final class TranslationConfiguration {
         self.temperature = defaults.object(forKey: TranslationService.ConfigKeys.temperature) == nil
             ? 0.3 : temperature
         systemPrompt = defaults.string(forKey: TranslationService.ConfigKeys.systemPrompt) ?? ""
+        thinkingControlRaw = defaults.string(forKey: Self.thinkingControlKey) ?? "auto"
+        // 键缺失 = 历史默认 2；不能把「未设置」读成 0（0 的含义是关闭上下文）。
+        contextRounds = defaults.object(forKey: Self.contextRoundsKey) == nil
+            ? 2 : max(0, min(8, defaults.integer(forKey: Self.contextRoundsKey)))
     }
 }
 
@@ -479,6 +535,38 @@ final class SubtitleConfiguration {
     }
     func resetOverlayPosition() {
         appState?.resetFloatingOverlayPosition()
+    }
+
+    /// 备份恢复后：把 UserDefaults 中的字幕样式应用到运行时。
+    ///
+    /// 为什么需要：字幕样式在 AppState 里是**内存副本**（浮层实时渲染读内存），
+    /// 只写 UserDefaults 不会生效；而 AppState 的 setter 会把内存旧值写回磁盘，
+    /// 用户下一次动设置就把刚恢复的值覆盖掉。经 setter 逐项应用（setter 内部
+    /// 自带范围钳制与持久化），保证磁盘与运行时一致。
+    /// 默认值与 AppState 初始化器一致（键缺失时用它兜底）。
+    func applyFromDefaults() {
+        guard let appState else { return }
+        let d = UserDefaults.standard
+        func number(_ key: String) -> Double? {
+            (d.object(forKey: key) as? NSNumber)?.doubleValue
+        }
+        func flag(_ key: String) -> Bool? {
+            (d.object(forKey: key) as? NSNumber)?.boolValue
+        }
+        appState.setSubtitleOverlaySourceFontSize(number("subtitleOverlaySourceFontSize") ?? 32)
+        appState.setSubtitleOverlayTranslationFontSize(number("subtitleOverlayTranslationFontSize") ?? 24)
+        appState.setSubtitleOverlayBorderOpacity(number("subtitleOverlayBorderOpacity") ?? 0.08)
+        appState.setMaxSubtitleLines(d.object(forKey: "subtitleMaxLines") as? Int ?? 2)
+        appState.setSubtitleHorizontalAlignment(d.string(forKey: "subtitleHorizontalAlignment") ?? "left")
+        appState.setSubtitleClearDelay(number("subtitleClearDelay") ?? 3)
+        appState.setSubtitleContainerWidth(number("subtitleFrameWidth") ?? 800)
+        appState.setSubtitleContainerHeight(number("subtitleFrameHeight") ?? 200)
+        appState.setSubtitleBackgroundOpacity(number("subtitleBackgroundOpacity") ?? 0.4)
+        appState.setSubtitleEditBorderVisible(flag("subtitleEditBorderVisible") ?? true)
+        appState.setSubtitleEditBorderColorHex(d.string(forKey: "subtitleEditBorderColorHex") ?? "FFFFFF")
+        appState.setSubtitleEditBorderOpacity(number("subtitleEditBorderOpacity") ?? 0.6)
+        appState.setSubtitleFontWeight(d.string(forKey: "subtitleFontWeight") ?? "medium")
+        appState.setSubtitleLineSpacing(number("subtitleLineSpacing") ?? 0)
     }
 }
 
@@ -554,6 +642,24 @@ final class ConfigurationManager {
         asr.reload()
         translation.reload()
         audio.reload()
+        // asrPrompt 同属配置分区：此前漏刷，外部直接写这些键（备份恢复、
+        // 旧版本迁移）后内存值一直是旧的。
+        asrPrompt.reload()
         ConfigurationSchema.migrateIfNeeded()
+    }
+
+    /// 备份恢复专用：reload 之外还要把值**应用到运行时**。
+    ///
+    /// reload 只刷新配置对象的内存副本；而运行时状态（翻译方式、字幕浮层样式、
+    /// 浮层自动隐藏）由 AppState 持有，且其 setter 会把内存旧值写回磁盘 ——
+    /// 不应用的话，恢复后的值会被下一次设置变更覆盖。AppState 未注入时
+    /// （理论不可达：App 启动即 attach）退化为仅 reload。
+    func reloadAndApplyRuntime() {
+        reload()
+        guard let appState = subtitle.appState else { return }
+        appState.setTranslationMode(translation.modeFromDefaults)
+        subtitle.applyFromDefaults()
+        appState.setFloatingOverlayAutoHide(
+            UserDefaults.standard.bool(forKey: "floatingOverlayAutoHide"))
     }
 }

@@ -704,17 +704,27 @@ Apple Speech 是持续流式 analyzer：
 
 ---
 
-### 坑 13：本项目没有正式单元测试 target
+### 坑 13：本项目**有**正式单元测试 target（本节原结论有误，已更正）
 
-不要指望 `swift test` 能覆盖这些修复。
+~~不要指望 `swift test` 能覆盖这些修复。~~ **更正**：`Package.swift:65` 声明了
+`.testTarget(name: "WhisperASRTests", path: "Tests/WhisperASRTests")`，
+现有 **331** 个测试方法（`grep -rhoE '^\s*func test[A-Za-z0-9_]*' Tests/WhisperASRTests/ | wc -l`），
+覆盖 AppleServices / SubtitleManager / ASRResultNormalizer / 持久化等模块。
+Apple 引擎相关的回归请优先补 `Tests/WhisperASRTests/` 下的单测，不要只靠手动验证。
 
-当前验证手段主要是：
+`swift test` 需要**完整 Xcode**（CLT 下 XCTest 与 SwiftUI 宏插件都不足）：
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+手动验证手段仍然有效（真机听音、浮层视觉这类不可自动化项）：
 
 ```bash
 swift build
 swift build -c release
 bash Scripts/build_release.sh
-open WhisperASR.app
+open SonicScribe.app
 ```
 
 以及看日志：
@@ -727,19 +737,22 @@ tail -f ~/Library/Logs/WhisperASR/app.log
 
 ## 7. 关键文件索引
 
-本次重点涉及：
+本次重点涉及（**路径已按当前仓库分层更正**；原文档写的是拆分前的扁平路径，
+`Sources/AppleServices/...`、`Sources/FloatingLetter/...`、`Sources/SettingsPages.swift`
+等均已不存在）：
 
 ```text
-Sources/AppleServices/AppleSpeechEngine.swift
-Sources/AppleServices/AppleSpeechManager.swift
-Sources/AppleServices/AppleSpeechStatus.swift
-Sources/AppleServices/AppleTranslationEngine.swift
-Sources/AppleServices/AppleTranslationStatus.swift
-Sources/FloatingLetter/FloatingLetterViewModel.swift
-Sources/SettingsPages.swift
-Sources/TranscriptionService.swift
-Sources/TranslationManager.swift
-Sources/ConfigurationManager.swift
+Sources/Pipeline/ASR/AppleServices/AppleSpeechEngine.swift
+Sources/Pipeline/ASR/AppleServices/AppleSpeechManager.swift
+Sources/Pipeline/ASR/AppleServices/AppleSpeechStatus.swift
+Sources/Pipeline/ASR/AppleServices/AppleTranslationEngine.swift
+Sources/Pipeline/ASR/AppleServices/AppleTranslationStatus.swift
+Sources/Pipeline/Subtitle/FloatingLetter/FloatingLetterViewModel.swift
+Sources/App/SettingsView.swift          # 原 Sources/SettingsPages.swift，现为
+Sources/App/Settings/*.swift            #   SettingsView + Settings/ 分页目录
+Sources/Pipeline/ASR/TranscriptionService.swift
+Sources/Pipeline/Translation/TranslationManager.swift
+Sources/App/ConfigurationManager.swift
 Scripts/build_release.sh
 ```
 
@@ -2397,3 +2410,263 @@ PromptBuilder/Provider/Apple 零改动。
 工作区中发现同规格改动已先行完成大半（预设文件 + 设置页），本会话
 核对规格符合性、补齐测试适配与提交。TranslationService 只读 systemPrompt
 键（模板全文），不感知预设 id——运行时零改动成立。
+
+---
+
+## 31. 第二十三轮会话（2026-09-11）：免 key 翻译通道接入 + 品牌改名断点修复
+
+> 本轮距上一轮（08-24）跨度较大，中间 08-25~09-03 的改动（延迟看板、
+> Metal SDF 字幕、SPSC/KVCache 骨架、Onboarding、设计令牌体系）**尚无文档覆盖**，
+> 见本文末尾「32. 待补文档」。
+
+### 需求
+
+1. 三条**不需要 API Key** 的翻译通道接入：Google v1 / Google v2 / 微软翻译；
+2. 修复品牌从 WhisperASR 改名「声记 SonicScribe」后遗留的断点。
+
+### A. 免 key 翻译通道（新文件 `Sources/Pipeline/Translation/FreeWebTranslationProvider.swift`）
+
+分层与既有 Provider 体系完全一致，零破坏：
+
+```
+TranslationMode(+3 case) → TranslationManager.provider(for:) → FreeWebTranslationProvider
+                                                                  ├─ FreeWebTransport（HTTP/重试/URL/分片）
+                                                                  ├─ BingSessionProvider（Bing 会话抓取+缓存）
+                                                                  └─ FreeWebParsing（解析+语言码映射，纯逻辑）
+```
+
+- **Google v1**：`translate_a/single?client=gtx&sl=&tl=&dt=t&q=`
+- **Google v2**：`translate_a/t?client=dict-chrome-ex&sl=&tl=&q=`
+- **微软**：`GET bing.com/translator` 抓 `IG` / `data-iid` /
+  `params_AbusePreventionHelper=[key,"token",interval]` → `POST bing.com/ttranslatev3`
+  表单（`fromLang/text/to/token/key`）；会话按页面给定有效期 ×0.85 缓存，
+  205 失效时刷新会话重试一次。
+
+设计约束（与 LLM 通道的差异）：非流式（整句返回，走协议默认
+`translateStreaming` 回退）；无端点/Key/模型/提示词配置；不消费
+`TranslationPromptPreset`（端点不接受 system prompt），设置页据此隐藏提示词区。
+
+### 实测结论（本机直连，务必不要再靠记忆猜）
+
+| 端点 | 结果 |
+|---|---|
+| Google **v2** | ✅ 正常，返回**扁平** `[["你好世界。","en"]]`（段第二项即源语言码） |
+| Google **v1** | ❌ 本机被 IP/风控拦截（返回 "Sorry..." HTML）；换 UA、`client=webapp`、去 `dt` 均无效 → **已实现失败自动回落 v2 一次**并记日志 |
+| `edge.microsoft.com/translate/auth` | ❌ **已 404 下线**（Edge 领 JWT 的旧路径失效）→ 微软通道改走 Bing 网页会话 |
+| Bing `ttranslatev3` 多段 | ❌ 重复 `text=` **只翻第一段** → 逐行请求 + 有界并发(4) 保序 |
+| Bing 错误体 | HTTP 200 + `{"statusCode":205}` = 会话失效；429 可退避重试 |
+| Bing 中文目标 | 响应末尾追加**纯元数据元素**（无 `translations`）→ 解析必须整体跳过 |
+
+### 新增错误类型与重试语义
+
+- `TranslationError` 新增 `.endpointBlocked(String)`：公共端点被拦截/返回非 JSON。
+  与 `.apiFailed` 分开，让公共通道能「换端点回落」而不是直接失败。
+- `isRetryableOnFreeChannel`：免费端点的 **429 退避重试**（付费 API 路径不变，
+  仍按 `isRetriable` 不重试 429，避免真实配额耗尽时加重限流）。
+
+### B. 品牌改名断点修复
+
+**根因（真 bug）**：`AppDelegate` 硬编码 `url.scheme == "whisperasr"`，而打包
+脚本按品牌往 Info.plist 写 `sonicscribe` → `open sonicscribe://record` 静默失效。
+
+- `AppDelegate.acceptedURLSchemes` 改为**从 Info.plist 读**（`urlSchemes(fromInfoDictionary:)`
+  抽成纯函数以便单测），旧 scheme 作迁移兼容；`owns(_:)` 大小写不敏感。
+- 同类问题一并清掉：`FloatingAppPicker` 里 `$0.title == "SonicScribe"` 找主窗口 →
+  改为**结构判据**（可见 + 非 NSPanel + canBecomeMain + 宽>400，取面积最大者），
+  与 `MenuBarController.showMainWindow` 统一（两处注释互相指向，需同步改）。
+- `build_release.sh` / `release.sh` / CI 工作流品牌参数统一为 SonicScribe，
+  Info.plist **双写** `sonicscribe` + `whisperasr`，权限描述改用 `$DISPLAY_NAME`。
+- CI 补了一个 `test` job（此前 CI 只打包不跑测试），`build-notarize` 依赖它。
+- README / README.zh-cn 品牌与 URL scheme 章节同步。
+
+### C. 顺带补上的插桩缺口
+
+`PipelineLatencyStore.recordASR` **此前无任何写入者** → 状态页「ASR 响应」卡在
+本地引擎下恒显 "—"（只有在线引擎经 `OnlineASRStats` 有值）。现于
+`ASRManager` 的 `transcribeChunk` 前后量取推理耗时写入。
+
+### 测试
+
+223 → **257**（+28 免 key 通道 +6 URL scheme），全量通过 0 失败。
+其中 3 个实时网络冒烟用例：仅传输/拦截类错误 `XCTSkip`，
+**解析或业务错误一律 fail**（否则解析器坏了会被当成"环境问题"放过）。
+
+> 计数更新（2026-09-19）：当前测试方法总数为 **331**
+> （`grep -rhoE '^\s*func test[A-Za-z0-9_]*' Tests/WhisperASRTests/ | wc -l`）；
+> 上句 257 是本节写作时的快照，已被后续轮次超越。`swift test` 需完整 Xcode。
+
+### 验证
+
+- `swift build --disable-sandbox` 通过（仅 xcframework 目标 macOS 26 的 ld 告警）
+- `swift test` 257/257（**写作时快照**；2026-09-19 实测测试方法总数为 331，
+  需完整 Xcode：`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`）
+- release 包实测：`CFBundleName=声记 SonicScribe`、`com.sonicscribe.app`、
+  schemes = `[sonicscribe, whisperasr]`、权限文案随 `$DISPLAY_NAME`
+
+### 未做 / 下一步
+
+1. **储备模块接线**（本轮**刻意未动**，理由见第 32 节）：
+   `RealtimeAudioIngest` + `SPSCFloatRingBuffer` 换入 `AudioRecorder`、
+   Metal SDF 字幕换入浮层、`TranscriptionIndexStore` + `OpusAudioArchiver`
+   落地存储、`BoundedBatchTranslationManager` 替换批量串行循环。
+2. **本轮改动尚未提交**：与工作区既有大量未提交改动**同文件交织**
+   （MenuBarController / ASRManager / WhisperASRApp 等本来就有未提交修改），
+   直接 `git add` 会把上几轮的在途工作一起卷进来，需人工拆分（见第 32 节）。
+3. 真机回归（文档第 4.1 节起反复标记的最高优先级未完成项）仍未做。
+
+### 新坑 36（**误诊，已更正**）：多模式 `grep -rn "A\|B"` 并未静默失败
+
+原文称：本项目目录下 `grep -rn "patternA\|patternB"` 会**返回空 + exit 0**。
+**2026-09-19 实测不成立**——同一目录下该形式正常工作：
+
+```bash
+$ grep -rn "PipelineLatencyStore\|LatencyDashboardView" Sources --include=*.swift | wc -l
+       9
+$ echo $?
+0
+```
+
+（BRE 的 `\|` 交替在 macOS BSD grep 上可用，无需 `-E`。）因此"本项目目录下多模式
+grep 静默失败"这个结论本身是错的，不能作为"某模块未被引用"的依据，也不能作为
+把 `PipelineLatencyStore` / `LatencyDashboardView` 判成未接线的理由
+（它们确实早已接线，见 32.2 表下的更正）。
+
+**保留的可操作结论**：任何"某模块是否被引用"的结论都要用可靠手段二次确认
+（工具版 Grep / `rg` / 拆成多次单模式 grep），并且在**看到 0 结果时先怀疑搜索方式**
+（`--include` 过滤、路径写错、模式转义、`.gitignore` 影响 `rg` 默认行为），
+而不是直接下"零引用"的判断——错误的审计结论会直接导致重复实现或误删。
+
+### 新坑 37：给已有指标补插桩前必须先搜全部写入点
+
+一度在 `TranslationManager` / `FloatingLetterIntegration` 重复插桩
+`recordTranslate` / `recordDisplay`，而 `FloatingLetterViewModel` 里已有
+`SubtitleLatencyManager` 桥接插桩——**同一指标两个定义会互相污染 20 样本窗口
+均值**。补插桩前先搜 `XxxStore.shared.record…` 的全部调用点；已有的不要重复加。
+
+---
+
+## 32. 待补文档 + 储备模块接线顺序（下一轮的切入点）
+
+### 32.1 文档缺口
+
+`docs/` 中 09-02/09-03 的工作完全没有文档：延迟看板（`PipelineLatencyStore` +
+`LatencyDashboardView`）、Metal SDF 字幕渲染器、SPSC/RealtimeAudioIngest、
+KVCache 骨架、Onboarding、`DesignTokens` 设计令牌体系、
+`TranscriptionIndexStore` / `OpusAudioArchiver`。
+`docs/当前架构图.md` 的日期是 08-22（**2026-09-19 已更新为当日，并补了"未反映的后续改动"清单**），
+`docs/smartsteer-status.md` 是 08-09，仍过时。
+
+### 32.2 「已实现 + 已单测，但零接线」清单（本轮复核后的准确名单）
+
+| 模块 | 单测 | 状态说明 |
+|---|---|---|
+| `SPSCFloatRingBuffer` + `RealtimeAudioIngest` | ✅ | 仅被彼此引用；**未接入 `AudioRecorder`** |
+| `MetalSubtitleRenderer` + `SDFGlyphAtlas` + `MetalSubtitleController` | ✅ | 自洽组件；**未接入浮层渲染** |
+| `TranscriptionIndexStore`（SQLite） | ✅ | 单测直接构造（`TranscriptionPersistenceTests.swift:25/38/67/93/130/197` 等：WAL、范围游标分页、万条检索性能）；**未接入运行时**（本行原标「—」有误） |
+| `OpusAudioArchiver` | ✅ | 仅测试引用；**未接入录音归档** |
+| `BoundedBatchTranslationManager`（含 `ProviderBackedTranslateClient` 适配器） | — | **未接入 `translate(item:)`** |
+| `KVCacheSession` + `MLXKVBackend` | ✅ | **按设计**未接（等 MLX 引擎，见 `prefix-kv-cache-design.md`） |
+
+> 更正：延迟看板（`PipelineLatencyStore` / `LatencyDashboardView`）**早已接线**
+> （状态页 + FloatingLetterViewModel 插桩），此前误列为未接线；当时的依据
+> 「多模式 grep 静默失败」本身是误诊（见新坑 36 的更正）。
+
+### 32.3 建议的接线顺序（一次一个，各带验证）
+
+1. **BoundedBatchTranslationManager → `TranslationManager.translate(item:)`**
+   收益明确（长音频批量翻译并发化）。**注意语义差异**：现实现是"瞬时错误跳过该批继续"，
+   而管理器是 **fail-fast**。直接换会丢掉容错 → 需先写一个
+   `RetryingTranslateClient` 装饰器（批内重试瞬时错误，耗尽才抛出）再换。
+   可在无真实 LLM 端点时用假 client 做并发/保序/取消的单测。
+2. **RealtimeAudioIngest + SPSC → `AudioRecorder`**
+   收益：采集回调彻底无锁。风险最高（实时音频路径），
+   **必须在能真机听音的环境下单独做一轮**：先用离线单测比对
+   「同一段 48k 立体声 → 16k 单声道」输出与现行实现一致，再跑实时录制听感验证。
+3. **Metal SDF 字幕 → 浮层渲染**
+   收益：大字号高频刷新下的 CPU 占用。风险：视觉不可自动化验证，
+   建议先做 A/B 开关（默认走 SwiftUI 渲染，设置项切 Metal）灰度。
+4. **TranscriptionIndexStore + OpusAudioArchiver → 存储层**
+   这不是"接线"而是**存储格式演进**（需决定与逐条 JSON 并存还是替换、
+   迁移策略、UI 入口），应作为独立需求立项。
+
+---
+
+## 33. 本轮（Lead 审阅后）修复记录（2026-09-19）
+
+本轮只动 Apple 语音引擎适配层与打包/文档，**未触碰** `ASRManager.swift`、
+`SubtitleManager.swift`、`TranscriptionService.swift`、`Translation*`。
+
+### 33.1 Apple 引擎如实上报 final 修正
+
+- **问题**：`AppleSpeechEngine.waitForTextGrowth` 只用 `commonPrefixCount` 算增量，
+  无法区分"在旧文本后追加"与"改写旧文本"。引擎把已显示的 partial「ta pop」
+  修正为 final「pop」时，上层按 appendIncrement 累积出 **"ta pop pop"** 脏文本。
+- **修法**：`handleResult` 在 `result.isFinal == true`（引擎权威的"该段最终结果"
+  信号）时置位 `pendingFinalRevision` 并快照该 final 段完整文本（与
+  `currentText`/`consumedText` 同锁）；`waitForTextGrowth` 优先消费该标志，
+  返回**该段完整文本** + `isRevision: true`（不再走 `dropFirst(common)` 增量）。
+  final 段为空（引擎撤回）时只推进基线、不产出。`start()` / `stop()` 均清理该标志。
+- **为什么不直接读 `currentText`**：final 之后 80ms 轮询间隔内可能已到达**下一段**的
+  volatile 结果并覆盖 `currentText`，消费时再读会把下一段文本错标成上一段的 final 修正。
+- **`AppleSpeechManager.transcribeChunk`**：`waitForTextGrowth` 结果**原样透传**
+  （`isRevision` / `isAggregationPending` 不得被吞）；两处空返回（samples 为空、
+  文本未到）改为 `isAggregationPending: true`——Apple 是流式引擎，"本轮无新文本"
+  ≠ "结果为空"，否则调度层按空 tail 的 `.replaceTail` 提交会抹掉屏幕上的当前句。
+- **验证**：`swift build -Xswiftc -plugin-path -Xswiftc "<Xcode 宏插件目录>"` → `Build complete!`
+
+### 33.2 打包脚本（`Scripts/build_release.sh`）
+
+- **SwiftPM 资源 bundle 从不复制**（严重）：组装 app 只复制二进制与 `AppIcon.icns`，
+  `Package.swift` 的 `.copy("Pipeline/Subtitle/FloatingLetter/Metal")` 产物
+  `WhisperASR_WhisperASR.bundle` 从未进包 → `MetalSubtitleRenderer.swift:97` 的
+  `Bundle.module` 一旦接线就 `fatalError`。现按 SwiftPM 生成的
+  `resource_bundle_accessor.swift` 实际查找路径放置：`<App>.app/WhisperASR_WhisperASR.bundle`
+  （实测 `.app` 内 `Bundle.main.bundleURL` == `.app` 本身），并在
+  `Contents/Resources/` 留一份惯例副本；找不到 bundle 直接报错退出。
+- **工具链回退不校验可用性**：原逻辑只认 `/Applications/Xcode.app` 固定路径。
+  现用 `xcrun --find swiftc` + `libSwiftUIMacros.dylib` 存在性双探测；不可用
+  （本机实测：许可未接受，`xcrun` 直接失败）时回退为「系统默认工具链（CLT）+
+  `-Xswiftc -plugin-path <Xcode 宏插件目录>`」，并打印可操作修复指引；
+  插件目录也缺时给出明确错误（装 Xcode / `sudo xcodebuild -license accept` /
+  `XCODE_DEVELOPER_DIR=...` 三种解法）。
+- **多架构与依赖切片矛盾**：新增 xcframework 切片探测（读各 `Info.plist` 的
+  `SupportedArchitectures`），请求非 arm64 架构且无切片时明确报错并列出缺失项，
+  `ALLOW_ARCH_DEGRADE=1` 可降级为 arm64 继续；顺带修正 universal 分支
+  `lipo -archs "$BUILD_DIR/$APP_NAME"` 用了不存在的产物名（应为 `BINARY_NAME`）。
+
+### 33.3 构建中间产物与配置
+
+- `Frameworks/transcribe-headers/`（`build_transcribe_lib.sh` 生成的暂存头目录，
+  与 xcframework 内头文件构成双份事实源）补进 `.gitignore`，两个库构建脚本
+  收尾 `rm -rf` 各自的头文件暂存目录（**未删除已入库文件**）。
+- `.mcp.json` 不再硬编码 `/Users/hyj/Desktop/asrtest/.venv/bin/python`，
+  改用 `ASR_WORKBENCH_PYTHON` / `ASR_WORKBENCH_DIR` / `CLAUDE_PROJECT_DIR`
+  环境变量（默认 `python3` / `.`），原意图记在 `CLAUDE.md` 的「MCP 配置」节。
+
+### 33.4 文档事实修正
+
+- 测试数 330 → **331**（`CLAUDE.md`、`README.md`、`README.zh-cn.md`）。
+- 本文档：坑 13（"没有单元测试 target" → 实际有 `WhisperASRTests`，331 个测试方法）、
+  §7 关键文件索引（10 条路径中 10 条已迁至 `Sources/Pipeline/...`、`Sources/App/...`，
+  已全部更正）、257/257 → 331、32.2 表 `TranscriptionIndexStore` 单测「—」→ ✅
+  （`TranscriptionPersistenceTests.swift:25` 等直接构造）、新坑 36（多模式 grep
+  静默失败：实测不成立，已标注误诊并保留其可操作结论）。
+- `docs/当前架构图.md`：日期 08-22 → 09-19、`ASRProvider` 五选一 → **七选一**
+  （whisper / nemotron / qwen3asr / online / remote / apple / funASR）、
+  `SettingsPages.swift` → `SettingsView + Settings/*.swift`、翻译层补
+  `FreeWebTranslationProvider`（googleV1/googleV2/microsoft 免 key 通道）、
+  补 `SherpaONNX.xcframework` 依赖与"未反映的后续改动"清单。
+- `docs/optimization_roadmap.md`：六、2 标注已部分落地（含本轮增强）与仍缺项
+  （`swift test` 侧无同等探测）；新增六、3 记录 `CRealtimeAtomics` 补 `.c` 编译单元。
+
+### 33.5 本轮遗留 / 待确认
+
+- **`ASRManager` 尚未消费 `isRevision`**：全仓 `rollbackTail` 只有
+  `SubtitleManager` 定义 + 单测引用，`ASRManager.handleASRResult` 走的是
+  `appendTail(mergePolicy:)`。本轮按范围只让 Apple 引擎**如实上报**该语义，
+  上层接线（final 修正时改调 `rollbackTail`）需另开一轮，否则
+  "ta pop pop" 的显示问题仍会在字幕层复现。
+- `Frameworks/transcribe-headers/` 的 3 个文件仍被 git 跟踪，`.gitignore`
+  对已跟踪文件无效；要真正停止入库需 `git rm --cached -r Frameworks/transcribe-headers`
+  （**需用户决定**，本轮未动）。同时注意：两个库构建脚本的收尾清理会删除
+  这两个目录的**工作区副本**（含上述已跟踪文件），可经 git 恢复。

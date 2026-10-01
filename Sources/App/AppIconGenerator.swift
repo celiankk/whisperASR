@@ -61,15 +61,17 @@ enum AppIconGenerator {
             ctx.fillPath()
         }
 
-        // Draw small "ASR" text at bottom
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: size * 0.08, weight: .bold),
-            .foregroundColor: NSColor(white: 1, alpha: 0.7)
-        ]
-        let text = NSAttributedString(string: "ASR", attributes: attrs)
-        let textSize = text.size()
-        let textOrigin = NSPoint(x: (size - textSize.width) / 2, y: size * 0.12)
-        text.draw(at: textOrigin)
+        // 品牌录音点（替代此前的 "ASR" 字样）：与 MenuBarIcon 同一母题——
+        // 声波柱 + 右下录音点，Dock 与菜单栏看到的是同一个标志。
+        // 不画文字：品牌已是「声记 SonicScribe」，中文字形依赖系统字体、
+        // 小尺寸下会糊，也不是品牌标识。
+        let dotDiameter = size * 0.10
+        let dotInset = size * 0.055
+        let dotRect = CGRect(x: size - inset - dotInset - dotDiameter,
+                             y: inset + dotInset,
+                             width: dotDiameter, height: dotDiameter)
+        ctx.setFillColor(CGColor(red: 1.0, green: 0.30, blue: 0.26, alpha: 1.0))
+        ctx.fillEllipse(in: dotRect)
 
         image.unlockFocus()
         return image

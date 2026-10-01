@@ -10,10 +10,11 @@ struct ToastView: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .font(.system(size: 12))
+                .foregroundStyle(Palette.warn)
             Text(message)
-                .font(.callout)
-                .foregroundStyle(.primary)
+                .font(Type.text(Type.body))
+                .foregroundStyle(Color.primary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
@@ -21,22 +22,20 @@ struct ToastView: View {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Ink.secondary)
             }
             .buttonStyle(.plain)
-            .help("Dismiss")
+            .help("关闭")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: 460)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.orange.opacity(0.4), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-        .padding(.bottom, 16)
+        .background(.regularMaterial, in: Corner.rect(Corner.card))
+        .overlay(Corner.rect(Corner.card).strokeBorder(Ink.hairline, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.06), radius: 2.5, y: 2)
+        .shadow(color: .black.opacity(0.10), radius: 14, y: 10)
+        .padding(.bottom, Metrics.xxl)
     }
 }
 
@@ -51,6 +50,6 @@ extension View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: message.wrappedValue)
+        .animation(Motion.anim(Motion.exit(0.3)), value: message.wrappedValue)
     }
 }

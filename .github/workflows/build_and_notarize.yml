@@ -1,0 +1,230 @@
+name: Build & Notarize (macOS)
+
+# 触发：推 tag（v*）发布 + 手动 dispatch（验收构建产物）。
+# 权限最小化：仅 Release 上传需要 contents:write。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-notarize-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # 品牌参数：与 Scripts/build_release.sh / release.sh 的默认值保持一致。
+  # 改名时三处同步（Swift 侧品牌名已不再硬编码，URL scheme 由 Info.plist 驱动）。
+  APP_NAME: SonicScribe
+  DISPLAY_NAME: 声记 SonicScribe
+  BUNDLE_ID: com.sonicscribe.app
+  # 兼容旧 scheme（升级安装的 whisperasr:// 快捷方式仍可用）。
+  LEGACY_URL_SCHEMES: whisperasr
+  # 签名身份（与 Scripts/release.sh 一致；如轮换证书在此更新或改用 secret）。
+  CODESIGN_IDENTITY: 'Developer ID Application: MAO YUAN KAO (3WD42GF27D)'
+  # 部署目标与 build_release.sh 的 Info.plist LSMinimumSystemVersion 对齐。
+  MACOSX_DEPLOYMENT_TARGET: '14.0'
+
+jobs:
+  # 纯逻辑单测门：与打包解耦，先跑测试再构建产物（此前 CI 只打包不跑测试，
+  # 测试回归无法在 CI 暴露）。
+  test:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode (stable, Swift 5.9+)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15*.app/Contents/Developer || \
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Run unit tests
+        run: swift test
+        env:
+          # 实时网络冒烟用例在 CI 网络受限时自行 XCTSkip，不阻塞流水线。
+          SWIFT_DETERMINISTIC_HASHING: '1'
+
+  build-notarize:
+    # macos-14 = M1 实例（arm64 原生构建；x86_64 走 SwiftPM 交叉编译）。
+    runs-on: macos-14
+    needs: test
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode (stable, Swift 5.9+)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15*.app/Contents/Developer || \
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          swift --version
+
+      # ─────────────────────────────────────────────────────────────
+      # 前置门：三方 xcframework 的架构切片校验。
+      # 当前 CWhisper / CTranscribe / SherpaONNX 仅有 macos-arm64 切片，
+      # 缺 x86_64 时链接期必失败——这里显式降级 arm64-only 并告警，
+      # 而不是让 -XCTest 式的链接错误在 20 分钟构建后才爆出来。
+      # ─────────────────────────────────────────────────────────────
+      - name: Verify framework slices (universal gate)
+        id: archs
+        run: |
+          set -euo pipefail
+          WANTED="arm64 x86_64"
+          UNIVERSAL=1
+          for fw in CWhisper CTranscribe SherpaONNX; do
+            if [ ! -d "Frameworks/${fw}.xcframework/macos-x86_64" ]; then
+              echo "⚠️ ${fw}.xcframework 缺少 macos-x86_64 切片"
+              UNIVERSAL=0
+            fi
+          done
+          if [ "$UNIVERSAL" = "1" ]; then
+            echo "archs=arm64 x86_64" >> "$GITHUB_OUTPUT"
+          else
+            echo "archs=arm64" >> "$GITHUB_OUTPUT"
+            echo "::warning::依赖框架缺 x86_64 切片 → 本次降级为 arm64-only。补齐 Intel 切片后本步自动恢复通用构建。"
+          fi
+
+      # ─────────────────────────────────────────────────────────────
+      # 临时钥匙串：证书注入 + 分区访问权限。
+      # 防坑要点（详见仓库交付说明）：
+      # 1. codesign 需访问私钥 → 必须用 set-key-partition-list 打通
+      #    分区 ACL，否则非交互 CI 环境里钥匙串访问弹窗永久挂起；
+      # 2. set-keychain-settings -lut 设定自动锁定时效（6h > job 时长），
+      #    job 结束即整体 delete-keychain，密钥不留存 runner；
+      # 3. 敏感步骤前 set +x 关闭命令回显（GitHub 会自动掩码 Secrets，
+    #    但 p12 解码的临时文件路径/参数序列不进日志才是双保险）。
+      # ─────────────────────────────────────────────────────────────
+      - name: Create temp keychain & import Developer ID certificate
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          set +x   # 本步骤全程关闭回显
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          echo -n "$CERTIFICATE_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"   # 6h 后自动锁
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            "$(security list-keychains -d user | tr -d '"')"
+          # 不用 -A（任意应用无提示可访问私钥，等于绕过分区授权）——
+          # 私钥访问面由下方 set-key-partition-list 精确限定到 codesign。
+          security import "$CERT_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # 签名身份就位校验（缺身份 fail-fast，不浪费构建时长）。
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "Developer ID Application" \
+            || { echo "Developer ID Application 证书未导入"; exit 1; }
+          rm -f "$CERT_PATH"   # 解码后的 p12 立即删除
+
+      # ─────────────────────────────────────────────────────────────
+      # 通用二进制构建 + 组装 + 签名（hardened runtime + entitlements）。
+      # build_release.sh 支持 ARCHS="arm64 x86_64"（SwiftPM --arch 交叉
+      # 编译，产物 .build/apple/Products/Release）+ codesign --options runtime。
+      # ─────────────────────────────────────────────────────────────
+      - name: Build universal .app (signed)
+        env:
+          ARCHS: ${{ steps.archs.outputs.archs }}
+          CODESIGN_IDENTITY: ${{ env.CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          bash Scripts/build_release.sh
+          # 双重校验：架构 + 签名链完整。
+          lipo -archs "${{ env.APP_NAME }}.app/Contents/MacOS/${{ env.APP_NAME }}"
+          codesign --verify --deep --strict --verbose=2 "${{ env.APP_NAME }}.app"
+          codesign -dvv "${{ env.APP_NAME }}.app" 2>&1 | grep -q "Authority=Developer ID Certification Authority" \
+            || { echo "签名链不完整（缺 Developer ID 中间证书）"; exit 1; }
+
+      # ─────────────────────────────────────────────────────────────
+      # 现代化公证：notarytool（altool 已废弃）+ ASC API Key。
+      # 1. .p8 从 Secret 解码到临时目录（绝不入库、绝不 echo）；
+      # 2. store-credentials 把凭据写入临时钥匙串 → 后续 submit 只引用
+      #    profile 名，凭据不出现在命令行参数/进程列表里；
+      # 3. --wait 同步阻塞直至 Apple 校验完成（轮询 JSON status:
+    #    Accepted/Invalid/Timeout），失败时立即拉取详细日志定位。
+      # ─────────────────────────────────────────────────────────────
+      - name: Notarize with notarytool (ASC API key)
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          set +x
+          KEY_DIR="$RUNNER_TEMP/asc-key"
+          mkdir -p "$KEY_DIR"
+          echo -n "$ASC_KEY_P8_BASE64" | base64 --decode \
+            -o "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+
+          xcrun notarytool store-credentials NOTARY_PROFILE \
+            --key "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer-id "$ASC_ISSUER_ID" \
+            --keychain "$RUNNER_TEMP/build.keychain"
+
+          # 待公证 ZIP：ditto 保留符号链接与元数据（zip 命令会破坏 bundle 权限）。
+          ditto -c -k --keepParent "${{ env.APP_NAME }}.app" "${{ env.APP_NAME }}.zip"
+
+          xcrun notarytool submit "${{ env.APP_NAME }}.zip" \
+            --keychain-profile NOTARY_PROFILE \
+            --wait --timeout 60m
+
+          rm -rf "$KEY_DIR"   # .p8 立即删除
+
+      - name: Staple ticket & Gatekeeper check
+        run: |
+          set -euo pipefail
+          xcrun stapler staple -v "${{ env.APP_NAME }}.app"
+          xcrun stapler validate -v "${{ env.APP_NAME }}.app"
+          spctl --assess --type execute -vv "${{ env.APP_NAME }}.app"
+          # 装订后的最终分发包（票据在包内，离线校验通过）。
+          rm -f "${{ env.APP_NAME }}.zip"
+          ditto -c -k --keepParent "${{ env.APP_NAME }}.app" "${{ env.APP_NAME }}-universal.zip"
+          shasum -a 256 "${{ env.APP_NAME }}-universal.zip" | tee "${{ env.APP_NAME }}-universal.zip.sha256"
+
+      # ─────────────────────────────────────────────────────────────
+      # 钥匙串销毁：密钥与证书在 runner 上不留任何残留（即使后续步骤失败）。
+      # ─────────────────────────────────────────────────────────────
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" || true
+          rm -f "$RUNNER_TEMP/cert.p12" || true
+          rm -rf "$RUNNER_TEMP/asc-key" || true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-notarized
+          path: |
+            ${{ env.APP_NAME }}-universal.zip
+            ${{ env.APP_NAME }}-universal.zip.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            "${{ env.APP_NAME }}-universal.zip" \
+            "${{ env.APP_NAME }}-universal.zip.sha256"
